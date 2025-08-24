@@ -5,16 +5,27 @@ services:
     image: mysql:5.7
     platform: linux/amd64
     environment:
-      MYSQL_ROOT_PASSWORD: password
-      MYSQL_DATABASE: myapp_development
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      # 必要なら MYSQL_USER / MYSQL_PASSWORD も .env で定義して使ってください
+      # MYSQL_USER: ${MYSQL_USER}
+      # MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_general_ci
     volumes:
       - mysql-data:/var/lib/mysql
-    # 外部からMySQLに接続したいなら開ける。不要ならコメントアウトでOK
+    # 外部からMySQLに接続したい場合のみ公開
     ports:
-      - "3009:3306"
+      - "${MYSQL_PORT_ON_HOST:-3009}:3306"
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ppassword"]
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "127.0.0.1",
+          "-p${MYSQL_ROOT_PASSWORD}",
+        ]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -24,9 +35,9 @@ services:
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
-    # 外からRedisを触らないなら閉じてOK
+    # 外部からRedisを触らないならポート公開は不要（必要ならコメント解除）
     # ports:
-    #   - "6370:6379"
+    #   - "${REDIS_PORT_ON_HOST:-6370}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -38,17 +49,29 @@ services:
       context: .
       dockerfile: Dockerfile
     user: "0:0"
-    command: bash -c "rm -f tmp/pids/server.pid && bundle exec rails s -p 3000 -b '0.0.0.0'"
+    command: bash -c "rm -f tmp/pids/server.pid && bundle exec rails s -p ${RAILS_PORT:-3000} -b '0.0.0.0'"
     volumes:
       - .:/myapp
       - bundle:/usr/local/bundle
     environment:
-      TZ: Asia/Tokyo
-      RAILS_ENV: development
-      REDIS_URL: redis://redis:6379/0
-      SIDEKIQ_REDIS_URL: redis://redis:6379/0
+      TZ: ${TZ}
+      RAILS_ENV: ${RAILS_ENV}
+      # DBは database.yml で host: db, username/password を参照にする想定
+      # もしくは DATABASE_URL を使う場合はこちらを利用:
+      # DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      SIDEKIQ_REDIS_URL: ${SIDEKIQ_REDIS_URL}
+      # オンラインクラス API 認証＆先頭URL
+      ONLINE_CLASS_API_BASE: ${ONLINE_CLASS_API_BASE}
+      ONLINE_CLASS_LOGIN_PATH: ${ONLINE_CLASS_LOGIN_PATH}
+      ONLINE_CLASS_EMAIL: ${ONLINE_CLASS_EMAIL}
+      ONLINE_CLASS_PASSWORD: ${ONLINE_CLASS_PASSWORD}
+      # LINE Bot
+      LINE_CHANNEL_SECRET: ${LINE_CHANNEL_SECRET}
+      LINE_CHANNEL_ACCESS_TOKEN: ${LINE_CHANNEL_ACCESS_TOKEN}
+      LINE_PUSH_TO: ${LINE_PUSH_TO}
     ports:
-      - "3008:3000"
+      - "${API_PORT_ON_HOST:-3008}:${RAILS_PORT:-3000}"
     depends_on:
       db:
         condition: service_healthy
@@ -60,17 +83,23 @@ services:
   sidekiq:
     build:
       context: .
-      dockerfile: Dockerfile
     user: "0:0"
     command: bash -c "bundle exec sidekiq"
     volumes:
       - .:/myapp
       - bundle:/usr/local/bundle
     environment:
-      TZ: Asia/Tokyo
-      RAILS_ENV: development
-      REDIS_URL: redis://redis:6379/0
-      SIDEKIQ_REDIS_URL: redis://redis:6379/0
+      TZ: ${TZ}
+      RAILS_ENV: ${RAILS_ENV}
+      REDIS_URL: ${REDIS_URL}
+      SIDEKIQ_REDIS_URL: ${SIDEKIQ_REDIS_URL}
+      ONLINE_CLASS_API_BASE: ${ONLINE_CLASS_API_BASE}
+      ONLINE_CLASS_LOGIN_PATH: ${ONLINE_CLASS_LOGIN_PATH}
+      ONLINE_CLASS_EMAIL: ${ONLINE_CLASS_EMAIL}
+      ONLINE_CLASS_PASSWORD: ${ONLINE_CLASS_PASSWORD}
+      LINE_CHANNEL_SECRET: ${LINE_CHANNEL_SECRET}
+      LINE_CHANNEL_ACCESS_TOKEN: ${LINE_CHANNEL_ACCESS_TOKEN}
+      LINE_PUSH_TO: ${LINE_PUSH_TO}
     depends_on:
       db:
         condition: service_healthy

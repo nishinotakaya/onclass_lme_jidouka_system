@@ -9,7 +9,6 @@ class OnclassMentionsWorker
 
     mentions = get_mentions(headers)
     unread   = mentions.select { |m| m["is_read"] == false }
-    debugger
     if unread.any?
       unread.each { |m| notify_line(m) }
       Rails.logger.info("[OnclassMentionsWorker] sent #{unread.size} unread mention(s) to LINE")
@@ -43,12 +42,14 @@ class OnclassMentionsWorker
     created   = mention["created_at"]
 
     # タイトル行：チャンネル名＋投稿者名
-    title = "【#{ch_name}】#{user_name}"
+    title = "【チャンネル名: #{ch_name}】投稿者: #{user_name}"
 
     # 日時とメンションターゲット（任意）
     ts  = (Time.zone ? Time.zone.parse(created) : Time.parse(created)).strftime("%Y-%m-%d %H:%M")
     to_names = Array(mention.dig("chat", "mention_targets")).map { |t| t["name"] }.join(", ")
-    meta = "At: #{ts}" + (to_names.empty? ? "" : "\nMentions: #{to_names}")
+    meta = "投稿日時: #{ts}" \
+       + (to_names.empty? ? "" : "\nメンション: #{to_names}") \
+       + "\nURL: https://manager.the-online-class.com/community"
 
     body = <<~MSG
       #{title}
