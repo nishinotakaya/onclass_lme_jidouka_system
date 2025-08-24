@@ -7,13 +7,11 @@ class OnclassMentionsWorker
   MANAGER_COMMUNITY_URL = "https://manager.the-online-class.com/community".freeze
 
   def perform
-    # ログイン＆トークン更新
     OnclassSignInWorker.new.perform
 
     client  = OnclassAuthClient.new
     headers = client.headers
 
-    # === メンション未読 → LINE ===
     mentions = get_mentions(headers)
 
     # ★ 対象チャンネル(oyIDI6g2Y)のメンションは除外（この後 全投稿を別で送るため）
@@ -29,7 +27,8 @@ class OnclassMentionsWorker
     end
 
     # === ★ 対象チャンネルの「全投稿」を2時間窓で → LINE ===
-    from, to = compute_window_two_hours_jst
+    from, to = compute_channel_window_jst 
+    
     chats = get_recent_chats(headers, channel_id: TARGET_CHANNEL_ID, from: from, to: to)
     if chats.any?
       chats.each { |c| notify_line_chat(c) }
@@ -82,13 +81,18 @@ class OnclassMentionsWorker
     LineNotifier.push(body)
   end
 
-  # ------- Chats (channel timeline) -------
-
-  # ★ 2時間窓（常に2h）※このチャンネルは7時特別扱いをせず2時間固定
-  def compute_window_two_hours_jst(now: Time.current)
+  # 2時間窓（常に2h）
+  def compute_channel_window_jst(now: Time.current)
     jst = ActiveSupport::TimeZone["Asia/Tokyo"] || Time.zone || ActiveSupport::TimeZone["UTC"]
     t   = now.in_time_zone(jst)
-    [t - 2.hours, t]
+    if t.hour == 7
+      from = (t - 1.day).beginning_of_day
+      to   = (t - 1.day).end_of_day
+    else
+      from = t - 2.hours
+      to   = t
+    end
+    [from, to]
   end
 
   # 指定チャンネルの投稿をページングしながら取得し、時間窓でフィルタ
