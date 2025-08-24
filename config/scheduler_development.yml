@@ -4,4 +4,4 @@ onclass_mentions_every_2h:
   cron: "0 7-23/2 * * *"   # 07,09,11,13,15,17,19,21,23
   queue: onclass_comunity_Mentions
   tz: "Asia/Tokyo"
-  description: "Check unread mentions and push to LINE (development)"
+  description: "コミュニティ機能通知(7~23時に実行)"
