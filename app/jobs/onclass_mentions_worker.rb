@@ -86,8 +86,9 @@ class OnclassMentionsWorker
     jst = ActiveSupport::TimeZone["Asia/Tokyo"] || Time.zone || ActiveSupport::TimeZone["UTC"]
     t   = now.in_time_zone(jst)
     if t.hour == 7
-      from = (t - 1.day).beginning_of_day
-      to   = (t - 1.day).end_of_day
+      # 7:00 実行時は、前日23:00 〜 当日7:00 ちょうどまで
+      to   = t.change(min: 0, sec: 0)
+      from = to - 8.hours
     else
       from = t - 2.hours
       to   = t
@@ -118,7 +119,6 @@ class OnclassMentionsWorker
       end
       results.concat(filtered)
 
-      # これ以上古いページは不要なら打ち切り
       oldest_ts = items.map { |c| parse_time(c["created_at"]) }.compact.min
       break if oldest_ts && oldest_ts < from
     end
