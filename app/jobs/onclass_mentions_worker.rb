@@ -1,6 +1,6 @@
 class OnclassMentionsWorker
   include Sidekiq::Worker
-  sidekiq_options queue: :default, retry: 3
+  sidekiq_options queue: :onclass_comunity_Mentions, retry: 3
 
   def perform
     OnclassSignInWorker.new.perform

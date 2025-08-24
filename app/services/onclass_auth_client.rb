@@ -22,13 +22,11 @@ class OnclassAuthClient
     end
   end
 
-  # Redisに保存済みのヘッダを取得（有効な体で返す）
   def cached_headers
     raw = Sidekiq.redis { |r| r.get(REDIS_KEY) }
     raw ? JSON.parse(raw) : nil
   end
 
-  # ログインしてヘッダを返す（失敗時例外）
   def sign_in!
     res = @conn.post(@login_path) do |req|
       req.headers["Content-Type"] = "application/json"
