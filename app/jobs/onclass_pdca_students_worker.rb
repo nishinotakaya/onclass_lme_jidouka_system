@@ -1,7 +1,7 @@
 # app/jobs/onclass_pdcas_students_worker.rb
-class OnclassPdcasStudentsWorker
+class OnclassPdcaStudentsWorker
   include Sidekiq::Worker
-  sidekiq_options queue: :onclass_comunity_PdcasStudents, retry: 3
+  sidekiq_options queue: :onclass_comunity_pdca_students, retry: 3
 
   TARGET_CHANNEL_ID = ENV.fetch("ONCLASS_CHANNEL_ID", "oyIDI6g2Y").freeze
   MANAGER_COMMUNITY_URL = "https://manager.the-online-class.com/community".freeze

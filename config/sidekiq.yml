@@ -2,4 +2,5 @@
 :concurrency: 10
 :queues:
   - [onclass_comunity_Mentions, 10]
+  - [onclass_comunity_pdca_students, 8]
   - [default, 1]
