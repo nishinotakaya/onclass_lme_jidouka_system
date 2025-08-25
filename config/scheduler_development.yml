@@ -4,11 +4,11 @@ onclass_mentions_every:
   cron: "0 7-23/2 * * *"   # 07,09,11,13,15,17,19,21,23
   queue: onclass_comunity_Mentions
   tz: "Asia/Tokyo"
-  description: "コミュニティメンション機能通知(7~23時に実行)"
+  description: "コミュニティメンション機能通知(7~23時に2時間おきに実行)"
 
 onclass_pdca_every:
   class: "OnclassPdcaStudentsWorker"
   cron: "0 7-23/2 * * *"   # 07,09,11,13,15,17,19,21,23
   queue: onclass_comunity_pdca_students
   tz: "Asia/Tokyo"
-  description: "コミュニティ機能毎日のPDCA通知(7~23時に実行)"
+  description: "コミュニティ機能毎日のPDCA通知(7~23時に2時間おきに実行)"
