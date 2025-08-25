@@ -1,0 +1,5 @@
+# config/sidekiq.yml の例
+:concurrency: 10
+:queues:
+  - [onclass_comunity_Mentions, 10]
+  - [default, 1]
