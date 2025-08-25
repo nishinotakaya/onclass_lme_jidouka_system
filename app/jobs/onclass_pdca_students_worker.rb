@@ -38,7 +38,7 @@ class OnclassPdcaStudentsWorker
     t   = now.in_time_zone(jst)
     if t.hour == 7
       to   = t.change(min: 0, sec: 0)
-      from = to - 8.hours
+      from = to - 9.hours
     else
       from = t - 2.hours
       to   = t
