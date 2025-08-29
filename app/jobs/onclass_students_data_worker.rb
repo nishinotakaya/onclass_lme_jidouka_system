@@ -55,6 +55,18 @@ class OnclassStudentsDataWorker
     # 4) 指定の順で結合 + 右端に日本語ステータス列
     combined_rows = STATUS_ORDER.flat_map { |motivation, _| grouped_rows[motivation] }
 
+    # 重複防止のため uniq
+    student_ids = combined_rows.map { |r| r['id'] }.compact.uniq
+
+    # (A) 同期でこのWorkerの中で詳細も取って “手元のconn/headersを再利用” する場合
+    details_by_id = {}
+    student_ids.each do |sid|
+      details_by_id[sid] = fetch_user_learning_course(conn, default_headers, sid, LEARNING_COURSE_ID)
+      # 例：combined_rows の各行にマージしたければここで：
+      # row = combined_rows.find { |r| r['id'] == sid }
+      # row['course_progress_rate'] = details_by_id[sid]['course_progress_rate']
+    end
+    debugger
     timestamp = Time.zone.now.strftime('%Y%m%d_%H%M%S')
     dir       = Rails.root.join('tmp')
     FileUtils.mkdir_p(dir)
@@ -87,11 +99,11 @@ class OnclassStudentsDataWorker
 
     # 保存したCSV（ステータス別）を「素晴らしい→順調→離脱→停滞中→停滞気味」の順で読み込み・結合してからアップロード
     merged_rows = load_and_merge_csvs(ordered_status_csv_paths(status_files))
-
+    
     upload_to_gsheets!(
       rows: merged_rows,
       spreadsheet_id: ENV.fetch('ONCLASS_SPREADSHEET_ID'),
-      sheet_name:     ENV.fetch('ONCLASS_SHEET_NAME', '受講生自動化_テスト')
+      sheet_name:     ENV.fetch('ONCLASS_SHEET_NAME', '受講生自動化')
     )
 
     Rails.logger.info("[OnclassStudentsDataWorker] done: #{result.inspect}")
@@ -288,37 +300,44 @@ class OnclassStudentsDataWorker
     %Q(=HYPERLINK("#{url}","#{label}"))
   end
 
-  # 置き換え: スプレッドシート書き込み（列を id, name(link), email, status のみに）
-  def upload_to_gsheets!(rows:, spreadsheet_id:, sheet_name:)
-    headers = %w[id name email status]
+  # 追加: 日本時間の更新日時文字列を返す
+  def jp_timestamp
+    Time.now.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日 %H時 %M分')
+  end
 
-    # A:Z 全消しでも問題ないですが、列が減ったので A:D にクリアを縮めてもOK
+  # スプレッドシート書き込み（A1に更新日時、A2空行、A3から表）
+  def upload_to_gsheets!(rows:, spreadsheet_id:, sheet_name:)
     service = build_sheets_service
     ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
+
+    # クリア
     clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
     service.clear_values(spreadsheet_id, "#{sheet_name}!A:Z", clear_req)
 
-    values = [headers] + rows.map do |r|
+    # A1: 更新日時（A2は空行にするため後続はA3開始）
+    meta_values = [['更新日時', jp_timestamp]]
+    meta_range  = Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!A2", values: meta_values)
+    service.update_spreadsheet_value(
+      spreadsheet_id, "#{sheet_name}!A2", meta_range, value_input_option: 'USER_ENTERED'
+    )
+
+    # A3から表: id / 名前(リンク) / メールアドレス / ステータス
+    headers = %w[id 名前 メールアドレス ステータス]
+    table_values = [headers] + rows.map do |r|
       [
         r['id'],
-        hyperlink_name(r['id'], r['name']), # ← ここがリンクになる
+        hyperlink_name(r['id'], r['name']), # ← 名前をリンク化
         r['email'],
         r['status']
       ]
     end
 
-    value_range = Google::Apis::SheetsV4::ValueRange.new(
-      range: "#{sheet_name}!A1",
-      values: values
-    )
+    table_range = Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!A3", values: table_values)
     service.update_spreadsheet_value(
-      spreadsheet_id,
-      "#{sheet_name}!A1",
-      value_range,
-      value_input_option: 'USER_ENTERED' # ← 重要：式として評価させる
+      spreadsheet_id, "#{sheet_name}!A3", table_range, value_input_option: 'USER_ENTERED'
     )
 
-    Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{values.size - 1} rows to sheet #{sheet_name}")
+    Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{rows.size} rows to sheet #{sheet_name} (with timestamp)")
   end
 
   def load_and_merge_csvs(csv_paths)
@@ -336,6 +355,13 @@ class OnclassStudentsDataWorker
   def ordered_status_csv_paths(status_files)
     # STATUS_ORDER の順番に、生成済みCSVのパスを並べる
     STATUS_ORDER.map { |motivation, _| status_files[motivation] }.compact
+  end
+
+  def fetch_user_learning_course(conn, headers, student_id, learning_course_id)
+    params = { learning_course_id: learning_course_id }
+    resp = conn.get("/v1/enterprise_manager/users/#{student_id}/learning_course", params, headers)
+    json = JSON.parse(resp.body) rescue {}
+    json['data'] || json
   end
 
 end
