@@ -4,6 +4,7 @@ require "json"
 
 class OnclassAuthClient
   REDIS_KEY = "onclass:auth_headers"
+  attr_reader :conn, :base_url
 
   # todoメールアドレス登録ができるようになり次第ONLINE_CLASS_EMAILとONLINE_CLASS_PASSWORDは変更する
   def initialize(base_url: ENV.fetch("ONLINE_CLASS_API_BASE", "https://api.the-online-class.com"),

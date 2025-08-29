@@ -14,7 +14,7 @@ class OnclassMentionsWorker
 
     mentions = get_mentions(headers)
 
-    # 対象チャンネルのメンションは除外（全投稿は別ワーカーが送るため）
+    # 対象チャンネルのメンションは除外
     unread = mentions.select { |m|
       m["is_read"] == false && m.dig("chat", "channel", "id") != TARGET_CHANNEL_ID
     }
