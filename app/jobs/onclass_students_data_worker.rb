@@ -6,6 +6,10 @@ class OnclassStudentsDataWorker
   include Sidekiq::Worker
   sidekiq_options queue: 'onclass', retry: 3
 
+  require 'google/apis/sheets_v4'
+  require 'googleauth'
+
+
   LEARNING_COURSE_ID = 'oYTO4UDI6MGb' # フロントコース
   STATUS_ORDER = [
     ['very_good', '素晴らしい'],
@@ -22,7 +26,6 @@ class OnclassStudentsDataWorker
     OnclassSignInWorker.new.perform
     client  = OnclassAuthClient.new
     headers = client.headers # => { "access-token", "client", "uid", "token-type", "expiry" }
-
     # 2) Faraday 接続（cURL相当ヘッダも付与）
     conn = Faraday.new(url: client.base_url) do |f|
       f.request  :json
@@ -81,6 +84,15 @@ class OnclassStudentsDataWorker
       status_csvs: status_files,
       official_export_csv: export_api_csv_path
     }
+
+    # 保存したCSV（ステータス別）を「素晴らしい→順調→離脱→停滞中→停滞気味」の順で読み込み・結合してからアップロード
+    merged_rows = load_and_merge_csvs(ordered_status_csv_paths(status_files))
+
+    upload_to_gsheets!(
+      rows: merged_rows,
+      spreadsheet_id: ENV.fetch('ONCLASS_SPREADSHEET_ID'),
+      sheet_name:     ENV.fetch('ONCLASS_SHEET_NAME', '受講生自動化_テスト')
+    )
 
     Rails.logger.info("[OnclassStudentsDataWorker] done: #{result.inspect}")
     result
@@ -223,4 +235,93 @@ class OnclassStudentsDataWorker
     Rails.logger.warn('[OnclassStudentsDataWorker] export_csv のレスポンス形式が想定外でした')
     nil
   end
+
+  def build_sheets_service
+    service = Google::Apis::SheetsV4::SheetsService.new
+    service.client_options.application_name = 'Onclass FrontCourse Uploader'
+
+    scope   = [Google::Apis::SheetsV4::AUTH_SPREADSHEETS]
+    keyfile = ENV['GOOGLE_APPLICATION_CREDENTIALS']
+
+    # 事前チェック（分かりやすい例外にする）
+    if keyfile.nil? || keyfile.strip.empty?
+      raise "ENV GOOGLE_APPLICATION_CREDENTIALS is not set."
+    end
+    unless File.exist?(keyfile)
+      raise "Service account key not found: #{keyfile}"
+    end
+
+    json = JSON.parse(File.read(keyfile)) rescue nil
+    unless json && json['type'] == 'service_account' && json['private_key'] && json['client_email']
+      raise "Invalid service account JSON: missing private_key/client_email/type=service_account"
+    end
+
+    # ★ ここがポイント：鍵JSONを“明示的に”渡す（= nil.gsub 回避）
+    authorizer = Google::Auth::ServiceAccountCredentials.make_creds(
+      json_key_io: File.open(keyfile),
+      scope: scope
+    )
+    authorizer.fetch_access_token!
+    service.authorization = authorizer
+    service
+  end
+
+
+  def ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
+    ss = service.get_spreadsheet(spreadsheet_id)
+    exists = ss.sheets.any? { |s| s.properties&.title == sheet_name }
+    return if exists
+
+    add_req = Google::Apis::SheetsV4::AddSheetRequest.new(
+      properties: Google::Apis::SheetsV4::SheetProperties.new(title: sheet_name)
+    )
+    batch = Google::Apis::SheetsV4::BatchUpdateSpreadsheetRequest.new(
+      requests: [Google::Apis::SheetsV4::Request.new(add_sheet: add_req)]
+    )
+    service.batch_update_spreadsheet(spreadsheet_id, batch)
+  end
+
+  def upload_to_gsheets!(rows:, spreadsheet_id:, sheet_name:)
+    headers = %w[id name email last_sign_in_at course_name course_start_at course_progress status]
+    values = [headers] + rows.map { |r| headers.map { |h| r[h] } }
+
+    service = build_sheets_service
+    ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
+
+    # 既存データをクリア
+    clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
+    service.clear_values(spreadsheet_id, "#{sheet_name}!A:Z", clear_req)
+
+    # 一括書き込み
+    value_range = Google::Apis::SheetsV4::ValueRange.new(
+      range: "#{sheet_name}!A1",
+      values: values
+    )
+    service.update_spreadsheet_value(
+      spreadsheet_id,
+      "#{sheet_name}!A1",
+      value_range,
+      value_input_option: 'RAW'
+    )
+
+    Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{values.size - 1} rows to sheet #{sheet_name}")
+  end
+
+  def load_and_merge_csvs(csv_paths)
+    headers = %w[id name email last_sign_in_at course_name course_start_at course_progress status]
+    rows = []
+    csv_paths.each do |path|
+      CSV.foreach(path, headers: true, encoding: 'UTF-8') do |row|
+        rows << headers.index_with { |h| row[h] }
+      end
+    end
+    # 重複除去したい場合は id+status などでユニーク化:
+    rows.uniq { |r| [r['id'], r['status']] }
+  end
+
+  def ordered_status_csv_paths(status_files)
+    # STATUS_ORDER の順番に、生成済みCSVのパスを並べる
+    STATUS_ORDER.map { |motivation, _| status_files[motivation] }.compact
+  end
+
 end

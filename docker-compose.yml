@@ -53,23 +53,34 @@ services:
     volumes:
       - .:/myapp
       - bundle:/usr/local/bundle
+      # ▼ Google サービスアカウント鍵（ホスト→コンテナ）
+      - ./config/keys/google_service_account.json:/myapp/config/keys/google_service_account.json:ro
     environment:
       TZ: ${TZ}
       RAILS_ENV: ${RAILS_ENV}
-      # DBは database.yml で host: db, username/password を参照にする想定
-      # もしくは DATABASE_URL を使う場合はこちらを利用:
-      # DATABASE_URL: ${DATABASE_URL}
+      # DBは database.yml で host: db を参照
       REDIS_URL: ${REDIS_URL}
       SIDEKIQ_REDIS_URL: ${SIDEKIQ_REDIS_URL}
-      # オンラインクラス API 認証＆先頭URL
+
+      # ▼ Onclass API（既存のONLINE_*はそのまま維持）
       ONLINE_CLASS_API_BASE: ${ONLINE_CLASS_API_BASE}
       ONLINE_CLASS_LOGIN_PATH: ${ONLINE_CLASS_LOGIN_PATH}
       ONLINE_CLASS_EMAIL: ${ONLINE_CLASS_EMAIL}
       ONLINE_CLASS_PASSWORD: ${ONLINE_CLASS_PASSWORD}
-      # LINE Bot
-      LINE_CHANNEL_SECRET: ${LINE_CHANNEL_SECRET}
-      LINE_CHANNEL_ACCESS_TOKEN: ${LINE_CHANNEL_ACCESS_TOKEN}
-      LINE_PUSH_TO: ${LINE_PUSH_TO}
+
+      # （必要なら OnclassAuthClient 用の別名も設定しておくと安心）
+      ONCLASS_BASE_URL: ${ONCLASS_BASE_URL:-https://api.the-online-class.com}
+      ONCLASS_LOGIN_PATH: ${ONCLASS_LOGIN_PATH:-/v1/enterprise_manager/auth/sign_in}
+      ONCLASS_EMAIL: ${ONCLASS_EMAIL:-${ONLINE_CLASS_EMAIL}}
+      ONCLASS_PASSWORD: ${ONCLASS_PASSWORD:-${ONLINE_CLASS_PASSWORD}}
+
+      # ▼ Google Sheets 書き込み用
+      GOOGLE_APPLICATION_CREDENTIALS: /myapp/config/keys/google_service_account.json
+      # 鍵ファイルをマウントできない場合の代替（どちらか一方を .env に入れる）
+      # GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON}
+      # GOOGLE_SERVICE_ACCOUNT_JSON_BASE64: ${GOOGLE_SERVICE_ACCOUNT_JSON_BASE64}
+      ONCLASS_SPREADSHEET_ID: ${ONCLASS_SPREADSHEET_ID}
+      ONCLASS_SHEET_NAME: ${ONCLASS_SHEET_NAME:-受講生自動化_テスト}
     ports:
       - "${API_PORT_ON_HOST:-3008}:${RAILS_PORT:-3000}"
     depends_on:
@@ -88,18 +99,33 @@ services:
     volumes:
       - .:/myapp
       - bundle:/usr/local/bundle
+      # ▼ Google サービスアカウント鍵（ホスト→コンテナ）
+      - ./config/keys/google_service_account.json:/myapp/config/keys/google_service_account.json:ro
     environment:
       TZ: ${TZ}
       RAILS_ENV: ${RAILS_ENV}
       REDIS_URL: ${REDIS_URL}
       SIDEKIQ_REDIS_URL: ${SIDEKIQ_REDIS_URL}
+
+      # ▼ Onclass API（既存名を維持）
       ONLINE_CLASS_API_BASE: ${ONLINE_CLASS_API_BASE}
       ONLINE_CLASS_LOGIN_PATH: ${ONLINE_CLASS_LOGIN_PATH}
       ONLINE_CLASS_EMAIL: ${ONLINE_CLASS_EMAIL}
       ONLINE_CLASS_PASSWORD: ${ONLINE_CLASS_PASSWORD}
-      LINE_CHANNEL_SECRET: ${LINE_CHANNEL_SECRET}
-      LINE_CHANNEL_ACCESS_TOKEN: ${LINE_CHANNEL_ACCESS_TOKEN}
-      LINE_PUSH_TO: ${LINE_PUSH_TO}
+
+      # （必要なら OnclassAuthClient 用の別名も設定）
+      ONCLASS_BASE_URL: ${ONCLASS_BASE_URL:-https://api.the-online-class.com}
+      ONCLASS_LOGIN_PATH: ${ONCLASS_LOGIN_PATH:-/v1/enterprise_manager/auth/sign_in}
+      ONCLASS_EMAIL: ${ONCLASS_EMAIL:-${ONLINE_CLASS_EMAIL}}
+      ONCLASS_PASSWORD: ${ONCLASS_PASSWORD:-${ONLINE_CLASS_PASSWORD}}
+
+      # ▼ Google Sheets 書き込み用（Worker はこちらで使う）
+      GOOGLE_APPLICATION_CREDENTIALS: /myapp/config/keys/google_service_account.json
+      # ファイルマウントできない場合の代替（どちらか一方）
+      # GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON}
+      # GOOGLE_SERVICE_ACCOUNT_JSON_BASE64: ${GOOGLE_SERVICE_ACCOUNT_JSON_BASE64}
+      ONCLASS_SPREADSHEET_ID: ${ONCLASS_SPREADSHEET_ID}
+      ONCLASS_SHEET_NAME: ${ONCLASS_SHEET_NAME:-受講生自動化_テスト}
     depends_on:
       db:
         condition: service_healthy
