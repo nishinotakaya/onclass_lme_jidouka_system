@@ -54,7 +54,6 @@ class OnclassStudentsDataWorker
 
     # 4) 指定の順で結合 + 右端に日本語ステータス列
     combined_rows = STATUS_ORDER.flat_map { |motivation, _| grouped_rows[motivation] }
-
     # 重複防止のため uniq
     student_ids = combined_rows.map { |r| r['id'] }.compact.uniq
 
@@ -66,7 +65,6 @@ class OnclassStudentsDataWorker
       # row = combined_rows.find { |r| r['id'] == sid }
       # row['course_progress_rate'] = details_by_id[sid]['course_progress_rate']
     end
-    debugger
     timestamp = Time.zone.now.strftime('%Y%m%d_%H%M%S')
     dir       = Rails.root.join('tmp')
     FileUtils.mkdir_p(dir)
@@ -98,13 +96,33 @@ class OnclassStudentsDataWorker
     }
 
     # 保存したCSV（ステータス別）を「素晴らしい→順調→離脱→停滞中→停滞気味」の順で読み込み・結合してからアップロード
-    merged_rows = load_and_merge_csvs(ordered_status_csv_paths(status_files))
-    
+    load_and_merge_csvs(ordered_status_csv_paths(status_files))
+
+    student_ids   = combined_rows.map { |r| r['id'] }.compact.uniq
+    details_by_id = {}
+    student_ids.each do |sid|
+      begin
+        details_by_id[sid] = fetch_user_learning_course(conn, default_headers, sid, LEARNING_COURSE_ID)
+        sleep 0.05 # 必要に応じて調整
+      rescue => e
+        Rails.logger.warn("[OnclassStudentsDataWorker] detail fetch failed for #{sid}: #{e.class} #{e.message}")
+      end
+    end
+
+    # 'current_category' 列を追加
+    combined_rows.each do |r|
+      d = details_by_id[r['id']] || {}
+      r['current_category']  = current_category_name(d) || ''
+      r['course_join_date']  = d['course_join_date']     # 例: "2025-07-31"
+      r['course_login_rate'] = d['course_login_rate']    # 例: 73.7
+    end
+
     upload_to_gsheets!(
-      rows: merged_rows,
+      rows: combined_rows,
       spreadsheet_id: ENV.fetch('ONCLASS_SPREADSHEET_ID'),
       sheet_name:     ENV.fetch('ONCLASS_SHEET_NAME', '受講生自動化')
     )
+
 
     Rails.logger.info("[OnclassStudentsDataWorker] done: #{result.inspect}")
     result
@@ -310,31 +328,34 @@ class OnclassStudentsDataWorker
     service = build_sheets_service
     ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
 
-    # クリア
+    # 全クリア
     clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
     service.clear_values(spreadsheet_id, "#{sheet_name}!A:Z", clear_req)
 
-    # A1: 更新日時（A2は空行にするため後続はA3開始）
+    # A1: 更新日時（A2は空行）
     meta_values = [['更新日時', jp_timestamp]]
-    meta_range  = Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!A2", values: meta_values)
+    meta_range  = Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!B2", values: meta_values)
     service.update_spreadsheet_value(
-      spreadsheet_id, "#{sheet_name}!A2", meta_range, value_input_option: 'USER_ENTERED'
+      spreadsheet_id, "#{sheet_name}!B2", meta_range, value_input_option: 'USER_ENTERED'
     )
 
-    # A3から表: id / 名前(リンク) / メールアドレス / ステータス
-    headers = %w[id 名前 メールアドレス ステータス]
+    # A3: 表ヘッダ＋データ
+    headers = %w[id 名前 メールアドレス ステータス 現在進行カテゴリ 受講日 ログイン率]
     table_values = [headers] + rows.map do |r|
       [
         r['id'],
-        hyperlink_name(r['id'], r['name']), # ← 名前をリンク化
+        hyperlink_name(r['id'], r['name']), # リンク付き名前
         r['email'],
-        r['status']
+        r['status'],
+        r['current_category'] || '',
+        r['course_join_date'] || '',
+        r['course_login_rate'].nil? ? '' : r['course_login_rate'] # 例: 73.7（%表示はシート側の表示形式で）
       ]
     end
 
-    table_range = Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!A3", values: table_values)
+    table_range = Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!B3", values: table_values)
     service.update_spreadsheet_value(
-      spreadsheet_id, "#{sheet_name}!A3", table_range, value_input_option: 'USER_ENTERED'
+      spreadsheet_id, "#{sheet_name}!B3", table_range, value_input_option: 'USER_ENTERED'
     )
 
     Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{rows.size} rows to sheet #{sheet_name} (with timestamp)")
@@ -362,6 +383,31 @@ class OnclassStudentsDataWorker
     resp = conn.get("/v1/enterprise_manager/users/#{student_id}/learning_course", params, headers)
     json = JSON.parse(resp.body) rescue {}
     json['data'] || json
+  end
+
+  # 現在進行カテゴリ名を求める
+  # 1) 最後に true の次のカテゴリ名
+  # 2) 全て true → 「全て完了」
+  # 3) true が一つも無い → 先頭（配列順）を返す
+  def current_category_name(detail)
+    cats = Array(detail&.dig('course_categories'))
+    return nil if cats.empty?
+
+    # Rubyの真偽値をしっかり見る（nil/false以外はtrue扱いしない）
+    bool = ->(v) { v == true }
+
+    # 最後の true のインデックス
+    last_true_idx = cats.rindex { |c| bool.call(c['is_completed']) }
+
+    if last_true_idx.nil?
+      # true が一つも無い → 先頭の false を優先、無ければ先頭
+      first_false = cats.find { |c| !bool.call(c['is_completed']) }
+      return (first_false || cats.first)['name']
+    end
+
+    # “最後の true” の後ろで最初の false
+    nxt_false = cats[(last_true_idx + 1)..]&.find { |c| !bool.call(c['is_completed']) }
+    nxt_false ? nxt_false['name'] : '全て完了'
   end
 
 end
