@@ -12,3 +12,10 @@ onclass_pdca_every:
   queue: onclass_comunity_pdca_students
   tz: "Asia/Tokyo"
   description: "コミュニティ機能毎日のPDCA通知(7~23時に2時間おきに実行)"
+
+onclass_students_data:
+  class: "OnclassStudentsDataWorker"
+  cron: "0 7-23/2 * * *"   # 07,09,11,13,15,17,19,21,23
+  queue: onclass_students_data
+  tz: "Asia/Tokyo"
+  description: "オンクラス受講生データ同期"

@@ -4,7 +4,7 @@ require 'csv'
 
 class OnclassStudentsDataWorker
   include Sidekiq::Worker
-  sidekiq_options queue: 'onclass', retry: 3
+  sidekiq_options queue: 'onclass_students_data', retry: 3
 
   require 'google/apis/sheets_v4'
   require 'googleauth'
@@ -281,18 +281,32 @@ class OnclassStudentsDataWorker
     service.batch_update_spreadsheet(spreadsheet_id, batch)
   end
 
-  def upload_to_gsheets!(rows:, spreadsheet_id:, sheet_name:)
-    headers = %w[id name email last_sign_in_at course_name course_start_at course_progress status]
-    values = [headers] + rows.map { |r| headers.map { |h| r[h] } }
+  def hyperlink_name(id, name)
+    return name.to_s if id.to_s.strip.empty?
+    label = name.to_s.gsub('"', '""') # ダブルクォートエスケープ
+    url   = "https://manager.the-online-class.com/accounts/#{id}"
+    %Q(=HYPERLINK("#{url}","#{label}"))
+  end
 
+  # 置き換え: スプレッドシート書き込み（列を id, name(link), email, status のみに）
+  def upload_to_gsheets!(rows:, spreadsheet_id:, sheet_name:)
+    headers = %w[id name email status]
+
+    # A:Z 全消しでも問題ないですが、列が減ったので A:D にクリアを縮めてもOK
     service = build_sheets_service
     ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
-
-    # 既存データをクリア
     clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
     service.clear_values(spreadsheet_id, "#{sheet_name}!A:Z", clear_req)
 
-    # 一括書き込み
+    values = [headers] + rows.map do |r|
+      [
+        r['id'],
+        hyperlink_name(r['id'], r['name']), # ← ここがリンクになる
+        r['email'],
+        r['status']
+      ]
+    end
+
     value_range = Google::Apis::SheetsV4::ValueRange.new(
       range: "#{sheet_name}!A1",
       values: values
@@ -301,7 +315,7 @@ class OnclassStudentsDataWorker
       spreadsheet_id,
       "#{sheet_name}!A1",
       value_range,
-      value_input_option: 'RAW'
+      value_input_option: 'USER_ENTERED' # ← 重要：式として評価させる
     )
 
     Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{values.size - 1} rows to sheet #{sheet_name}")
