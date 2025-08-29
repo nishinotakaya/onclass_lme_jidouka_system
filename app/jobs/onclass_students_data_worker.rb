@@ -113,6 +113,7 @@ class OnclassStudentsDataWorker
     combined_rows.each do |r|
       d = details_by_id[r['id']] || {}
       r['current_category']  = current_category_name(d) || ''
+      r['current_block']     = current_block_name(d) || ''
       r['course_join_date']  = d['course_join_date']     # 例: "2025-07-31"
       r['course_login_rate'] = d['course_login_rate']    # 例: 73.7
     end
@@ -340,18 +341,19 @@ class OnclassStudentsDataWorker
     )
 
     # A3: 表ヘッダ＋データ
-    headers = %w[id 名前 メールアドレス ステータス 現在進行カテゴリ 受講日 ログイン率]
+    headers = %w[id 名前 メールアドレス ステータス 現在進行カテゴリ 現在進行ブロック 受講日 ログイン率]
     table_values = [headers] + rows.map do |r|
-      [
-        r['id'],
-        hyperlink_name(r['id'], r['name']), # リンク付き名前
-        r['email'],
-        r['status'],
-        r['current_category'] || '',
-        r['course_join_date'] || '',
-        r['course_login_rate'].nil? ? '' : r['course_login_rate'] # 例: 73.7（%表示はシート側の表示形式で）
-      ]
-    end
+    [
+      r['id'],
+      hyperlink_name(r['id'], r['name']),
+      r['email'],
+      r['status'],
+      r['current_category'] || '',
+      r['current_block']    || '',
+      r['course_join_date'] || '',
+      r['course_login_rate'].nil? ? '' : r['course_login_rate']
+    ]
+  end
 
     table_range = Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!B3", values: table_values)
     service.update_spreadsheet_value(
@@ -385,29 +387,42 @@ class OnclassStudentsDataWorker
     json['data'] || json
   end
 
-  # 現在進行カテゴリ名を求める
-  # 1) 最後に true の次のカテゴリ名
-  # 2) 全て true → 「全て完了」
-  # 3) true が一つも無い → 先頭（配列順）を返す
-  def current_category_name(detail)
+  # 進行中の親カテゴリ（オブジェクト）を返す
+  # - 最後の true の“次”を採用
+  # - 全て true → nil（=全完了）
+  # - true が一つも無い → 先頭の false、なければ先頭
+  def current_category_object(detail)
     cats = Array(detail&.dig('course_categories'))
     return nil if cats.empty?
 
-    # Rubyの真偽値をしっかり見る（nil/false以外はtrue扱いしない）
     bool = ->(v) { v == true }
-
-    # 最後の true のインデックス
     last_true_idx = cats.rindex { |c| bool.call(c['is_completed']) }
 
     if last_true_idx.nil?
-      # true が一つも無い → 先頭の false を優先、無ければ先頭
-      first_false = cats.find { |c| !bool.call(c['is_completed']) }
-      return (first_false || cats.first)['name']
+      cats.find { |c| !bool.call(c['is_completed']) } || cats.first
+    else
+      cats[last_true_idx + 1]
     end
-
-    # “最後の true” の後ろで最初の false
-    nxt_false = cats[(last_true_idx + 1)..]&.find { |c| !bool.call(c['is_completed']) }
-    nxt_false ? nxt_false['name'] : '全て完了'
   end
+
+  # 既存の名前関数はオブジェクト版を使って実装
+  def current_category_name(detail)
+    cat = current_category_object(detail)
+    cat ? cat['name'] : '全て完了'
+  end
+
+  # 親カテゴリの“子”ブロック（最初の未完了）の名前を返す
+  def current_block_name(detail)
+    cat = current_category_object(detail)
+    return '' unless cat
+
+    blocks = Array(cat['category_blocks'])
+    return '' if blocks.empty?
+
+    bool = ->(v) { v == true }
+    blk  = blocks.find { |b| !bool.call(b['is_completed']) } || blocks.first
+    blk['name'].to_s
+  end
+
 
 end
