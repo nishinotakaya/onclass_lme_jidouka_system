@@ -182,6 +182,7 @@ class OnclassStudentsDataWorker
           'course_name'      => course_name,
           'course_start_at'  => u['course_start_at'] || u.dig('learning_course', 'start_at'),
           'course_progress'  => u['course_progress'],
+          'latest_login_at'  => fetch_latest_login_at(conn, headers, u['id']),
           'status'           => jp_label # 右端に日本語ステータス
         }
       end
@@ -319,48 +320,79 @@ class OnclassStudentsDataWorker
     %Q(=HYPERLINK("#{url}","#{label}"))
   end
 
-  # 追加: 日本時間の更新日時文字列を返す
+  # 日本時間の更新日時文字列を返す
   def jp_timestamp
     Time.now.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日 %H時 %M分')
   end
 
-  # スプレッドシート書き込み（A1に更新日時、A2空行、A3から表）
+  # "2025-08-29T09:46:40.915+09:00" → "2025年8月29日"
+  def to_jp_ymd(str)
+    return '' if str.blank?
+    t = (Time.zone.parse(str.to_s) rescue Time.parse(str.to_s) rescue nil)
+    return '' unless t
+    t.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日')
+  end
+
+  # "2025-08-29T09:46:40.915+09:00" → "2025年8月29日 09時46分"
+  def to_jp_ymdhm(str)
+    return '' if str.blank?
+    t = (Time.zone.parse(str.to_s) rescue Time.parse(str.to_s) rescue nil)
+    return '' unless t
+    t.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日 %H時%M分')
+  end
+
+  # スプレッドシート書き込み
   def upload_to_gsheets!(rows:, spreadsheet_id:, sheet_name:)
     service = build_sheets_service
     ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
 
-    # 全クリア
+    # 既存のメイン表だけクリア（PDCAのL列以降は消さない）
     clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
-    service.clear_values(spreadsheet_id, "#{sheet_name}!A:Z", clear_req)
+    service.clear_values(spreadsheet_id, "#{sheet_name}!B3:J", clear_req)
 
-    # A1: 更新日時（A2は空行）
+    # 更新日時
     meta_values = [['更新日時', jp_timestamp]]
     meta_range  = Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!B2", values: meta_values)
     service.update_spreadsheet_value(
       spreadsheet_id, "#{sheet_name}!B2", meta_range, value_input_option: 'USER_ENTERED'
     )
 
-    # A3: 表ヘッダ＋データ
-    headers = %w[id 名前 メールアドレス ステータス 現在進行カテゴリ 現在進行ブロック 受講日 ログイン率]
-    table_values = [headers] + rows.map do |r|
-    [
-      r['id'],
-      hyperlink_name(r['id'], r['name']),
-      r['email'],
-      r['status'],
-      r['current_category'] || '',
-      r['current_block']    || '',
-      r['course_join_date'] || '',
-      r['course_login_rate'].nil? ? '' : r['course_login_rate']
-    ]
-  end
-
-    table_range = Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!B3", values: table_values)
+    # 見出し（B3:J3 の1行だけ）
+    headers = %w[id 名前 メールアドレス ステータス 現在進行カテゴリ 現在進行ブロック 受講日 ログイン率 最新ログイン日]
+    header_range  = "#{sheet_name}!B3:J3"
+    header_values = [headers]
     service.update_spreadsheet_value(
-      spreadsheet_id, "#{sheet_name}!B3", table_range, value_input_option: 'USER_ENTERED'
+      spreadsheet_id,
+      header_range,
+      Google::Apis::SheetsV4::ValueRange.new(range: header_range, values: header_values),
+      value_input_option: 'USER_ENTERED'
     )
 
-    Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{rows.size} rows to sheet #{sheet_name} (with timestamp)")
+    # データは B4 から連続で流し込み（ヘッダーは含めない）
+    data_values = rows.map do |r|
+      [
+        r['id'],
+        hyperlink_name(r['id'], r['name']),
+        r['email'],
+        r['status'],
+        r['current_category']  || '',
+        r['current_block']     || '',
+        r['course_join_date'],
+        (r['course_login_rate'].nil? ? '' : r['course_login_rate']),
+        to_jp_ymdhm(r['latest_login_at']) || ''
+      ]
+    end
+
+    unless data_values.empty?
+      data_range = "#{sheet_name}!B4"
+      service.update_spreadsheet_value(
+        spreadsheet_id,
+        data_range,
+        Google::Apis::SheetsV4::ValueRange.new(range: data_range, values: data_values),
+        value_input_option: 'USER_ENTERED'
+      )
+    end
+    Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{rows.size} rows to sheet #{sheet_name} (header once, sorted by course_join_date desc)")
   end
 
   def load_and_merge_csvs(csv_paths)
@@ -371,7 +403,7 @@ class OnclassStudentsDataWorker
         rows << headers.index_with { |h| row[h] }
       end
     end
-    # 重複除去したい場合は id+status などでユニーク化:
+    # 重複除去（idとstatusでユニークにする）
     rows.uniq { |r| [r['id'], r['status']] }
   end
 
@@ -424,5 +456,16 @@ class OnclassStudentsDataWorker
     blk['name'].to_s
   end
 
+  # 最新ログイン日時を1件取得
+  def fetch_latest_login_at(conn, headers, user_id)
+    resp = conn.get("/v1/enterprise_manager/users/#{user_id}/logins", { page: 1 }, headers)
+    json = JSON.parse(resp.body) rescue {}
+    list = json['data'] || json['logins'] || json['records'] || []
+    first = list.is_a?(Array) ? list.first : nil
+    first && first['created_at']
+  rescue Faraday::Error => e
+    Rails.logger.warn("[OnclassStudentsDataWorker] fetch_latest_login_at error for #{user_id}: #{e.class} #{e.message}")
+    nil
+  end
 
 end
