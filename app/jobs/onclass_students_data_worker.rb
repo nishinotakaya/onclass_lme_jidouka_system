@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'csv'
+require 'date'
 
 class OnclassStudentsDataWorker
   include Sidekiq::Worker
@@ -117,6 +118,12 @@ class OnclassStudentsDataWorker
       r['course_join_date']  = d['course_join_date']     # 例: "2025-07-31"
       r['course_login_rate'] = d['course_login_rate']    # 例: 73.7
     end
+
+    combined_rows.sort_by! do |r|
+      (Date.parse(r['course_join_date'].to_s) rescue Date.new(1900,1,1))
+    end
+    combined_rows.reverse!  # 新しい順
+
 
     upload_to_gsheets!(
       rows: combined_rows,
@@ -346,30 +353,39 @@ class OnclassStudentsDataWorker
     service = build_sheets_service
     ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
 
-    # 既存のメイン表だけクリア（PDCAのL列以降は消さない）
+    # --- 1) 2行目の古いヘッダー痕跡を完全クリア ---
     clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
-    service.clear_values(spreadsheet_id, "#{sheet_name}!B3:J", clear_req)
+    service.clear_values(spreadsheet_id, "#{sheet_name}!B2:J2", clear_req) # ← 2行目のB..Jを空に
+    service.clear_values(spreadsheet_id, "#{sheet_name}!B3:J",  clear_req) # ← 表本体もクリア（PDCA列は触らない）
 
-    # 更新日時
-    meta_values = [['更新日時', jp_timestamp]]
-    meta_range  = Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!B2", values: meta_values)
-    service.update_spreadsheet_value(
-      spreadsheet_id, "#{sheet_name}!B2", meta_range, value_input_option: 'USER_ENTERED'
-    )
-
-    # 見出し（B3:J3 の1行だけ）
-    headers = %w[id 名前 メールアドレス ステータス 現在進行カテゴリ 現在進行ブロック 受講日 ログイン率 最新ログイン日]
-    header_range  = "#{sheet_name}!B3:J3"
-    header_values = [headers]
+    # --- 2) B2 に「更新日時」「値」だけ入れる（C2..J2は空で上書き）---
+    meta_row = ['更新日時', jp_timestamp] + Array.new(7, '') # 合計9セル(B..J)
+    meta_range = "#{sheet_name}!B2:J2"
     service.update_spreadsheet_value(
       spreadsheet_id,
-      header_range,
-      Google::Apis::SheetsV4::ValueRange.new(range: header_range, values: header_values),
+      meta_range,
+      Google::Apis::SheetsV4::ValueRange.new(range: meta_range, values: [meta_row]),
       value_input_option: 'USER_ENTERED'
     )
 
-    # データは B4 から連続で流し込み（ヘッダーは含めない）
-    data_values = rows.map do |r|
+    # --- 3) 見出しは B3:J3 に1回だけ ---
+    headers = %w[id 名前 メールアドレス ステータス 現在進行カテゴリ 現在進行ブロック 受講日 ログイン率 最新ログイン日]
+    header_range = "#{sheet_name}!B3:J3"
+    service.update_spreadsheet_value(
+      spreadsheet_id,
+      header_range,
+      Google::Apis::SheetsV4::ValueRange.new(range: header_range, values: [headers]),
+      value_input_option: 'USER_ENTERED'
+    )
+
+    sanitized_rows = rows.reject do |r|
+      id    = r['id'].to_s.strip
+      name  = r['name'].to_s.strip
+      email = r['email'].to_s.strip
+      id.casecmp('id').zero? || name == '名前' || email == 'メールアドレス'
+    end
+
+    data_values = sanitized_rows.map do |r|
       [
         r['id'],
         hyperlink_name(r['id'], r['name']),
@@ -383,7 +399,7 @@ class OnclassStudentsDataWorker
       ]
     end
 
-    unless data_values.empty?
+    if data_values.any?
       data_range = "#{sheet_name}!B4"
       service.update_spreadsheet_value(
         spreadsheet_id,
@@ -392,7 +408,8 @@ class OnclassStudentsDataWorker
         value_input_option: 'USER_ENTERED'
       )
     end
-    Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{rows.size} rows to sheet #{sheet_name} (header once, sorted by course_join_date desc)")
+
+    Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{sanitized_rows.size} rows (header single row; B2:J2 cleaned).")
   end
 
   def load_and_merge_csvs(csv_paths)
