@@ -2,7 +2,6 @@
 class OnclassMentionsWorker
   include Sidekiq::Worker
   sidekiq_options queue: :onclass_comunity_Mentions, retry: 3
-
   TARGET_CHANNEL_ID = ENV.fetch("ONCLASS_CHANNEL_ID", "oyIDI6g2Y").freeze
   MANAGER_COMMUNITY_URL = "https://manager.the-online-class.com/community".freeze
 

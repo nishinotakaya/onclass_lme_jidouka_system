@@ -82,7 +82,7 @@ USE jobcan_development;
 
 ```::ターミナル
 docker-compose exec api bash
-
+bundle exec rails c
 # gemのエラーが出て再度bundle installしたい時
 docker-compose run --no-deps --entrypoint bash web
 
