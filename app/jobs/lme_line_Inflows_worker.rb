@@ -17,7 +17,7 @@ class LmeLineInflowsWorker
 
   # ==== Entry point ==========================================================
   # start_date/end_date: "YYYY-MM-DD"
-  # 省略時: 当年1/1〜本日（JST）
+  # 省略時: ENV['LME_DEFAULT_START_DATE'](既定 "2025-01-01") 〜 本日（JST）
   def perform(start_date = nil, end_date = nil)
     Time.zone = 'Asia/Tokyo'
 
@@ -25,7 +25,7 @@ class LmeLineInflowsWorker
     LmeSessionWarmupWorker.new.perform
     auth = LmeAuthClient.new
 
-    start_on = (start_date.presence || Time.zone.today.beginning_of_year.to_s)
+    start_on = (start_date.presence || default_start_on)
     end_on   = (end_date.presence   || Time.zone.today.to_s)
 
     # LME接続（ベースヘッダは LmeAuthClient で付与）
@@ -243,8 +243,8 @@ class LmeLineInflowsWorker
       value_input_option: 'USER_ENTERED'
     )
 
-    # ヘッダー（B3:J3）
-    headers = %w[日付 追加時刻 流入元 line_user_id 名前 LINE_ID ブロック?]
+    # ヘッダー（B3:）
+    headers = %w[追加時刻 流入元 line_user_id 名前 LINE_ID ブロック?]
     header_range = "#{sheet_name}!B3:#{a1_col(1 + headers.size)}3"
     service.update_spreadsheet_value(
       spreadsheet_id,
@@ -263,7 +263,6 @@ class LmeLineInflowsWorker
 
     data_values = sorted.map do |r|
       [
-        r['date'],
         to_jp_ymdhm(r['followed_at']),
         r['landing_name'],
         r['line_user_id'],
@@ -323,5 +322,15 @@ class LmeLineInflowsWorker
       return v if k == key
     end
     nil
+  end
+
+  private
+
+  # デフォルト開始日（ENV優先、なければ 2025-01-01）
+  def default_start_on
+    raw = ENV['LME_DEFAULT_START_DATE'].presence || '2025-01-01'
+    Date.parse(raw).strftime('%F')
+  rescue
+    '2025-01-01'
   end
 end
