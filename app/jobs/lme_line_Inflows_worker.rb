@@ -3,6 +3,8 @@
 
 require 'json'
 require 'cgi'
+require 'uri'
+require 'set'
 require 'faraday'
 require 'active_support'
 require 'active_support/core_ext'
@@ -15,9 +17,17 @@ class LmeLineInflowsWorker
 
   GOOGLE_SCOPE = [Google::Apis::SheetsV4::AUTH_SPREADSHEETS].freeze
 
+  PROAKA_CATEGORY_ID = 5_180_568
+  PROAKA_TAGS = {
+    v1: 1_394_734, # プロアカ_動画① -> J
+    v2: 1_394_736, # プロアカ_動画② -> K
+    v3: 1_394_737, # プロアカ_動画③ -> M
+    v4: 1_394_738  # プロアカ_動画④ -> O
+  }.freeze
+
   # ==== Entry point ==========================================================
   # start_date/end_date: "YYYY-MM-DD"
-  # 省略時: ENV['LME_DEFAULT_START_DATE'](既定 "2025-01-01") 〜 本日（JST）
+  # 省略時: ENV['LME_DEFAULT_START_DATE'] (既定 "2025-01-01") 〜 本日（JST）
   def perform(start_date = nil, end_date = nil)
     Time.zone = 'Asia/Tokyo'
 
@@ -78,6 +88,9 @@ class LmeLineInflowsWorker
     # 3) 重複除去（line_user_id + followed_at）
     rows.uniq! { |r| [r['line_user_id'], r['followed_at']] }
 
+    # 3.5) 各 line_user_id ごとに「プロアカ動画タグ」有無を取得（キャッシュ）
+    tags_cache = build_proaka_tags_cache(conn, rows.map { |r| r['line_user_id'] }.compact.uniq, auth: auth)
+
     # 4) スプレッドシートへ書き込み（アンカー「受講生自動化」の隣）
     spreadsheet_id = ENV.fetch('ONCLASS_SPREADSHEET_ID')
     sheet_name     = ENV.fetch('LME_SHEET_NAME', 'Line流入者')
@@ -85,7 +98,13 @@ class LmeLineInflowsWorker
 
     service = build_sheets_service
     ensure_sheet_exists_adjacent!(service, spreadsheet_id, sheet_name, anchor_name)
-    upload_to_gsheets!(service: service, rows: rows, spreadsheet_id: spreadsheet_id, sheet_name: sheet_name)
+    upload_to_gsheets!(
+      service: service,
+      rows: rows,
+      spreadsheet_id: spreadsheet_id,
+      sheet_name: sheet_name,
+      tags_cache: tags_cache
+    )
 
     Rails.logger.info("[LmeLineInflowsWorker] wrote #{rows.size} rows to #{sheet_name}")
     { count: rows.size, sheet: sheet_name, range: [start_on, end_on] }
@@ -140,6 +159,37 @@ class LmeLineInflowsWorker
     json = safe_json(resp.body)
     rv = json['result'] || json['data'] || json
     rv.is_a?(Array) ? rv : Array(rv)
+  end
+
+  # タグ一覧（ユーザー単位）
+  # POST /basic/chat/get-categories-tags (x-www-form-urlencoded)
+  def fetch_user_categories_tags(conn, line_user_id, auth: nil, bot_id: nil, is_all_tag: 0)
+    if auth
+      conn.headers['Cookie'] = auth.cookie
+      if (xsrf = extract_cookie(auth.cookie, 'XSRF-TOKEN'))
+        conn.headers['X-XSRF-TOKEN'] = CGI.unescape(xsrf)
+      end
+    end
+
+    bot_id ||= (ENV['LME_BOT_ID'].presence || '17106').to_s
+    form = URI.encode_www_form(
+      line_user_id: line_user_id,
+      is_all_tag: is_all_tag,
+      botIdCurrent: bot_id
+    )
+
+    resp = conn.post('/basic/chat/get-categories-tags') do |req|
+      req.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
+      req.body = form
+    end
+
+    auth&.refresh_from_response_cookies!(resp.headers)
+
+    json = safe_json(resp.body)
+    json['data'].is_a?(Array) ? json['data'] : []
+  rescue => e
+    Rails.logger.warn("[LME] fetch_user_categories_tags error for #{line_user_id}: #{e.class} #{e.message}")
+    []
   end
 
   def safe_json(str)
@@ -227,8 +277,10 @@ class LmeLineInflowsWorker
     service.batch_update_spreadsheet(spreadsheet_id, batch)
   end
 
-  def upload_to_gsheets!(service:, rows:, spreadsheet_id:, sheet_name:)
-    # クリア（ヘッダ重複を避ける）
+  # === 更新（クリア→全書き） + タグ列 (J/K/M/O) ===========================
+
+  def upload_to_gsheets!(service:, rows:, spreadsheet_id:, sheet_name:, tags_cache:)
+    # クリア
     clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
     service.clear_values(spreadsheet_id, "#{sheet_name}!B2:Z", clear_req)
     service.clear_values(spreadsheet_id, "#{sheet_name}!B3:Z", clear_req)
@@ -243,9 +295,11 @@ class LmeLineInflowsWorker
       value_input_option: 'USER_ENTERED'
     )
 
-    # ヘッダー（B3:）
-    headers = %w[追加時刻 流入元 line_user_id 名前 LINE_ID ブロック?]
-    header_range = "#{sheet_name}!B3:#{a1_col(1 + headers.size)}3"
+    # ヘッダー（B..O）
+    # B:追加時刻, C:流入元, D:line_user_id, E:名前, F:LINE_ID, G:ブロック?
+    # H:空, I:空, J:プロアカ_動画①, K:プロアカ_動画②, L:空, M:プロアカ_動画③, N:空, O:プロアカ_動画④
+    headers = ['追加時刻', '流入元', 'line_user_id', '名前', 'LINE_ID', 'ブロック?', '', '', 'プロアカ_動画①', 'プロアカ_動画②', '', 'プロアカ_動画③', '', 'プロアカ_動画④']
+    header_range = "#{sheet_name}!B3:#{a1_col(1 + headers.size)}3" # -> O列まで
     service.update_spreadsheet_value(
       spreadsheet_id,
       header_range,
@@ -261,14 +315,24 @@ class LmeLineInflowsWorker
       ]
     end.reverse
 
+    # データ（B..O の 14 列ぶん）
     data_values = sorted.map do |r|
+      t = tags_cache[r['line_user_id']] || {}
       [
-        to_jp_ymdhm(r['followed_at']),
-        r['landing_name'],
-        r['line_user_id'],
-        hyperlink_line_user(r['line_user_id'], r['name']),
-        r['line_id'],
-        r['is_blocked'].to_i
+        to_jp_ymdhm(r['followed_at']), # B
+        r['landing_name'],            # C
+        r['line_user_id'],            # D
+        hyperlink_line_user(r['line_user_id'], r['name']), # E
+        r['line_id'],                 # F
+        r['is_blocked'].to_i,         # G
+        '',                           # H
+        '',                           # I
+        (t[:v1] ? '1' : ''),          # J: 動画①
+        (t[:v2] ? '1' : ''),          # K: 動画②
+        '',                           # L
+        (t[:v3] ? '1' : ''),          # M: 動画③
+        '',                           # N
+        (t[:v4] ? '1' : '')           # O: 動画④
       ]
     end
 
@@ -284,6 +348,35 @@ class LmeLineInflowsWorker
   end
 
   # ==== Helpers =============================================================
+
+  # line_user_id 一覧に対して、プロアカ動画タグの有無をまとめて取得
+  def build_proaka_tags_cache(conn, line_user_ids, auth:)
+    bot_id = (ENV['LME_BOT_ID'].presence || '17106').to_s
+    cache = {}
+
+    line_user_ids.each do |uid|
+      cats = fetch_user_categories_tags(conn, uid, auth: auth, bot_id: bot_id)
+      cache[uid] = proaka_flags_from_categories(cats)
+    end
+
+    cache
+  end
+
+  # categories(JSON) から、プロアカ動画①〜④の有無を抽出
+  def proaka_flags_from_categories(categories)
+    target = Array(categories).find { |c| (c['id'] || c[:id]).to_i == PROAKA_CATEGORY_ID }
+    return { v1: false, v2: false, v3: false, v4: false } unless target
+
+    tag_list = Array(target['tags'] || target[:tags])
+    tag_ids  = tag_list.map { |t| (t['tag_id'] || t[:tag_id]).to_i }.to_set
+
+    {
+      v1: tag_ids.include?(PROAKA_TAGS[:v1]),
+      v2: tag_ids.include?(PROAKA_TAGS[:v2]),
+      v3: tag_ids.include?(PROAKA_TAGS[:v3]),
+      v4: tag_ids.include?(PROAKA_TAGS[:v4])
+    }
+  end
 
   def hyperlink_line_user(id, name)
     return name.to_s if id.to_s.strip.empty?
