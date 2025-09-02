@@ -18,11 +18,20 @@ class LmeLineInflowsWorker
   GOOGLE_SCOPE = [Google::Apis::SheetsV4::AUTH_SPREADSHEETS].freeze
 
   PROAKA_CATEGORY_ID = 5_180_568
+
+  # メイン動画タグ（ID固定で拾う想定。必要なら名前でもフォールバック可能）
   PROAKA_TAGS = {
-    v1: 1_394_734, # プロアカ_動画① -> J
-    v2: 1_394_736, # プロアカ_動画② -> K
-    v3: 1_394_737, # プロアカ_動画③ -> M
-    v4: 1_394_738  # プロアカ_動画④ -> O
+    v1: 1_394_734, # プロアカ_動画①
+    v2: 1_394_736, # プロアカ_動画②
+    v3: 1_394_737, # プロアカ_動画③
+    v4: 1_394_738  # プロアカ_動画④
+  }.freeze
+
+  # ダイジェストは “名前一致” 優先（IDは環境差が出やすい）
+  PROAKA_DIGEST_NAMES = {
+    dv1: '動画①_ダイジェスト',
+    dv2: '動画②_ダイジェスト',
+    dv3: '動画③_ダイジェスト'
   }.freeze
 
   # ==== Entry point ==========================================================
@@ -31,7 +40,7 @@ class LmeLineInflowsWorker
   def perform(start_date = nil, end_date = nil)
     Time.zone = 'Asia/Tokyo'
 
-    # Redisにcookieがあり有効かをウォームアップ（無ければ例外）
+    # cookie のウォームアップ（Redisに有効なCookieが無いと例外）
     LmeSessionWarmupWorker.new.perform
     auth = LmeAuthClient.new
 
@@ -47,9 +56,7 @@ class LmeLineInflowsWorker
     days =
       case overview
       when Hash
-        overview.each_with_object([]) do |(date, stats), acc|
-          acc << date if stats.to_h['followed'].to_i > 0
-        end.sort
+        overview.each_with_object([]) { |(date, stats), acc| acc << date if stats.to_h['followed'].to_i > 0 }.sort
       when Array
         overview.filter_map { |row|
           next unless row.is_a?(Hash)
@@ -63,22 +70,21 @@ class LmeLineInflowsWorker
 
     # 2) 増加があった日の詳細を深掘り
     rows = []
-    days.each do |date|   # date は "YYYY-MM-DD"
+    days.each do |date|   # "YYYY-MM-DD"
       next if date.blank?
 
-      detail = fetch_day_details(conn, date, auth: auth) # Arrayを返す前提
+      detail = fetch_day_details(conn, date, auth: auth) # Array
       Array(detail).each do |r|
         rec = r.respond_to?(:with_indifferent_access) ? r.with_indifferent_access : r
         lu  = (rec['line_user'] || {})
         lu  = lu.with_indifferent_access if lu.respond_to?(:with_indifferent_access)
 
-        line_user_id = rec['line_user_id']
         rows << {
           'date'         => date,
           'followed_at'  => rec['followed_at'],
           'landing_name' => rec['landing_name'],
           'name'         => lu['name'],
-          'line_user_id' => line_user_id,
+          'line_user_id' => rec['line_user_id'],
           'line_id'      => lu['line_id'],
           'is_blocked'   => (rec['is_blocked'] || 0).to_i
         }
@@ -88,7 +94,7 @@ class LmeLineInflowsWorker
     # 3) 重複除去（line_user_id + followed_at）
     rows.uniq! { |r| [r['line_user_id'], r['followed_at']] }
 
-    # 3.5) 各 line_user_id ごとに「プロアカ動画タグ」有無を取得（キャッシュ）
+    # 3.5) 各 line_user_id ごとに「プロアカ動画タグ + ダイジェスト」有無を取得（キャッシュ）
     tags_cache = build_proaka_tags_cache(conn, rows.map { |r| r['line_user_id'] }.compact.uniq, auth: auth)
 
     # 4) スプレッドシートへ書き込み（アンカー「受講生自動化」の隣）
@@ -121,7 +127,6 @@ class LmeLineInflowsWorker
   # 期間サマリ
   # POST /ajax/init-data-history-add-friend
   def fetch_friend_overview(conn, start_on, end_on, auth: nil)
-    # 毎回、最新CookieとXSRFを反映
     if auth
       conn.headers['Cookie'] = auth.cookie
       if (xsrf = extract_cookie(auth.cookie, 'XSRF-TOKEN'))
@@ -131,8 +136,6 @@ class LmeLineInflowsWorker
 
     body = { data: { start: start_on, end: end_on }.to_json }
     resp = conn.post('/ajax/init-data-history-add-friend', body.to_json)
-
-    # Set-Cookie 取り込み
     auth&.refresh_from_response_cookies!(resp.headers)
 
     json = safe_json(resp.body)
@@ -153,7 +156,6 @@ class LmeLineInflowsWorker
 
     body = { date: ymd, tab: 1 }
     resp = conn.post('/ajax/init-data-history-add-friend-by-date', body.to_json)
-
     auth&.refresh_from_response_cookies!(resp.headers)
 
     json = safe_json(resp.body)
@@ -182,7 +184,6 @@ class LmeLineInflowsWorker
       req.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
       req.body = form
     end
-
     auth&.refresh_from_response_cookies!(resp.headers)
 
     json = safe_json(resp.body)
@@ -192,9 +193,7 @@ class LmeLineInflowsWorker
     []
   end
 
-  def safe_json(str)
-    JSON.parse(str) rescue {}
-  end
+  def safe_json(str) JSON.parse(str) rescue {} end
 
   # ==== Google Sheets =======================================================
 
@@ -277,7 +276,7 @@ class LmeLineInflowsWorker
     service.batch_update_spreadsheet(spreadsheet_id, batch)
   end
 
-  # === 更新（クリア→全書き） + タグ列 (J/K/M/O) ===========================
+  # === 更新（クリア→全書き） + タグ列 (H/I, J/K, L/M, N/O) =================
 
   def upload_to_gsheets!(service:, rows:, spreadsheet_id:, sheet_name:, tags_cache:)
     # クリア
@@ -297,8 +296,17 @@ class LmeLineInflowsWorker
 
     # ヘッダー（B..O）
     # B:追加時刻, C:流入元, D:line_user_id, E:名前, F:LINE_ID, G:ブロック?
-    # H:空, I:空, J:プロアカ_動画①, K:プロアカ_動画②, L:空, M:プロアカ_動画③, N:空, O:プロアカ_動画④
-    headers = ['追加時刻', '流入元', 'line_user_id', '名前', 'LINE_ID', 'ブロック?', '', 'プロアカ_動画①', '', 'プロアカ_動画②', '', 'プロアカ_動画③', '', 'プロアカ_動画④']
+    # H:動画①_ダイジェスト, I:プロアカ_動画①,
+    # J:動画②_ダイジェスト, K:プロアカ_動画②,
+    # L:動画③_ダイジェスト, M:プロアカ_動画③,
+    # N:(予備), O:プロアカ_動画④
+    headers = [
+      '追加時刻', '流入元', 'line_user_id', '名前', 'LINE_ID', 'ブロック?',
+      '動画①_ダイジェスト', 'プロアカ_動画①',
+      '動画②_ダイジェスト', 'プロアカ_動画②',
+      '動画③_ダイジェスト', 'プロアカ_動画③',
+      '', 'プロアカ_動画④'
+    ]
     header_range = "#{sheet_name}!B3:#{a1_col(1 + headers.size)}3" # -> O列まで
     service.update_spreadsheet_value(
       spreadsheet_id,
@@ -309,10 +317,7 @@ class LmeLineInflowsWorker
 
     # 並び替え: 日付 + 追加時刻 DESC
     sorted = Array(rows).sort_by do |r|
-      [
-        r['date'].to_s,
-        (Time.zone.parse(r['followed_at'].to_s) rescue r['followed_at'].to_s)
-      ]
+      [ r['date'].to_s, (Time.zone.parse(r['followed_at'].to_s) rescue r['followed_at'].to_s) ]
     end.reverse
 
     # データ（B..O の 14 列ぶん）
@@ -325,14 +330,14 @@ class LmeLineInflowsWorker
         hyperlink_line_user(r['line_user_id'], r['name']), # E
         r['line_id'],                 # F
         r['is_blocked'].to_i,         # G
-        '',                           # I
-        (t[:v1] ? 'タグあり' : ''),          # 動画①
-        '',
-        (t[:v2] ? 'タグあり' : ''),          # 動画②
-        '',                           # 
-        (t[:v3] ? 'タグあり' : ''),          # 動画③
-        '',                           # 
-        (t[:v4] ? 'タグあり' : '')           # 動画④
+        (t[:dv1] ? 'タグあり' : ''),   # H: 動画①_ダイジェスト
+        (t[:v1]  ? 'タグあり' : ''),   # I: プロアカ_動画①
+        (t[:dv2] ? 'タグあり' : ''),   # J: 動画②_ダイジェスト
+        (t[:v2]  ? 'タグあり' : ''),   # K: プロアカ_動画②
+        (t[:dv3] ? 'タグあり' : ''),   # L: 動画③_ダイジェスト
+        (t[:v3]  ? 'タグあり' : ''),   # M: プロアカ_動画③
+        '',                           # N: 予備
+        (t[:v4]  ? 'タグあり' : '')    # O: プロアカ_動画④
       ]
     end
 
@@ -349,7 +354,7 @@ class LmeLineInflowsWorker
 
   # ==== Helpers =============================================================
 
-  # line_user_id 一覧に対して、プロアカ動画タグの有無をまとめて取得
+  # line_user_id 一覧に対して、プロアカ動画タグ + ダイジェストの有無をまとめて取得
   def build_proaka_tags_cache(conn, line_user_ids, auth:)
     bot_id = (ENV['LME_BOT_ID'].presence || '17106').to_s
     cache = {}
@@ -362,19 +367,23 @@ class LmeLineInflowsWorker
     cache
   end
 
-  # categories(JSON) から、プロアカ動画①〜④の有無を抽出
+  # categories(JSON) から、プロアカ動画①〜④ + ダイジェスト①〜③の有無を抽出
   def proaka_flags_from_categories(categories)
     target = Array(categories).find { |c| (c['id'] || c[:id]).to_i == PROAKA_CATEGORY_ID }
-    return { v1: false, v2: false, v3: false, v4: false } unless target
+    return { v1: false, v2: false, v3: false, v4: false, dv1: false, dv2: false, dv3: false } unless target
 
-    tag_list = Array(target['tags'] || target[:tags])
-    tag_ids  = tag_list.map { |t| (t['tag_id'] || t[:tag_id]).to_i }.to_set
+    tag_list  = Array(target['tags'] || target[:tags])
+    tag_ids   = tag_list.map  { |t| (t['tag_id'] || t[:tag_id]).to_i }.to_set
+    tag_names = tag_list.map { |t| (t['name']   || t[:name]).to_s }.to_set
 
     {
-      v1: tag_ids.include?(PROAKA_TAGS[:v1]),
-      v2: tag_ids.include?(PROAKA_TAGS[:v2]),
-      v3: tag_ids.include?(PROAKA_TAGS[:v3]),
-      v4: tag_ids.include?(PROAKA_TAGS[:v4])
+      v1:  tag_ids.include?(PROAKA_TAGS[:v1]),
+      v2:  tag_ids.include?(PROAKA_TAGS[:v2]),
+      v3:  tag_ids.include?(PROAKA_TAGS[:v3]),
+      v4:  tag_ids.include?(PROAKA_TAGS[:v4]),
+      dv1: tag_names.include?(PROAKA_DIGEST_NAMES[:dv1]),
+      dv2: tag_names.include?(PROAKA_DIGEST_NAMES[:dv2]),
+      dv3: tag_names.include?(PROAKA_DIGEST_NAMES[:dv3])
     }
   end
 
