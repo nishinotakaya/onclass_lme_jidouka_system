@@ -18,8 +18,9 @@ class LmeLineInflowsWorker
   GOOGLE_SCOPE = [Google::Apis::SheetsV4::AUTH_SPREADSHEETS].freeze
 
   PROAKA_CATEGORY_ID = 5_180_568
+  CUM_SINCE          = ENV['LME_CUM_SINCE'].presence || '2025-07-01' # 累計の起点
 
-  # メイン動画タグ（ID固定で拾う想定。必要なら名前でもフォールバック可能）
+  # メイン動画タグ（ID固定で拾う）
   PROAKA_TAGS = {
     v1: 1_394_734, # プロアカ_動画①
     v2: 1_394_736, # プロアカ_動画②
@@ -27,7 +28,7 @@ class LmeLineInflowsWorker
     v4: 1_394_738  # プロアカ_動画④
   }.freeze
 
-  # ダイジェストは “名前一致” 優先（IDは環境差が出やすい）
+  # ダイジェストは “名前一致” 優先
   PROAKA_DIGEST_NAMES = {
     dv1: '動画①_ダイジェスト',
     dv2: '動画②_ダイジェスト',
@@ -40,19 +41,17 @@ class LmeLineInflowsWorker
   def perform(start_date = nil, end_date = nil)
     Time.zone = 'Asia/Tokyo'
 
-    # cookie のウォームアップ（Redisに有効なCookieが無いと例外）
+    # cookie ウォームアップ（Redisに有効cookieがないと例外）
     LmeSessionWarmupWorker.new.perform
     auth = LmeAuthClient.new
 
     start_on = (start_date.presence || default_start_on)
     end_on   = (end_date.presence   || Time.zone.today.to_s)
 
-    # LME接続（ベースヘッダは LmeAuthClient で付与）
     conn = auth.conn
 
-    # 1) 期間の「友達履歴サマリ」を取得
+    # 1) 期間サマリ → 増加があった日を抽出
     overview = fetch_friend_overview(conn, start_on, end_on, auth: auth)
-
     days =
       case overview
       when Hash
@@ -68,12 +67,11 @@ class LmeLineInflowsWorker
 
     Rails.logger.info("[LME] days_need_detail=#{days.inspect}")
 
-    # 2) 増加があった日の詳細を深掘り
+    # 2) 詳細取得
     rows = []
     days.each do |date|   # "YYYY-MM-DD"
       next if date.blank?
-
-      detail = fetch_day_details(conn, date, auth: auth) # Array
+      detail = fetch_day_details(conn, date, auth: auth)
       Array(detail).each do |r|
         rec = r.respond_to?(:with_indifferent_access) ? r.with_indifferent_access : r
         lu  = (rec['line_user'] || {})
@@ -91,13 +89,13 @@ class LmeLineInflowsWorker
       end
     end
 
-    # 3) 重複除去（line_user_id + followed_at）
+    # 3) 重複除去
     rows.uniq! { |r| [r['line_user_id'], r['followed_at']] }
 
-    # 3.5) 各 line_user_id ごとに「プロアカ動画タグ + ダイジェスト」有無を取得（キャッシュ）
+    # 3.5) タグ有無キャッシュ
     tags_cache = build_proaka_tags_cache(conn, rows.map { |r| r['line_user_id'] }.compact.uniq, auth: auth)
 
-    # 4) スプレッドシートへ書き込み（アンカー「受講生自動化」の隣）
+    # 4) シート更新
     spreadsheet_id = ENV.fetch('ONCLASS_SPREADSHEET_ID')
     sheet_name     = ENV.fetch('LME_SHEET_NAME', 'Line流入者')
     anchor_name    = ENV.fetch('ONCLASS_SHEET_NAME', '受講生自動化')
@@ -109,7 +107,8 @@ class LmeLineInflowsWorker
       rows: rows,
       spreadsheet_id: spreadsheet_id,
       sheet_name: sheet_name,
-      tags_cache: tags_cache
+      tags_cache: tags_cache,
+      end_on: end_on
     )
 
     Rails.logger.info("[LmeLineInflowsWorker] wrote #{rows.size} rows to #{sheet_name}")
@@ -125,7 +124,6 @@ class LmeLineInflowsWorker
   # ==== LME API =============================================================
 
   # 期間サマリ
-  # POST /ajax/init-data-history-add-friend
   def fetch_friend_overview(conn, start_on, end_on, auth: nil)
     if auth
       conn.headers['Cookie'] = auth.cookie
@@ -133,7 +131,6 @@ class LmeLineInflowsWorker
         conn.headers['X-XSRF-TOKEN'] = CGI.unescape(xsrf)
       end
     end
-
     body = { data: { start: start_on, end: end_on }.to_json }
     resp = conn.post('/ajax/init-data-history-add-friend', body.to_json)
     auth&.refresh_from_response_cookies!(resp.headers)
@@ -145,7 +142,6 @@ class LmeLineInflowsWorker
   end
 
   # 日別詳細
-  # POST /ajax/init-data-history-add-friend-by-date {date:"YYYY-MM-DD", tab:1}
   def fetch_day_details(conn, ymd, auth: nil)
     if auth
       conn.headers['Cookie'] = auth.cookie
@@ -164,7 +160,6 @@ class LmeLineInflowsWorker
   end
 
   # タグ一覧（ユーザー単位）
-  # POST /basic/chat/get-categories-tags (x-www-form-urlencoded)
   def fetch_user_categories_tags(conn, line_user_id, auth: nil, bot_id: nil, is_all_tag: 0)
     if auth
       conn.headers['Cookie'] = auth.cookie
@@ -276,14 +271,16 @@ class LmeLineInflowsWorker
     service.batch_update_spreadsheet(spreadsheet_id, batch)
   end
 
-  # === 更新（クリア→全書き） + タグ列 (H/I, J/K, L/M, N/O) =================
+  # === クリア→統計(2-4行)→ヘッダー(5行)→データ(6行〜) =======================
 
-  def upload_to_gsheets!(service:, rows:, spreadsheet_id:, sheet_name:, tags_cache:)
+  def upload_to_gsheets!(service:, rows:, spreadsheet_id:, sheet_name:, tags_cache:, end_on:)
     # クリア
     clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
     service.clear_values(spreadsheet_id, "#{sheet_name}!B2:Z", clear_req)
     service.clear_values(spreadsheet_id, "#{sheet_name}!B3:Z", clear_req)
     service.clear_values(spreadsheet_id, "#{sheet_name}!B4:Z", clear_req)
+    service.clear_values(spreadsheet_id, "#{sheet_name}!B5:Z", clear_req)
+    service.clear_values(spreadsheet_id, "#{sheet_name}!B6:Z", clear_req)
 
     # 更新日時（B2）
     meta_values = [['更新日時', jp_timestamp]]
@@ -294,12 +291,34 @@ class LmeLineInflowsWorker
       value_input_option: 'USER_ENTERED'
     )
 
-    # ヘッダー（B..O）
-    # B:追加時刻, C:流入元, D:line_user_id, E:名前, F:LINE_ID, G:ブロック?
-    # H:動画①_ダイジェスト, I:プロアカ_動画①,
-    # J:動画②_ダイジェスト, K:プロアカ_動画②,
-    # L:動画③_ダイジェスト, M:プロアカ_動画③,
-    # N:(予備), O:プロアカ_動画④
+    # 直近月＆累計（2025-07-01〜）の%を I/K/M/O に出力
+    month_key = (parse_date(end_on).strftime('%Y-%m') rescue Time.zone.today.strftime('%Y-%m'))
+    monthly_rates, cumulative_rates = calc_rates(rows, tags_cache, month: month_key, since: CUM_SINCE)
+
+    # B..O の14列分の配列を用意（必要セルのみ埋める）
+    row3 = Array.new(14, '')
+    row4 = Array.new(14, '')
+    row3[0] = "各月%（#{month_key}）"      # B3
+    row4[0] = "累計%（#{Date.parse(CUM_SINCE).strftime('%Y/%-m')}〜）" rescue "累計%"
+
+    # I/K/M/O は B起点配列で 8,10,12,14 → 0-based: 7,9,11,13
+    put_percentages!(row3, monthly_rates)
+    put_percentages!(row4, cumulative_rates)
+
+    service.update_spreadsheet_value(
+      spreadsheet_id,
+      "#{sheet_name}!B3",
+      Google::Apis::SheetsV4::ValueRange.new(values: [row3]),
+      value_input_option: 'USER_ENTERED'
+    )
+    service.update_spreadsheet_value(
+      spreadsheet_id,
+      "#{sheet_name}!B4",
+      Google::Apis::SheetsV4::ValueRange.new(values: [row4]),
+      value_input_option: 'USER_ENTERED'
+    )
+
+    # ヘッダー（B..O）を5行目へ
     headers = [
       '追加時刻', '流入元', 'line_user_id', '名前', 'LINE_ID', 'ブロック?',
       '動画①_ダイジェスト', 'プロアカ_動画①',
@@ -307,7 +326,7 @@ class LmeLineInflowsWorker
       '動画③_ダイジェスト', 'プロアカ_動画③',
       '', 'プロアカ_動画④'
     ]
-    header_range = "#{sheet_name}!B3:#{a1_col(1 + headers.size)}3" # -> O列まで
+    header_range = "#{sheet_name}!B5:#{a1_col(1 + headers.size)}5" # -> O5
     service.update_spreadsheet_value(
       spreadsheet_id,
       header_range,
@@ -320,29 +339,29 @@ class LmeLineInflowsWorker
       [ r['date'].to_s, (Time.zone.parse(r['followed_at'].to_s) rescue r['followed_at'].to_s) ]
     end.reverse
 
-    # データ（B..O の 14 列ぶん）
+    # データ（B..O の 14 列ぶん）を6行目から
     data_values = sorted.map do |r|
       t = tags_cache[r['line_user_id']] || {}
       [
-        to_jp_ymdhm(r['followed_at']), # B
-        r['landing_name'],            # C
-        r['line_user_id'],            # D
+        to_jp_ymdhm(r['followed_at']),            # B
+        r['landing_name'],                        # C
+        r['line_user_id'],                        # D
         hyperlink_line_user(r['line_user_id'], r['name']), # E
-        r['line_id'],                 # F
-        r['is_blocked'].to_i,         # G
-        (t[:dv1] ? 'タグあり' : ''),   # H: 動画①_ダイジェスト
-        (t[:v1]  ? 'タグあり' : ''),   # I: プロアカ_動画①
-        (t[:dv2] ? 'タグあり' : ''),   # J: 動画②_ダイジェスト
-        (t[:v2]  ? 'タグあり' : ''),   # K: プロアカ_動画②
-        (t[:dv3] ? 'タグあり' : ''),   # L: 動画③_ダイジェスト
-        (t[:v3]  ? 'タグあり' : ''),   # M: プロアカ_動画③
-        '',                           # N: 予備
-        (t[:v4]  ? 'タグあり' : '')    # O: プロアカ_動画④
+        r['line_id'],                             # F
+        r['is_blocked'].to_i,                     # G
+        (t[:dv1] ? 'タグあり' : ''),              # H
+        (t[:v1]  ? 'タグあり' : ''),              # I
+        (t[:dv2] ? 'タグあり' : ''),              # J
+        (t[:v2]  ? 'タグあり' : ''),              # K
+        (t[:dv3] ? 'タグあり' : ''),              # L
+        (t[:v3]  ? 'タグあり' : ''),              # M
+        '',                                       # N (予備)
+        (t[:v4]  ? 'タグあり' : '')               # O
       ]
     end
 
     if data_values.any?
-      data_range = "#{sheet_name}!B4"
+      data_range = "#{sheet_name}!B6"
       service.update_spreadsheet_value(
         spreadsheet_id,
         data_range,
@@ -352,22 +371,61 @@ class LmeLineInflowsWorker
     end
   end
 
-  # ==== Helpers =============================================================
+  # ==== Helpers: 集計 =======================================================
 
-  # line_user_id 一覧に対して、プロアカ動画タグ + ダイジェストの有無をまとめて取得
+  # rows と tags_cache から、指定月の各%と累計%を返す
+  def calc_rates(rows, tags_cache, month:, since:)
+    month_rows = Array(rows).select { |r| month_key(r['date']) == month }
+    cum_rows   = Array(rows).select { |r| r['date'].to_s >= since.to_s }
+
+    monthly = {
+      v1: pct_for(month_rows, tags_cache, :v1),
+      v2: pct_for(month_rows, tags_cache, :v2),
+      v3: pct_for(month_rows, tags_cache, :v3),
+      v4: pct_for(month_rows, tags_cache, :v4)
+    }
+    cumulative = {
+      v1: pct_for(cum_rows, tags_cache, :v1),
+      v2: pct_for(cum_rows, tags_cache, :v2),
+      v3: pct_for(cum_rows, tags_cache, :v3),
+      v4: pct_for(cum_rows, tags_cache, :v4)
+    }
+    [monthly, cumulative]
+  end
+
+  # 指定キー(:v1..:v4)の“タグあり”割合（% 小数1桁）
+  def pct_for(rows, tags_cache, key)
+    denom = rows.size
+    return nil if denom.zero?
+    numer = rows.count { |r| (tags_cache[r['line_user_id']] || {})[key] }
+    ((numer.to_f / denom) * 100).round(1)
+  end
+
+  def month_key(ymd_str)
+    Date.parse(ymd_str.to_s).strftime('%Y-%m') rescue nil
+  end
+
+  # I/K/M/O に%を入れる（B基準0-indexで 7/9/11/13）
+  def put_percentages!(row_array, rates)
+    idx_map = { v1: 7, v2: 9, v3: 11, v4: 13 }
+    idx_map.each do |k, idx|
+      v = rates[k]
+      row_array[idx] = v.nil? ? '' : "#{v}%"
+    end
+  end
+
+  # ==== Helpers: タグ抽出/書式 =================================================
+
   def build_proaka_tags_cache(conn, line_user_ids, auth:)
     bot_id = (ENV['LME_BOT_ID'].presence || '17106').to_s
     cache = {}
-
     line_user_ids.each do |uid|
       cats = fetch_user_categories_tags(conn, uid, auth: auth, bot_id: bot_id)
       cache[uid] = proaka_flags_from_categories(cats)
     end
-
     cache
   end
 
-  # categories(JSON) から、プロアカ動画①〜④ + ダイジェスト①〜③の有無を抽出
   def proaka_flags_from_categories(categories)
     target = Array(categories).find { |c| (c['id'] || c[:id]).to_i == PROAKA_CATEGORY_ID }
     return { v1: false, v2: false, v3: false, v4: false, dv1: false, dv2: false, dv3: false } unless target
@@ -396,6 +454,10 @@ class LmeLineInflowsWorker
 
   def jp_timestamp
     Time.now.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日 %H時%M分')
+  end
+
+  def parse_date(str)
+    Time.zone.parse(str.to_s) || Time.parse(str.to_s)
   end
 
   # "2025-08-29 00:45:36" → "2025年8月29日 00時45分"
@@ -428,7 +490,6 @@ class LmeLineInflowsWorker
 
   private
 
-  # デフォルト開始日（ENV優先、なければ 2025-01-01）
   def default_start_on
     raw = ENV['LME_DEFAULT_START_DATE'].presence || '2025-01-01'
     Date.parse(raw).strftime('%F')
