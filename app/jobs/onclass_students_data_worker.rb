@@ -355,8 +355,8 @@ class OnclassStudentsDataWorker
 
     # --- 1) 2行目の古いヘッダー痕跡を完全クリア ---
     clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
-    service.clear_values(spreadsheet_id, "#{sheet_name}!B2:J2", clear_req) # ← 2行目のB..Jを空に
-    service.clear_values(spreadsheet_id, "#{sheet_name}!B3:J",  clear_req) # ← 表本体もクリア（PDCA列は触らない）
+    service.clear_values(spreadsheet_id, "#{sheet_name}!B2:K2", clear_req)
+    service.clear_values(spreadsheet_id, "#{sheet_name}!B3:K",  clear_req)
 
     # --- 2) B2 に「更新日時」「値」だけ入れる（C2..J2は空で上書き）---
     meta_row = ['バッチ実行タイミング', jp_timestamp] + Array.new(7, '') # 合計9セル(B..J)
@@ -369,8 +369,11 @@ class OnclassStudentsDataWorker
     )
 
     # --- 3) 見出しは B3:J3 に1回だけ ---
-    headers = %w[id 名前 メールアドレス ステータス 現在進行カテゴリ 現在進行ブロック 受講日 ログイン率 最新ログイン日]
-    header_range = "#{sheet_name}!B3:J3"
+    headers = %w[
+                  id 名前 メールアドレス ステータス ステータス_B
+                  現在進行カテゴリ 現在進行ブロック 受講日 ログイン率 最新ログイン日
+                ]
+    header_range = "#{sheet_name}!B3:K3"
     service.update_spreadsheet_value(
       spreadsheet_id,
       header_range,
@@ -386,19 +389,19 @@ class OnclassStudentsDataWorker
     end
 
     data_values = sanitized_rows.map do |r|
-      [
-        r['id'],
-        hyperlink_name(r['id'], r['name']),
-        r['email'],
-        r['status'],
-        r['current_category']  || '',
-        r['current_block']     || '',
-        r['course_join_date'],
-        (r['course_login_rate'].nil? ? '' : r['course_login_rate']),
-        to_jp_ymdhm(r['latest_login_at']) || ''
-      ]
-    end
-
+                  [
+                    r['id'],
+                    hyperlink_name(r['id'], r['name']),
+                    r['email'],
+                    r['status'].presence || '',        # ステータス
+                    '',                                # ステータス_B（空欄固定）
+                    r['current_category']  || '',
+                    r['current_block']     || '',
+                    to_jp_ymd(r['course_join_date']) || '',# 受講日
+                    r['course_login_rate'].nil? ? '' : r['course_login_rate'].to_s, # ログイン率
+                    to_jp_ymdhm(r['latest_login_at']) || ''                      # 最終ログイン日
+                  ]
+                end
     if data_values.any?
       data_range = "#{sheet_name}!B4"
       service.update_spreadsheet_value(
