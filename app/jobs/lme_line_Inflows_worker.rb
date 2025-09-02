@@ -18,7 +18,7 @@ class LmeLineInflowsWorker
   GOOGLE_SCOPE = [Google::Apis::SheetsV4::AUTH_SPREADSHEETS].freeze
 
   PROAKA_CATEGORY_ID = 5_180_568
-  CUM_SINCE          = ENV['LME_CUM_SINCE'].presence || '2025-07-01' # 累計の起点
+  CUM_SINCE          = ENV['LME_CUM_SINCE'].presence || '2025-05-01' # 累計の起点
 
   # メイン動画タグ（ID固定で拾う）
   PROAKA_TAGS = {
@@ -281,6 +281,7 @@ class LmeLineInflowsWorker
     service.clear_values(spreadsheet_id, "#{sheet_name}!B4:Z", clear_req)
     service.clear_values(spreadsheet_id, "#{sheet_name}!B5:Z", clear_req)
     service.clear_values(spreadsheet_id, "#{sheet_name}!B6:Z", clear_req)
+    service.clear_values(spreadsheet_id, "#{sheet_name}!B7:Z", clear_req)
 
     # 更新日時（B2）
     meta_values = [['更新日時', jp_timestamp]]
@@ -291,34 +292,47 @@ class LmeLineInflowsWorker
       value_input_option: 'USER_ENTERED'
     )
 
-    # 直近月＆累計（2025-07-01〜）の%を I/K/M/O に出力
-    month_key = (parse_date(end_on).strftime('%Y-%m') rescue Time.zone.today.strftime('%Y-%m'))
-    monthly_rates, cumulative_rates = calc_rates(rows, tags_cache, month: month_key, since: CUM_SINCE)
+    # 当月 / 前月 / 累計（2025-07-01〜）の%を I/K/M/O に出力
+    end_d   = (parse_date(end_on).to_date rescue Date.today)
+    this_m  = end_d.strftime('%Y-%m')
+    prev_m  = end_d.prev_month.strftime('%Y-%m')
 
-    # B..O の14列分の配列を用意（必要セルのみ埋める）
+    # 当月＆累計
+    monthly_rates, cumulative_rates = calc_rates(rows, tags_cache, month: this_m, since: CUM_SINCE)
+    # 前月
+    prev_month_rates = month_rates(rows, tags_cache, month: prev_m)
+
+    # B..O の14列配列（必要セルのみ書く）
     row3 = Array.new(14, '')
     row4 = Array.new(14, '')
-    row3[0] = "各月%（#{month_key}）"      # B3
-    row4[0] = "累計%（#{Date.parse(CUM_SINCE).strftime('%Y/%-m')}〜）" rescue "累計%"
+    row5 = Array.new(14, '')
+
+    row3[0] = "各月%（#{this_m}）"                                  # B3
+    row4[0] = "前月%（#{prev_m}）"                                   # B4
+    row5[0] = "累計%（#{Date.parse(CUM_SINCE).strftime('%Y/%-m')}〜）" rescue row5[0] = "累計%" # B5
 
     # I/K/M/O は B起点配列で 8,10,12,14 → 0-based: 7,9,11,13
     put_percentages!(row3, monthly_rates)
-    put_percentages!(row4, cumulative_rates)
+    put_percentages!(row4, prev_month_rates)
+    put_percentages!(row5, cumulative_rates)
 
     service.update_spreadsheet_value(
-      spreadsheet_id,
-      "#{sheet_name}!B3",
+      spreadsheet_id, "#{sheet_name}!B3",
       Google::Apis::SheetsV4::ValueRange.new(values: [row3]),
       value_input_option: 'USER_ENTERED'
     )
     service.update_spreadsheet_value(
-      spreadsheet_id,
-      "#{sheet_name}!B4",
+      spreadsheet_id, "#{sheet_name}!B4",
       Google::Apis::SheetsV4::ValueRange.new(values: [row4]),
       value_input_option: 'USER_ENTERED'
     )
+    service.update_spreadsheet_value(
+      spreadsheet_id, "#{sheet_name}!B5",
+      Google::Apis::SheetsV4::ValueRange.new(values: [row5]),
+      value_input_option: 'USER_ENTERED'
+    )
 
-    # ヘッダー（B..O）を5行目へ
+    # ヘッダー（B..O）を6行目へ
     headers = [
       '追加時刻', '流入元', 'line_user_id', '名前', 'LINE_ID', 'ブロック?',
       '動画①_ダイジェスト', 'プロアカ_動画①',
@@ -326,10 +340,9 @@ class LmeLineInflowsWorker
       '動画③_ダイジェスト', 'プロアカ_動画③',
       '', 'プロアカ_動画④'
     ]
-    header_range = "#{sheet_name}!B5:#{a1_col(1 + headers.size)}5" # -> O5
+    header_range = "#{sheet_name}!B6:#{a1_col(1 + headers.size)}6" # -> O6
     service.update_spreadsheet_value(
-      spreadsheet_id,
-      header_range,
+      spreadsheet_id, header_range,
       Google::Apis::SheetsV4::ValueRange.new(values: [headers]),
       value_input_option: 'USER_ENTERED'
     )
@@ -339,7 +352,7 @@ class LmeLineInflowsWorker
       [ r['date'].to_s, (Time.zone.parse(r['followed_at'].to_s) rescue r['followed_at'].to_s) ]
     end.reverse
 
-    # データ（B..O の 14 列ぶん）を6行目から
+    # データ（B..O の 14 列ぶん）を7行目から
     data_values = sorted.map do |r|
       t = tags_cache[r['line_user_id']] || {}
       [
@@ -361,10 +374,9 @@ class LmeLineInflowsWorker
     end
 
     if data_values.any?
-      data_range = "#{sheet_name}!B6"
+      data_range = "#{sheet_name}!B7"
       service.update_spreadsheet_value(
-        spreadsheet_id,
-        data_range,
+        spreadsheet_id, data_range,
         Google::Apis::SheetsV4::ValueRange.new(values: data_values),
         value_input_option: 'USER_ENTERED'
       )
@@ -415,6 +427,18 @@ class LmeLineInflowsWorker
   end
 
   # ==== Helpers: タグ抽出/書式 =================================================
+  # 
+  ## 指定「月」(:YYYY-MM) の“タグあり”割合（% 小数1桁）を返す
+  def month_rates(rows, tags_cache, month:)
+    month_rows = Array(rows).select { |r| month_key(r['date']) == month }
+    {
+      v1: pct_for(month_rows, tags_cache, :v1),
+      v2: pct_for(month_rows, tags_cache, :v2),
+      v3: pct_for(month_rows, tags_cache, :v3),
+      v4: pct_for(month_rows, tags_cache, :v4)
+    }
+  end
+
 
   def build_proaka_tags_cache(conn, line_user_ids, auth:)
     bot_id = (ENV['LME_BOT_ID'].presence || '17106').to_s
@@ -494,6 +518,6 @@ class LmeLineInflowsWorker
     raw = ENV['LME_DEFAULT_START_DATE'].presence || '2025-01-01'
     Date.parse(raw).strftime('%F')
   rescue
-    '2025-01-01'
+    '2024-01-01'
   end
 end
