@@ -298,7 +298,7 @@ class LmeLineInflowsWorker
     # ヘッダー（B..O）
     # B:追加時刻, C:流入元, D:line_user_id, E:名前, F:LINE_ID, G:ブロック?
     # H:空, I:空, J:プロアカ_動画①, K:プロアカ_動画②, L:空, M:プロアカ_動画③, N:空, O:プロアカ_動画④
-    headers = ['追加時刻', '流入元', 'line_user_id', '名前', 'LINE_ID', 'ブロック?', '', '', 'プロアカ_動画①', 'プロアカ_動画②', '', 'プロアカ_動画③', '', 'プロアカ_動画④']
+    headers = ['追加時刻', '流入元', 'line_user_id', '名前', 'LINE_ID', 'ブロック?', '', 'プロアカ_動画①', '', 'プロアカ_動画②', '', 'プロアカ_動画③', '', 'プロアカ_動画④']
     header_range = "#{sheet_name}!B3:#{a1_col(1 + headers.size)}3" # -> O列まで
     service.update_spreadsheet_value(
       spreadsheet_id,
@@ -325,14 +325,14 @@ class LmeLineInflowsWorker
         hyperlink_line_user(r['line_user_id'], r['name']), # E
         r['line_id'],                 # F
         r['is_blocked'].to_i,         # G
-        '',                           # H
         '',                           # I
-        (t[:v1] ? '1' : ''),          # J: 動画①
-        (t[:v2] ? '1' : ''),          # K: 動画②
-        '',                           # L
-        (t[:v3] ? '1' : ''),          # M: 動画③
-        '',                           # N
-        (t[:v4] ? '1' : '')           # O: 動画④
+        (t[:v1] ? 'タグあり' : ''),          # 動画①
+        '',
+        (t[:v2] ? 'タグあり' : ''),          # 動画②
+        '',                           # 
+        (t[:v3] ? 'タグあり' : ''),          # 動画③
+        '',                           # 
+        (t[:v4] ? 'タグあり' : '')           # 動画④
       ]
     end
 
