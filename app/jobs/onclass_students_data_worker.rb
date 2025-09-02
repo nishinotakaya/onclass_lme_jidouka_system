@@ -359,7 +359,7 @@ class OnclassStudentsDataWorker
     service.clear_values(spreadsheet_id, "#{sheet_name}!B3:J",  clear_req) # ← 表本体もクリア（PDCA列は触らない）
 
     # --- 2) B2 に「更新日時」「値」だけ入れる（C2..J2は空で上書き）---
-    meta_row = ['更新日時', jp_timestamp] + Array.new(7, '') # 合計9セル(B..J)
+    meta_row = ['バッチ実行タイミング', jp_timestamp] + Array.new(7, '') # 合計9セル(B..J)
     meta_range = "#{sheet_name}!B2:J2"
     service.update_spreadsheet_value(
       spreadsheet_id,

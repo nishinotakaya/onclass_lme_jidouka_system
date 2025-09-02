@@ -291,7 +291,7 @@ class LmeLineInflowsWorker
     service.clear_values(spreadsheet_id, "#{sheet_name}!B7:Z", clear_req)
 
     # 更新日時（B2）
-    meta_values = [['更新日時', jp_timestamp]]
+    meta_values = [['バッチ実行タイミング', jp_timestamp]]
     service.update_spreadsheet_value(
       spreadsheet_id,
       "#{sheet_name}!B2",
