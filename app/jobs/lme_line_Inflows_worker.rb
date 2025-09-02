@@ -35,6 +35,13 @@ class LmeLineInflowsWorker
     dv3: '動画③_ダイジェスト'
   }.freeze
 
+  # リッチメニュー選択肢（P列：セレクト）。複数付与時はこの順で優先。
+  RICHMENU_SELECT_NAMES = [
+    '月収40万円のエンジニアになれる方法を知りたい',
+    'プログラミング無料体験したい',
+    '現役エンジニアに質問したい'
+  ].freeze
+
   # ==== Entry point ==========================================================
   # start_date/end_date: "YYYY-MM-DD"
   # 省略時: ENV['LME_DEFAULT_START_DATE'] (既定 "2025-01-01") 〜 本日（JST）
@@ -292,7 +299,7 @@ class LmeLineInflowsWorker
       value_input_option: 'USER_ENTERED'
     )
 
-    # 当月 / 前月 / 累計（2025-07-01〜）の%を I/K/M/O に出力
+    # 当月 / 前月 / 累計（2025-05-01〜）の%を I/K/M/O に出力
     end_d   = (parse_date(end_on).to_date rescue Date.today)
     this_m  = end_d.strftime('%Y-%m')
     prev_m  = end_d.prev_month.strftime('%Y-%m')
@@ -302,16 +309,26 @@ class LmeLineInflowsWorker
     # 前月
     prev_month_rates = month_rates(rows, tags_cache, month: prev_m)
 
-    # B..O の14列配列（必要セルのみ書く）
-    row3 = Array.new(14, '')
-    row4 = Array.new(14, '')
-    row5 = Array.new(14, '')
+    # B..P の15列配列（必要セルのみ書く）
+    # ヘッダー数に合わせて可変長で用意
+    headers_preview = [
+      '追加時刻', '流入元', 'line_user_id', '名前', 'LINE_ID', 'ブロック?',
+      '動画①_ダイジェスト', 'プロアカ_動画①',
+      '動画②_ダイジェスト', 'プロアカ_動画②',
+      '動画③_ダイジェスト', 'プロアカ_動画③',
+      '', 'プロアカ_動画④', '選択肢'
+    ]
+    cols = headers_preview.size
 
-    row3[0] = "各月%（#{this_m}）"                                  # B3
+    row3 = Array.new(cols, '')
+    row4 = Array.new(cols, '')
+    row5 = Array.new(cols, '')
+
+    row3[0] = "各月%（#{this_m}）"                                   # B3
     row4[0] = "前月%（#{prev_m}）"                                   # B4
     row5[0] = "累計%（#{Date.parse(CUM_SINCE).strftime('%Y/%-m')}〜）" rescue row5[0] = "累計%" # B5
 
-    # I/K/M/O は B起点配列で 8,10,12,14 → 0-based: 7,9,11,13
+    # I/K/M/O は B基準0-indexで 7/9/11/13
     put_percentages!(row3, monthly_rates)
     put_percentages!(row4, prev_month_rates)
     put_percentages!(row5, cumulative_rates)
@@ -332,15 +349,9 @@ class LmeLineInflowsWorker
       value_input_option: 'USER_ENTERED'
     )
 
-    # ヘッダー（B..O）を6行目へ
-    headers = [
-      '追加時刻', '流入元', 'line_user_id', '名前', 'LINE_ID', 'ブロック?',
-      '動画①_ダイジェスト', 'プロアカ_動画①',
-      '動画②_ダイジェスト', 'プロアカ_動画②',
-      '動画③_ダイジェスト', 'プロアカ_動画③',
-      '', 'プロアカ_動画④'
-    ]
-    header_range = "#{sheet_name}!B6:#{a1_col(1 + headers.size)}6" # -> O6
+    # ヘッダー（B..P）を6行目へ（P列=セレクト）
+    headers = headers_preview
+    header_range = "#{sheet_name}!B6:#{a1_col(1 + headers.size)}6" # -> P6
     service.update_spreadsheet_value(
       spreadsheet_id, header_range,
       Google::Apis::SheetsV4::ValueRange.new(values: [headers]),
@@ -352,7 +363,7 @@ class LmeLineInflowsWorker
       [ r['date'].to_s, (Time.zone.parse(r['followed_at'].to_s) rescue r['followed_at'].to_s) ]
     end.reverse
 
-    # データ（B..O の 14 列ぶん）を7行目から
+    # データ（B..P の 15 列ぶん）を7行目から
     data_values = sorted.map do |r|
       t = tags_cache[r['line_user_id']] || {}
       [
@@ -369,7 +380,8 @@ class LmeLineInflowsWorker
         (t[:dv3] ? 'タグあり' : ''),              # L
         (t[:v3]  ? 'タグあり' : ''),              # M
         '',                                       # N (予備)
-        (t[:v4]  ? 'タグあり' : '')               # O
+        (t[:v4]  ? 'タグあり' : ''),              # O
+        (t[:select] || '')                        # P: セレクト（リッチメニュー選択name）
       ]
     end
 
@@ -427,8 +439,8 @@ class LmeLineInflowsWorker
   end
 
   # ==== Helpers: タグ抽出/書式 =================================================
-  # 
-  ## 指定「月」(:YYYY-MM) の“タグあり”割合（% 小数1桁）を返す
+
+  # 指定「月」(:YYYY-MM) の“タグあり”割合（% 小数1桁）を返す
   def month_rates(rows, tags_cache, month:)
     month_rows = Array(rows).select { |r| month_key(r['date']) == month }
     {
@@ -438,7 +450,6 @@ class LmeLineInflowsWorker
       v4: pct_for(month_rows, tags_cache, :v4)
     }
   end
-
 
   def build_proaka_tags_cache(conn, line_user_ids, auth:)
     bot_id = (ENV['LME_BOT_ID'].presence || '17106').to_s
@@ -452,11 +463,14 @@ class LmeLineInflowsWorker
 
   def proaka_flags_from_categories(categories)
     target = Array(categories).find { |c| (c['id'] || c[:id]).to_i == PROAKA_CATEGORY_ID }
-    return { v1: false, v2: false, v3: false, v4: false, dv1: false, dv2: false, dv3: false } unless target
+    return { v1: false, v2: false, v3: false, v4: false, dv1: false, dv2: false, dv3: false, select: nil } unless target
 
     tag_list  = Array(target['tags'] || target[:tags])
     tag_ids   = tag_list.map  { |t| (t['tag_id'] || t[:tag_id]).to_i }.to_set
     tag_names = tag_list.map { |t| (t['name']   || t[:name]).to_s }.to_set
+
+    # セレクト（優先順で最初に一致したもの）
+    selected = RICHMENU_SELECT_NAMES.find { |nm| tag_names.include?(nm) }
 
     {
       v1:  tag_ids.include?(PROAKA_TAGS[:v1]),
@@ -465,7 +479,8 @@ class LmeLineInflowsWorker
       v4:  tag_ids.include?(PROAKA_TAGS[:v4]),
       dv1: tag_names.include?(PROAKA_DIGEST_NAMES[:dv1]),
       dv2: tag_names.include?(PROAKA_DIGEST_NAMES[:dv2]),
-      dv3: tag_names.include?(PROAKA_DIGEST_NAMES[:dv3])
+      dv3: tag_names.include?(PROAKA_DIGEST_NAMES[:dv3]),
+      select: selected
     }
   end
 
