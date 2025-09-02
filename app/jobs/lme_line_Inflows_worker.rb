@@ -324,7 +324,7 @@ class LmeLineInflowsWorker
     row4 = Array.new(cols, '')
     row5 = Array.new(cols, '')
 
-    row3[0] = "各月%（#{this_m}）"                                   # B3
+    row3[0] = "今月%（#{this_m}）"                                   # B3
     row4[0] = "前月%（#{prev_m}）"                                   # B4
     row5[0] = "累計%（#{Date.parse(CUM_SINCE).strftime('%Y/%-m')}〜）" rescue row5[0] = "累計%" # B5
 
