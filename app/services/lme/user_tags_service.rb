@@ -1,5 +1,7 @@
-# app/services/lme/user_tags_service.rb
 # frozen_string_literal: true
+require "uri"
+require "set"
+
 module Lme
   class UserTagsService < BaseService
     include ProakaConfig
@@ -15,28 +17,25 @@ module Lme
         botIdCurrent: bot_id.to_s
       )
 
-      resp = conn.post('/basic/chat/get-categories-tags') do |req|
-        req.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
+      resp = conn.post("/basic/chat/get-categories-tags") do |req|
+        req.headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
         req.body = form
       end
       auth.refresh_from_response_cookies!(resp.headers)
 
       json = safe_json(resp.body)
-      arr  = json['data'] || json['result'] || []
+      arr  = json["data"] || json["result"] || []
       arr.is_a?(Array) ? arr : []
     rescue Faraday::Error => e
       Rails.logger.warn("[LME] categories_tags(#{line_user_id}) failed: #{e.class} #{e.message}")
       []
     end
 
-    # 1ユーザー分のフラグ（v1..v4 / dv1..dv3 / select）を返す
     def flags_for(conn, line_user_id, bot_id:)
-      cats = categories_tags(conn, line_user_id, bot_id: bot_id)
-      flags_from_categories(cats)
+      flags_from_categories(categories_tags(conn, line_user_id, bot_id: bot_id))
     end
 
-    # 複数ユーザーを並列で
-    def build_flags_cache(line_user_ids, bot_id:, threads: Integer(ENV['LME_TAG_THREADS'] || 6))
+    def build_flags_cache(line_user_ids, bot_id:, threads: Integer(ENV["LME_TAG_THREADS"] || 6))
       ids   = Array(line_user_ids).compact.uniq
       cache = {}
       q     = Queue.new
@@ -44,29 +43,25 @@ module Lme
 
       workers = Array.new([threads, 1].max) do
         Thread.new do
-          local_conn = auth.conn # スレッド専用コネクション
+          local_conn = auth.conn
           while (uid = q.pop(true) rescue nil)
-            flags = flags_for(local_conn, uid, bot_id: bot_id)
-            cache[uid] = flags
+            cache[uid] = flags_for(local_conn, uid, bot_id: bot_id)
           end
         rescue ThreadError
-          # queue empty
         end
       end
       workers.each(&:join)
       cache
     end
 
-    # --- 判定ロジック（カテゴリ配列 → 各種フラグ）---
     def flags_from_categories(categories)
-      target = Array(categories).find { |c| (c['id'] || c[:id]).to_i == PROAKA_CATEGORY_ID }
+      target = Array(categories).find { |c| (c["id"] || c[:id]).to_i == PROAKA_CATEGORY_ID }
       return empty_flags unless target
 
-      tag_list  = Array(target['tags'] || target[:tags])
-      tag_ids   = tag_list.map { |t| (t['tag_id'] || t[:tag_id]).to_i }.to_set
-      tag_names = tag_list.map { |t| (t['name']   || t[:name]).to_s }.to_set
-
-      selected = RICHMENU_SELECT_NAMES.find { |nm| tag_names.include?(nm) }
+      tag_list  = Array(target["tags"] || target[:tags]).compact
+      tag_ids   = tag_list.map  { |t| (t["tag_id"] || t[:tag_id]).to_i }.to_set
+      tag_names = tag_list.map { |t| (t["name"]   || t[:name]).to_s }.to_set
+      selected  = RICHMENU_SELECT_NAMES.find { |nm| tag_names.include?(nm) }
 
       {
         v1:  tag_ids.include?(PROAKA_TAGS[:v1]),
@@ -76,7 +71,7 @@ module Lme
         dv1: tag_names.include?(PROAKA_DIGEST_NAMES[:dv1]),
         dv2: tag_names.include?(PROAKA_DIGEST_NAMES[:dv2]),
         dv3: tag_names.include?(PROAKA_DIGEST_NAMES[:dv3]),
-        select: selected # P列に出す“リッチメニュー選択肢name”
+        select: selected
       }
     end
 

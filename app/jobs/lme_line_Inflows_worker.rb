@@ -27,7 +27,7 @@ class LmeLineInflowsWorker
     start_on = (start_date.presence || default_start_on)
     end_on   = (end_date.presence   || Time.zone.today.to_s)
 
-    friend_service = Lme::FriendHistoryService.new(auth)
+    friend_service = Lme::FriendHistoryService.new(auth: auth)
     overview       = friend_service.overview(conn, start_on: start_on, end_on: end_on)
 
     days =
@@ -53,6 +53,7 @@ class LmeLineInflowsWorker
         rec = r.respond_to?(:with_indifferent_access) ? r.with_indifferent_access : r
         lu  = (rec['line_user'] || {})
         lu  = lu.with_indifferent_access if lu.respond_to?(:with_indifferent_access)
+        Rails.logger.debug("[LME] detail #{date}: #{rec.inspect}")
 
         rows << {
           'date'         => date,
@@ -70,9 +71,12 @@ class LmeLineInflowsWorker
     rows.uniq! { |r| [r['line_user_id'], r['followed_at']] }
 
     # タグのフラグキャッシュ（P列=select を含む）
-    tags_service = Lme::UserTagsService.new(auth)
-    uniq_ids     = rows.map { |r| r['line_user_id'] }.compact.uniq
-    tags_cache   = tags_service.build_flags_cache(uniq_ids, bot_id: (ENV['LME_BOT_ID'] || '17106'), threads: Integer(ENV['LME_TAG_THREADS'] || 6))
+    service = Lme::UserTagsService.new(auth: auth)  # ← これでOK（BaseServiceが受け取れるようになった）
+    ids     = rows.map { |r| r['line_user_id'] }.compact.uniq
+    bot_id  = (ENV['LME_BOT_ID'].presence || '17106')
+    tags_cache = service.build_flags_cache(ids, bot_id: bot_id)
+    Rails.logger.info("[LmeLineInflowsWorker] fetched tags for #{tags_cache.size} users (of #{ids.size} unique)")
+
 
     # スプレッドシート反映
     spreadsheet_id = ENV.fetch('ONCLASS_SPREADSHEET_ID')
@@ -324,4 +328,16 @@ class LmeLineInflowsWorker
   rescue
     '2024-01-01'
   end
+
+  # 指定「月」(:YYYY-MM) の“タグあり”割合（% 小数1桁）を返す
+  def month_rates(rows, tags_cache, month:)
+    month_rows = Array(rows).select { |r| month_key(r['date']) == month }
+    {
+      v1: pct_for(month_rows, tags_cache, :v1),
+      v2: pct_for(month_rows, tags_cache, :v2),
+      v3: pct_for(month_rows, tags_cache, :v3),
+      v4: pct_for(month_rows, tags_cache, :v4)
+    }
+  end
+
 end
