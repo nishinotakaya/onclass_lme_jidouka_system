@@ -110,6 +110,17 @@ class OnclassStudentsDataWorker
       end
     end
 
+    basic_by_id = {}
+    student_ids.each do |sid|
+      begin
+        basic = fetch_user_basic(conn, default_headers, sid)
+        basic_by_id[sid] = basic
+        sleep 0.03
+      rescue => e
+        Rails.logger.warn("[OnclassStudentsDataWorker] basic fetch failed for #{sid}: #{e.class} #{e.message}")
+      end
+    end
+
     # 'current_category' 列を追加
     combined_rows.each do |r|
       d = details_by_id[r['id']] || {}
@@ -117,6 +128,9 @@ class OnclassStudentsDataWorker
       r['current_block']     = current_block_name(d) || ''
       r['course_join_date']  = d['course_join_date']     # 例: "2025-07-31"
       r['course_login_rate'] = d['course_login_rate']    # 例: 73.7
+
+      b = basic_by_id[r['id']] || {}
+      r['pdca_url'] = extract_gsheets_url(b['free_text'])
     end
 
     combined_rows.sort_by! do |r|
@@ -353,14 +367,14 @@ class OnclassStudentsDataWorker
     service = build_sheets_service
     ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
 
-    # --- 1) 2行目の古いヘッダー痕跡を完全クリア ---
     clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
-    service.clear_values(spreadsheet_id, "#{sheet_name}!B2:K2", clear_req)
-    service.clear_values(spreadsheet_id, "#{sheet_name}!B3:K",  clear_req)
+    service.clear_values(spreadsheet_id, "#{sheet_name}!B2:L2", clear_req)
+    service.clear_values(spreadsheet_id, "#{sheet_name}!B3:L",  clear_req)
 
-    # --- 2) B2 に「更新日時」「値」だけ入れる（C2..J2は空で上書き）---
-    meta_row = ['バッチ実行タイミング', jp_timestamp] + Array.new(7, '') # 合計9セル(B..J)
-    meta_range = "#{sheet_name}!B2:J2"
+    # B2（メタ）
+    # B..L は11列 → 先頭2つの後ろに 9 個の空欄
+    meta_row   = ['バッチ実行タイミング', jp_timestamp] + Array.new(9, '')
+    meta_range = "#{sheet_name}!B2:L2"
     service.update_spreadsheet_value(
       spreadsheet_id,
       meta_range,
@@ -368,12 +382,12 @@ class OnclassStudentsDataWorker
       value_input_option: 'USER_ENTERED'
     )
 
-    # --- 3) 見出しは B3:J3 に1回だけ ---
+    # 見出し（B3:L3）※ L列に PDCA を追加
     headers = %w[
-                  id 名前 メールアドレス ステータス ステータス_B
-                  現在進行カテゴリ 現在進行ブロック 受講日 ログイン率 最新ログイン日
-                ]
-    header_range = "#{sheet_name}!B3:K3"
+      id 名前 メールアドレス ステータス ステータス_B
+      現在進行カテゴリ 現在進行ブロック 受講日 ログイン率 最新ログイン日 PDCA
+    ]
+    header_range = "#{sheet_name}!B3:L3"
     service.update_spreadsheet_value(
       spreadsheet_id,
       header_range,
@@ -389,19 +403,20 @@ class OnclassStudentsDataWorker
     end
 
     data_values = sanitized_rows.map do |r|
-                  [
-                    r['id'],
-                    hyperlink_name(r['id'], r['name']),
-                    r['email'],
-                    r['status'].presence || '',        # ステータス
-                    '',                                # ステータス_B（空欄固定）
-                    r['current_category']  || '',
-                    r['current_block']     || '',
-                    to_jp_ymd(r['course_join_date']) || '',# 受講日
-                    r['course_login_rate'].nil? ? '' : r['course_login_rate'].to_s, # ログイン率
-                    to_jp_ymdhm(r['latest_login_at']) || ''                      # 最終ログイン日
-                  ]
-                end
+      [
+        r['id'],
+        hyperlink_name(r['id'], r['name']),
+        r['email'],
+        r['status'].presence || '',
+        '',  # ステータス_B（空）
+        r['current_category']  || '',
+        r['current_block']     || '',
+        to_jp_ymd(r['course_join_date']) || '',
+        (r['course_login_rate'].nil? ? '' : r['course_login_rate'].to_s),
+        to_jp_ymdhm(r['latest_login_at']) || '',
+        hyperlink_pdca(r['pdca_url'], r['name'])  # ← L列(PDCA)
+      ]
+    end
     if data_values.any?
       data_range = "#{sheet_name}!B4"
       service.update_spreadsheet_value(
@@ -412,7 +427,7 @@ class OnclassStudentsDataWorker
       )
     end
 
-    Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{sanitized_rows.size} rows (header single row; B2:J2 cleaned).")
+    Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{sanitized_rows.size} rows with PDCA column.")
   end
 
   def load_and_merge_csvs(csv_paths)
@@ -486,6 +501,34 @@ class OnclassStudentsDataWorker
   rescue Faraday::Error => e
     Rails.logger.warn("[OnclassStudentsDataWorker] fetch_latest_login_at error for #{user_id}: #{e.class} #{e.message}")
     nil
+  end
+
+  # 追加: ユーザー基本情報（free_textを含む）取得
+  def fetch_user_basic(conn, headers, student_id)
+    resp = conn.get("/v1/enterprise_manager/users/#{student_id}", {}, headers)
+    json = JSON.parse(resp.body) rescue {}
+    json['data'] || json
+  rescue Faraday::Error => e
+    Rails.logger.warn("[OnclassStudentsDataWorker] fetch_user_basic error for #{student_id}: #{e.class} #{e.message}")
+    {}
+  end
+
+  # 追加: free_text からGoogleスプレッドシートURLを抽出
+  def extract_gsheets_url(free_text)
+    return nil if free_text.to_s.strip.empty?
+    # プロトコルなしの docs.google.com も拾う
+    m = free_text.match(%r{(https?://)?(docs\.google\.com/spreadsheets/d/[^\s"'>]+)}i)
+    return nil unless m
+    url = m.to_s
+    url = "https://#{url}" unless url.start_with?('http')
+    url
+  end
+
+  # 追加: HYPERLINK作成（名前は "#{name}_PDCA"）
+  def hyperlink_pdca(url, name)
+    return '' if url.to_s.strip.empty?
+    label = "#{name}_PDCA".gsub('"', '""')
+    %Q(=HYPERLINK("#{url}","#{label}"))
   end
 
 end
