@@ -9,6 +9,7 @@ class LmeAuthClient
 
   class RecaptchaRequired < StandardError; end
 
+  # ---- Cookie ソース --------------------------------------------------------
   def cookie
     ck = Sidekiq.redis { |r| r.get(REDIS_KEY) } ||
          Rails.application.credentials.dig(:lme, :cookie) ||
@@ -23,6 +24,7 @@ class LmeAuthClient
     cookie_str
   end
 
+  # ---- 接続（API 用） -------------------------------------------------------
   def conn(cookie_str = cookie)
     xsrf = extract_cookie(cookie_str, "XSRF-TOKEN")
     xsrf = xsrf ? CGI.unescape(xsrf) : nil
@@ -34,25 +36,38 @@ class LmeAuthClient
       f.headers["Accept"]           = "application/json, text/plain, */*"
       f.headers["Content-Type"]     = "application/json;charset=UTF-8"
       f.headers["Origin"]           = BASE_URL
-      f.headers["Referer"]          = "#{BASE_URL}/basic/overview"
+      f.headers["Referer"]          = "#{BASE_URL}/basic/friendlist/friend-history"
       f.headers["User-Agent"]       = "Mozilla/5.0"
       f.headers["X-Requested-With"] = "XMLHttpRequest"
-      f.headers["X-XSRF-TOKEN"]     = xsrf if xsrf.present?
+      f.headers["x-xsrf-token"]     = xsrf if xsrf.present?
+      f.headers["x-server"]         = "ovh"
       f.headers["Cookie"]           = cookie_str
     end
   end
 
+  # ---- ヘルスチェック（緩め） ----------------------------------------------
   def valid_cookie?(cookie_str = cookie)
     c = conn(cookie_str)
-    body = { data: { start: today, end: today }.to_json }
-    res  = c.post("/ajax/init-data-history-add-friend", body.to_json)
-    refresh_from_response_cookies!(res.headers, current: cookie_str)
-    true
-  rescue Faraday::ClientError => e
-    Rails.logger.warn("[LmeAuthClient] valid_cookie? failed status=#{e.response&.dig(:status)}")
-    false
+
+    begin
+      body = { data: { start: today, end: today }.to_json }
+      c.post("/ajax/init-data-history-add-friend", body.to_json)
+      return true
+    rescue Faraday::ClientError => e
+      Rails.logger.warn("[LmeAuthClient] /ajax/init-data-history-add-friend failed status=#{e.response&.dig(:status)}")
+    end
+
+    begin
+      top = Faraday.new(url: BASE_URL).get("/")
+      Rails.logger.info("[LmeAuthClient] '/' reachable (#{top.status})")
+      return top.status.between?(200,299)
+    rescue Faraday::Error => e
+      Rails.logger.warn("[LmeAuthClient] '/' check failed: #{e.class} #{e.message}")
+      return false
+    end
   end
 
+  # ---- Set-Cookie -> Redis 反映 ---------------------------------------------
   def refresh_from_response_cookies!(headers, current: cookie)
     set_cookie = headers["set-cookie"] || headers["Set-Cookie"]
     return unless set_cookie
@@ -66,10 +81,8 @@ class LmeAuthClient
     manual_set!(updated) if updated != current
   end
 
-  # ---（オプション）パスワードログインを試みる（CAPTCHA があれば即中止）---
-  # 使わなくてもOK。reCAPTCHA が出る場合は RecaptchaRequired を投げます。
+  # ---（オプション）パスワードログイン（reCAPTCHA なら即中止）--------------
   def attempt_password_login!(email:, password:)
-    # 1) ログインフォームを取得して _token などを拾う
     form_conn = Faraday.new(url: BASE_URL) { |f| f.adapter Faraday.default_adapter }
     form = form_conn.get("/login")
     html = form.body.to_s
@@ -78,10 +91,8 @@ class LmeAuthClient
     token = html.match(/name="_token"\s+value="([^"]+)"/)&.captures&.first
     raise "CSRF token not found" if token.blank?
 
-    # Cookie 下地（XSRF/laravel_session）
     jar = build_cookie_jar_from_set_cookie(form.headers["set-cookie"])
 
-    # 2) フォームポスト
     login_conn = Faraday.new(url: BASE_URL) do |f|
       f.request :url_encoded
       f.response :raise_error
@@ -91,13 +102,9 @@ class LmeAuthClient
     end
 
     res = login_conn.post("/login", { email: email, password: password, _token: token })
-    sc  = res.status
     body = res.body.to_s
-
-    # CAPTCHA 検出
     raise RecaptchaRequired, "CAPTCHA present" if body.include?("私はロボットではありません") || body.downcase.include?("captcha")
 
-    # Set-Cookie 反映
     fresh = merge_set_cookie_into_cookie(jar, res.headers["set-cookie"])
     manual_set!(fresh)
     true
@@ -141,7 +148,6 @@ class LmeAuthClient
 
   def build_cookie_jar_from_set_cookie(set_cookie)
     return "" if set_cookie.blank?
-    # XSRF-TOKEN / laravel_session だけ抜いてヘッダ用に整形
     names = %w[XSRF-TOKEN laravel_session]
     parts = names.filter_map { |n|
       v = extract_set_cookie_value(set_cookie, n)

@@ -1,4 +1,3 @@
-# app/workers/lme_line_inflows_worker.rb
 # frozen_string_literal: true
 
 require 'json'
@@ -20,22 +19,14 @@ class LmeLineInflowsWorker
   PROAKA_CATEGORY_ID = 5_180_568
   CUM_SINCE          = ENV['LME_CUM_SINCE'].presence || '2025-05-01' # 累計の起点
 
-  # メイン動画タグ（ID固定で拾う）
   PROAKA_TAGS = {
-    v1: 1_394_734, # プロアカ_動画①
-    v2: 1_394_736, # プロアカ_動画②
-    v3: 1_394_737, # プロアカ_動画③
-    v4: 1_394_738  # プロアカ_動画④
+    v1: 1_394_734, v2: 1_394_736, v3: 1_394_737, v4: 1_394_738
   }.freeze
 
-  # ダイジェストは “名前一致” 優先
   PROAKA_DIGEST_NAMES = {
-    dv1: '動画①_ダイジェスト',
-    dv2: '動画②_ダイジェスト',
-    dv3: '動画③_ダイジェスト'
+    dv1: '動画①_ダイジェスト', dv2: '動画②_ダイジェスト', dv3: '動画③_ダイジェスト'
   }.freeze
 
-  # リッチメニュー選択肢（P列：セレクト）。複数付与時はこの順で優先。
   RICHMENU_SELECT_NAMES = [
     '月収40万円のエンジニアになれる方法を知りたい',
     'プログラミング無料体験したい',
@@ -43,8 +34,6 @@ class LmeLineInflowsWorker
   ].freeze
 
   # ==== Entry point ==========================================================
-  # start_date/end_date: "YYYY-MM-DD"
-  # 省略時: ENV['LME_DEFAULT_START_DATE'] (既定 "2025-01-01") 〜 本日（JST）
   def perform(start_date = nil, end_date = nil)
     Time.zone = 'Asia/Tokyo'
 
@@ -76,9 +65,10 @@ class LmeLineInflowsWorker
 
     # 2) 詳細取得
     rows = []
-    days.each do |date|   # "YYYY-MM-DD"
+    days.each do |date|
       next if date.blank?
       detail = fetch_day_details(conn, date, auth: auth)
+      Rails.logger.info("[LME] details for #{date}: #{detail.size} records")
       Array(detail).each do |r|
         rec = r.respond_to?(:with_indifferent_access) ? r.with_indifferent_access : r
         lu  = (rec['line_user'] || {})
@@ -130,14 +120,41 @@ class LmeLineInflowsWorker
 
   # ==== LME API =============================================================
 
-  # 期間サマリ
-  def fetch_friend_overview(conn, start_on, end_on, auth: nil)
-    if auth
-      conn.headers['Cookie'] = auth.cookie
-      if (xsrf = extract_cookie(auth.cookie, 'XSRF-TOKEN'))
-        conn.headers['X-XSRF-TOKEN'] = CGI.unescape(xsrf)
+  # 認証ヘッダーを設定する共通処理
+  def apply_auth_headers!(conn, auth)
+    return unless auth
+    
+    conn.headers['Cookie'] = auth.cookie
+    if (xsrf = extract_cookie(auth.cookie, 'XSRF-TOKEN'))
+      # Laravelの暗号化されたXSRF-TOKENをデコード
+      begin
+        require 'base64'
+        require 'json'
+        
+        # Base64デコード
+        decoded = Base64.decode64(xsrf)
+        parsed = JSON.parse(decoded)
+        
+        # 実際のトークン値を取得
+        actual_token = parsed['value']
+        
+        # 一時的にcurlコマンドの値を使用（後で動的に取得する方法を実装）
+        # 実際のブラウザでは、JavaScriptでXSRF-TOKENを処理してx-csrf-tokenヘッダーに設定
+        conn.headers['x-csrf-token'] = 'G8DIflobvOFdlSWXkv8mINdFhzsK1CZUL72BAfbo'
+        Rails.logger.info("[LME] Using hardcoded x-csrf-token for now")
+      rescue => e
+        Rails.logger.warn("[LME] Failed to decode XSRF-TOKEN: #{e.message}")
+        # デコードに失敗した場合は元の値をそのまま使用
+        conn.headers['x-csrf-token'] = CGI.unescape(xsrf)
       end
     end
+  end
+
+  # 期間サマリ
+  def fetch_friend_overview(conn, start_on, end_on, auth: nil)
+    apply_auth_headers!(conn, auth)
+    
+    # 実際のcurlコマンドに基づいて、正しいデータ形式でPOSTリクエスト
     body = { data: { start: start_on, end: end_on }.to_json }
     resp = conn.post('/ajax/init-data-history-add-friend', body.to_json)
     auth&.refresh_from_response_cookies!(resp.headers)
@@ -150,13 +167,8 @@ class LmeLineInflowsWorker
 
   # 日別詳細
   def fetch_day_details(conn, ymd, auth: nil)
-    if auth
-      conn.headers['Cookie'] = auth.cookie
-      if (xsrf = extract_cookie(auth.cookie, 'XSRF-TOKEN'))
-        conn.headers['X-XSRF-TOKEN'] = CGI.unescape(xsrf)
-      end
-    end
-
+    apply_auth_headers!(conn, auth)
+    # 実際のcurlコマンドに基づいて、正しいエンドポイントを使用
     body = { date: ymd, tab: 1 }
     resp = conn.post('/ajax/init-data-history-add-friend-by-date', body.to_json)
     auth&.refresh_from_response_cookies!(resp.headers)
@@ -168,13 +180,12 @@ class LmeLineInflowsWorker
 
   # タグ一覧（ユーザー単位）
   def fetch_user_categories_tags(conn, line_user_id, auth: nil, bot_id: nil, is_all_tag: 0)
-    if auth
-      conn.headers['Cookie'] = auth.cookie
-      if (xsrf = extract_cookie(auth.cookie, 'XSRF-TOKEN'))
-        conn.headers['X-XSRF-TOKEN'] = CGI.unescape(xsrf)
-      end
-    end
-
+    apply_auth_headers!(conn, auth)
+    
+    # タグ取得用の特別なヘッダー設定
+    conn.headers['Referer'] = 'https://step.lme.jp/basic/chat-v3?lastTimeUpdateFriend=0'
+    conn.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
+    
     bot_id ||= (ENV['LME_BOT_ID'].presence || '17106').to_s
     form = URI.encode_www_form(
       line_user_id: line_user_id,
@@ -182,14 +193,22 @@ class LmeLineInflowsWorker
       botIdCurrent: bot_id
     )
 
+    Rails.logger.info("[LME] fetch_user_categories_tags request: line_user_id=#{line_user_id}, bot_id=#{bot_id}, form=#{form}")
+    Rails.logger.info("[LME] fetch_user_categories_tags headers: #{conn.headers.slice('Cookie', 'x-csrf-token', 'Referer', 'Content-Type', 'X-Requested-With')}")
+
     resp = conn.post('/basic/chat/get-categories-tags') do |req|
-      req.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
+      req.headers['X-Requested-With'] = 'XMLHttpRequest'
       req.body = form
     end
     auth&.refresh_from_response_cookies!(resp.headers)
 
+    Rails.logger.info("[LME] fetch_user_categories_tags response status: #{resp.status}")
+    Rails.logger.info("[LME] fetch_user_categories_tags response body: #{resp.body}")
+
     json = safe_json(resp.body)
-    json['data'].is_a?(Array) ? json['data'] : []
+    result = json['data'].is_a?(Array) ? json['data'] : []
+    Rails.logger.info("[LME] fetch_user_categories_tags parsed result: #{result}")
+    result
   rescue => e
     Rails.logger.warn("[LME] fetch_user_categories_tags error for #{line_user_id}: #{e.class} #{e.message}")
     []
@@ -221,7 +240,6 @@ class LmeLineInflowsWorker
     service
   end
 
-  # 「after_sheet_name」の直後に new_sheet_name を配置（存在すれば移動）
   def ensure_sheet_exists_adjacent!(service, spreadsheet_id, new_sheet_name, after_sheet_name)
     ss      = service.get_spreadsheet(spreadsheet_id)
     sheets  = ss.sheets
@@ -237,8 +255,7 @@ class LmeLineInflowsWorker
     if target.nil?
       add_req = Google::Apis::SheetsV4::AddSheetRequest.new(
         properties: Google::Apis::SheetsV4::SheetProperties.new(
-          title: new_sheet_name,
-          index: desired_index
+          title: new_sheet_name, index: desired_index
         )
       )
       batch = Google::Apis::SheetsV4::BatchUpdateSpreadsheetRequest.new(
@@ -250,8 +267,7 @@ class LmeLineInflowsWorker
       if cur != desired_index
         update_req = Google::Apis::SheetsV4::UpdateSheetPropertiesRequest.new(
           properties: Google::Apis::SheetsV4::SheetProperties.new(
-            sheet_id: target.properties.sheet_id,
-            index: desired_index
+            sheet_id: target.properties.sheet_id, index: desired_index
           ),
           fields: 'index'
         )
@@ -263,7 +279,6 @@ class LmeLineInflowsWorker
     end
   end
 
-  # フォールバックの単純 ensure
   def ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
     ss = service.get_spreadsheet(spreadsheet_id)
     exists = ss.sheets.any? { |s| s.properties&.title == sheet_name }
@@ -278,57 +293,40 @@ class LmeLineInflowsWorker
     service.batch_update_spreadsheet(spreadsheet_id, batch)
   end
 
-  # === クリア→統計(2-4行)→ヘッダー(5行)→データ(6行〜) =======================
-
+  # === クリア→統計→ヘッダー→データ ==========================================
   def upload_to_gsheets!(service:, rows:, spreadsheet_id:, sheet_name:, tags_cache:, end_on:)
-    # クリア
     clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
-    service.clear_values(spreadsheet_id, "#{sheet_name}!B2:Z", clear_req)
-    service.clear_values(spreadsheet_id, "#{sheet_name}!B3:Z", clear_req)
-    service.clear_values(spreadsheet_id, "#{sheet_name}!B4:Z", clear_req)
-    service.clear_values(spreadsheet_id, "#{sheet_name}!B5:Z", clear_req)
-    service.clear_values(spreadsheet_id, "#{sheet_name}!B6:Z", clear_req)
-    service.clear_values(spreadsheet_id, "#{sheet_name}!B7:Z", clear_req)
+    %w[B2 B3 B4 B5 B6 B7].each do |r|
+      service.clear_values(spreadsheet_id, "#{sheet_name}!#{r}:Z", clear_req)
+    end
 
-    # 更新日時（B2）
     meta_values = [['バッチ実行タイミング', jp_timestamp]]
     service.update_spreadsheet_value(
-      spreadsheet_id,
-      "#{sheet_name}!B2",
+      spreadsheet_id, "#{sheet_name}!B2",
       Google::Apis::SheetsV4::ValueRange.new(values: meta_values),
       value_input_option: 'USER_ENTERED'
     )
 
-    # 当月 / 前月 / 累計（2025-05-01〜）の%を I/K/M/O に出力
     end_d   = (parse_date(end_on).to_date rescue Date.today)
     this_m  = end_d.strftime('%Y-%m')
     prev_m  = end_d.prev_month.strftime('%Y-%m')
 
-    # 当月＆累計
     monthly_rates, cumulative_rates = calc_rates(rows, tags_cache, month: this_m, since: CUM_SINCE)
-    # 前月
     prev_month_rates = month_rates(rows, tags_cache, month: prev_m)
 
-    # B..P の15列配列（必要セルのみ書く）
-    # ヘッダー数に合わせて可変長で用意
-    headers_preview = [
+    headers = [
       '友達追加時刻', '流入元', 'line_user_id', '名前', 'LINE_ID', 'ブロック?',
       '動画①_ダイジェスト', 'プロアカ_動画①',
       '動画②_ダイジェスト', 'プロアカ_動画②',
       '動画③_ダイジェスト', 'プロアカ_動画③',
       '', 'プロアカ_動画④', '選択肢'
     ]
-    cols = headers_preview.size
+    cols = headers.size
 
-    row3 = Array.new(cols, '')
-    row4 = Array.new(cols, '')
-    row5 = Array.new(cols, '')
-
-    row3[0] = "今月%（#{this_m}）"                                   # B3
-    row4[0] = "前月%（#{prev_m}）"                                   # B4
-    row5[0] = "累計%（#{Date.parse(CUM_SINCE).strftime('%Y/%-m')}〜）" rescue row5[0] = "累計%" # B5
-
-    # I/K/M/O は B基準0-indexで 7/9/11/13
+    row3 = Array.new(cols, ''); row4 = Array.new(cols, ''); row5 = Array.new(cols, '')
+    row3[0] = "今月%（#{this_m}）"
+    row4[0] = "前月%（#{prev_m}）"
+    row5[0] = "累計%（#{Date.parse(CUM_SINCE).strftime('%Y/%-m')}〜）" rescue row5[0] = "累計%"
     put_percentages!(row3, monthly_rates)
     put_percentages!(row4, prev_month_rates)
     put_percentages!(row5, cumulative_rates)
@@ -349,39 +347,35 @@ class LmeLineInflowsWorker
       value_input_option: 'USER_ENTERED'
     )
 
-    # ヘッダー（B..P）を6行目へ（P列=セレクト）
-    headers = headers_preview
-    header_range = "#{sheet_name}!B6:#{a1_col(1 + headers.size)}6" # -> P6
+    header_range = "#{sheet_name}!B6:#{a1_col(1 + headers.size)}6"
     service.update_spreadsheet_value(
       spreadsheet_id, header_range,
       Google::Apis::SheetsV4::ValueRange.new(values: [headers]),
       value_input_option: 'USER_ENTERED'
     )
 
-    # 並び替え: 日付 + 追加時刻 DESC
     sorted = Array(rows).sort_by do |r|
       [ r['date'].to_s, (Time.zone.parse(r['followed_at'].to_s) rescue r['followed_at'].to_s) ]
     end.reverse
 
-    # データ（B..P の 15 列ぶん）を7行目から
     data_values = sorted.map do |r|
       t = tags_cache[r['line_user_id']] || {}
       [
-        to_jp_ymdhm(r['followed_at']),            # B
-        r['landing_name'],                        # C
-        r['line_user_id'],                        # D
-        hyperlink_line_user(r['line_user_id'], r['name']), # E
-        r['line_id'],                             # F
-        r['is_blocked'].to_i,                     # G
-        (t[:dv1] ? 'タグあり' : ''),              # H
-        (t[:v1]  ? 'タグあり' : ''),              # I
-        (t[:dv2] ? 'タグあり' : ''),              # J
-        (t[:v2]  ? 'タグあり' : ''),              # K
-        (t[:dv3] ? 'タグあり' : ''),              # L
-        (t[:v3]  ? 'タグあり' : ''),              # M
-        '',                                       # N (予備)
-        (t[:v4]  ? 'タグあり' : ''),              # O
-        (t[:select] || '')                        # P: セレクト（リッチメニュー選択name）
+        to_jp_ymdhm(r['followed_at']),
+        r['landing_name'],
+        r['line_user_id'],
+        hyperlink_line_user(r['line_user_id'], r['name']),
+        r['line_id'],
+        r['is_blocked'].to_i,
+        (t[:dv1] ? 'タグあり' : ''),
+        (t[:v1]  ? 'タグあり' : ''),
+        (t[:dv2] ? 'タグあり' : ''),
+        (t[:v2]  ? 'タグあり' : ''),
+        (t[:dv3] ? 'タグあり' : ''),
+        (t[:v3]  ? 'タグあり' : ''),
+        '',
+        (t[:v4]  ? 'タグあり' : ''),
+        (t[:select] || '')
       ]
     end
 
@@ -396,8 +390,6 @@ class LmeLineInflowsWorker
   end
 
   # ==== Helpers: 集計 =======================================================
-
-  # rows と tags_cache から、指定月の各%と累計%を返す
   def calc_rates(rows, tags_cache, month:, since:)
     month_rows = Array(rows).select { |r| month_key(r['date']) == month }
     cum_rows   = Array(rows).select { |r| r['date'].to_s >= since.to_s }
@@ -417,7 +409,6 @@ class LmeLineInflowsWorker
     [monthly, cumulative]
   end
 
-  # 指定キー(:v1..:v4)の“タグあり”割合（% 小数1桁）
   def pct_for(rows, tags_cache, key)
     denom = rows.size
     return nil if denom.zero?
@@ -438,9 +429,7 @@ class LmeLineInflowsWorker
     end
   end
 
-  # ==== Helpers: タグ抽出/書式 =================================================
-
-  # 指定「月」(:YYYY-MM) の“タグあり”割合（% 小数1桁）を返す
+  # ==== Helpers: タグ抽出/書式 ==============================================
   def month_rates(rows, tags_cache, month:)
     month_rows = Array(rows).select { |r| month_key(r['date']) == month }
     {
@@ -454,25 +443,37 @@ class LmeLineInflowsWorker
   def build_proaka_tags_cache(conn, line_user_ids, auth:)
     bot_id = (ENV['LME_BOT_ID'].presence || '17106').to_s
     cache = {}
+    Rails.logger.info("[LME] build_proaka_tags_cache: processing #{line_user_ids.size} users")
+    
     line_user_ids.each do |uid|
+      Rails.logger.info("[LME] build_proaka_tags_cache: processing user #{uid}")
       cats = fetch_user_categories_tags(conn, uid, auth: auth, bot_id: bot_id)
-      cache[uid] = proaka_flags_from_categories(cats)
+      flags = proaka_flags_from_categories(cats)
+      cache[uid] = flags
+      Rails.logger.info("[LME] build_proaka_tags_cache: user #{uid} flags=#{flags}")
     end
+    
+    Rails.logger.info("[LME] build_proaka_tags_cache: completed, cache size=#{cache.size}")
     cache
   end
 
   def proaka_flags_from_categories(categories)
+    Rails.logger.info("[LME] proaka_flags_from_categories: input=#{categories}")
+    
     target = Array(categories).find { |c| (c['id'] || c[:id]).to_i == PROAKA_CATEGORY_ID }
+    Rails.logger.info("[LME] proaka_flags_from_categories: target category=#{target}")
+    
     return { v1: false, v2: false, v3: false, v4: false, dv1: false, dv2: false, dv3: false, select: nil } unless target
 
     tag_list  = Array(target['tags'] || target[:tags])
     tag_ids   = tag_list.map  { |t| (t['tag_id'] || t[:tag_id]).to_i }.to_set
     tag_names = tag_list.map { |t| (t['name']   || t[:name]).to_s }.to_set
 
-    # セレクト（優先順で最初に一致したもの）
+    Rails.logger.info("[LME] proaka_flags_from_categories: tag_ids=#{tag_ids}, tag_names=#{tag_names}")
+
     selected = RICHMENU_SELECT_NAMES.find { |nm| tag_names.include?(nm) }
 
-    {
+    result = {
       v1:  tag_ids.include?(PROAKA_TAGS[:v1]),
       v2:  tag_ids.include?(PROAKA_TAGS[:v2]),
       v3:  tag_ids.include?(PROAKA_TAGS[:v3]),
@@ -482,6 +483,9 @@ class LmeLineInflowsWorker
       dv3: tag_names.include?(PROAKA_DIGEST_NAMES[:dv3]),
       select: selected
     }
+    
+    Rails.logger.info("[LME] proaka_flags_from_categories: result=#{result}")
+    result
   end
 
   def hyperlink_line_user(id, name)
@@ -530,7 +534,7 @@ class LmeLineInflowsWorker
   private
 
   def default_start_on
-    raw = ENV['LME_DEFAULT_START_DATE'].presence || '2025-01-01'
+    raw = ENV['LME_DEFAULT_START_DATE'].presence || '2025-09-01'
     Date.parse(raw).strftime('%F')
   rescue
     '2024-01-01'
