@@ -1,15 +1,27 @@
 # frozen_string_literal: true
 require "uri"
 require "set"
+# ↑ BaseServiceでrequireしていない場合は次も:
+# require "cgi"
 
 module Lme
   class UserTagsService < BaseService
     include ProakaConfig
 
-    CHAT_REFERER = "#{LmeAuthClient::BASE_URL}/basic/chat-v3?lastTimeUpdateFriend=0"
+    CHAT_REFERER_PATH = "/basic/chat-v3?lastTimeUpdateFriend=0"
 
     def categories_tags(conn, line_user_id, bot_id:, is_all_tag: 0)
-      apply_form_headers!(conn, referer: CHAT_REFERER)
+      # --- cURL と同じヘッダを厳密に付与 ---
+      csrf = auth.csrf_token_for(CHAT_REFERER_PATH)
+      csrf ||= CGI.unescape(extract_cookie(auth.cookie, "XSRF-TOKEN").to_s)
+
+      conn.headers["Cookie"]           = auth.cookie
+      conn.headers["Accept"]           = "*/*"
+      conn.headers["x-requested-with"] = "XMLHttpRequest"
+      conn.headers["x-csrf-token"]     = csrf
+      conn.headers["Referer"]          = "#{LmeAuthClient::BASE_URL}#{CHAT_REFERER_PATH}"
+      # （必要なら）originも付けたい場合は↓を有効化
+      # conn.headers["Origin"]           = LmeAuthClient::BASE_URL
 
       form = URI.encode_www_form(
         line_user_id: line_user_id,
@@ -43,7 +55,7 @@ module Lme
 
       workers = Array.new([threads, 1].max) do
         Thread.new do
-          local_conn = auth.conn
+          local_conn = auth.conn # スレッド専用
           while (uid = q.pop(true) rescue nil)
             cache[uid] = flags_for(local_conn, uid, bot_id: bot_id)
           end
@@ -77,6 +89,18 @@ module Lme
 
     def empty_flags
       { v1: false, v2: false, v3: false, v4: false, dv1: false, dv2: false, dv3: false, select: nil }
+    end
+
+    private
+
+    # BaseServiceにあれば不要。無ければ同等の実装を置く。
+    def extract_cookie(cookie_str, key)
+      return nil if cookie_str.blank?
+      cookie_str.split(";").map(&:strip).each do |pair|
+        k, v = pair.split("=", 2)
+        return v if k == key
+      end
+      nil
     end
   end
 end
