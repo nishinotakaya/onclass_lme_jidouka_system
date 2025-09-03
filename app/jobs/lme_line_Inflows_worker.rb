@@ -123,52 +123,47 @@ class LmeLineInflowsWorker
   # 認証ヘッダーを設定する共通処理
   def apply_auth_headers!(conn, auth)
     return unless auth
-    
+
     conn.headers['Cookie'] = auth.cookie
     if (xsrf = extract_cookie(auth.cookie, 'XSRF-TOKEN'))
-      # Laravelの暗号化されたXSRF-TOKENをデコード
-      begin
-        require 'base64'
-        require 'json'
-        
-        # Base64デコード
-        decoded = Base64.decode64(xsrf)
-        parsed = JSON.parse(decoded)
-        
-        # 実際のトークン値を取得
-        actual_token = parsed['value']
-        
-        # 一時的にcurlコマンドの値を使用（後で動的に取得する方法を実装）
-        # 実際のブラウザでは、JavaScriptでXSRF-TOKENを処理してx-csrf-tokenヘッダーに設定
-        conn.headers['x-csrf-token'] = 'G8DIflobvOFdlSWXkv8mINdFhzsK1CZUL72BAfbo'
-        Rails.logger.info("[LME] Using hardcoded x-csrf-token for now")
-      rescue => e
-        Rails.logger.warn("[LME] Failed to decode XSRF-TOKEN: #{e.message}")
-        # デコードに失敗した場合は元の値をそのまま使用
-        conn.headers['x-csrf-token'] = CGI.unescape(xsrf)
-      end
+      token = CGI.unescape(xsrf)
+      conn.headers['x-csrf-token']     = token
+      conn.headers['X-CSRF-TOKEN']     = token
+      conn.headers['X-XSRF-TOKEN']     = token
+      conn.headers['x-xsrf-token']     = token
+      conn.headers['X-Requested-With'] = 'XMLHttpRequest'
     end
   end
 
+
   # 期間サマリ
+  # 置換: fetch_friend_overview
   def fetch_friend_overview(conn, start_on, end_on, auth: nil)
     apply_auth_headers!(conn, auth)
-    
-    # 実際のcurlコマンドに基づいて、正しいデータ形式でPOSTリクエスト
+    conn.headers['Referer'] = "#{LmeAuthClient::BASE_URL}/basic/friendlist/friend-history"
+    conn.headers['Content-Type'] = 'application/json;charset=UTF-8'
+    conn.headers['Accept'] = 'application/json, text/plain, */*'
+
     body = { data: { start: start_on, end: end_on }.to_json }
     resp = conn.post('/ajax/init-data-history-add-friend', body.to_json)
     auth&.refresh_from_response_cookies!(resp.headers)
 
     json = safe_json(resp.body)
-    arr = json['data'] || json['result'] || json['records'] || []
-    arr = arr['data'] if arr.is_a?(Hash) && arr['data'].is_a?(Array)
+    arr  = json['data'] || json['result'] || json['records'] || []
+    arr  = arr['data'] if arr.is_a?(Hash) && arr['data'].is_a?(Array)
     arr
+  rescue Faraday::Error => e
+    Rails.logger.warn("[LME] overview failed: #{e.class} #{e.message}")
+    []
   end
 
   # 日別詳細
   def fetch_day_details(conn, ymd, auth: nil)
     apply_auth_headers!(conn, auth)
-    # 実際のcurlコマンドに基づいて、正しいエンドポイントを使用
+    conn.headers['Referer'] = "#{LmeAuthClient::BASE_URL}/basic/overview/friendlist/view-date?date=#{ymd}"
+    conn.headers['Content-Type'] = 'application/json;charset=UTF-8'
+    conn.headers['Accept'] = 'application/json, text/plain, */*'
+
     body = { date: ymd, tab: 1 }
     resp = conn.post('/ajax/init-data-history-add-friend-by-date', body.to_json)
     auth&.refresh_from_response_cookies!(resp.headers)
@@ -176,43 +171,52 @@ class LmeLineInflowsWorker
     json = safe_json(resp.body)
     rv = json['result'] || json['data'] || json
     rv.is_a?(Array) ? rv : Array(rv)
-  end
-
-  # タグ一覧（ユーザー単位）
-  def fetch_user_categories_tags(conn, line_user_id, auth: nil, bot_id: nil, is_all_tag: 0)
-    apply_auth_headers!(conn, auth)
-    
-    # タグ取得用の特別なヘッダー設定
-    conn.headers['Referer'] = 'https://step.lme.jp/basic/chat-v3?lastTimeUpdateFriend=0'
-    conn.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
-    
-    bot_id ||= (ENV['LME_BOT_ID'].presence || '17106').to_s
-    form = URI.encode_www_form(
-      line_user_id: line_user_id,
-      is_all_tag: is_all_tag,
-      botIdCurrent: bot_id
-    )
-
-    Rails.logger.info("[LME] fetch_user_categories_tags request: line_user_id=#{line_user_id}, bot_id=#{bot_id}, form=#{form}")
-    Rails.logger.info("[LME] fetch_user_categories_tags headers: #{conn.headers.slice('Cookie', 'x-csrf-token', 'Referer', 'Content-Type', 'X-Requested-With')}")
-
-    resp = conn.post('/basic/chat/get-categories-tags') do |req|
-      req.headers['X-Requested-With'] = 'XMLHttpRequest'
-      req.body = form
-    end
-    auth&.refresh_from_response_cookies!(resp.headers)
-
-    Rails.logger.info("[LME] fetch_user_categories_tags response status: #{resp.status}")
-    Rails.logger.info("[LME] fetch_user_categories_tags response body: #{resp.body}")
-
-    json = safe_json(resp.body)
-    result = json['data'].is_a?(Array) ? json['data'] : []
-    Rails.logger.info("[LME] fetch_user_categories_tags parsed result: #{result}")
-    result
-  rescue => e
-    Rails.logger.warn("[LME] fetch_user_categories_tags error for #{line_user_id}: #{e.class} #{e.message}")
+  rescue Faraday::Error => e
+    Rails.logger.warn("[LME] day_details failed for #{ymd}: #{e.class} #{e.message}")
     []
   end
+
+
+  # タグ一覧（ユーザー単位）
+  # 置換: タグ一覧（ユーザー単位）
+  # タグ一覧（ユーザー単位）
+  def fetch_user_categories_tags(conn, line_user_id, auth: nil, bot_id: nil, is_all_tag: 0)
+    raise "auth required" unless auth
+
+    # 1) chat-v3 を開いて meta csrf-token を取得
+    referer_path = "/basic/chat-v3?lastTimeUpdateFriend=0"
+    csrf = auth.csrf_token_for(referer_path)
+    # フォールバック（最悪 Cookie の XSRF を URLデコードしたもの）
+    csrf ||= CGI.unescape(extract_cookie(auth.cookie, 'XSRF-TOKEN').to_s)
+
+    # 2) cURL と同じヘッダーを厳密に付与
+    conn.headers["Cookie"]           = auth.cookie
+    conn.headers["Accept"]           = "*/*"
+    conn.headers["x-requested-with"] = "XMLHttpRequest"
+    conn.headers["x-csrf-token"]     = csrf
+    conn.headers["Referer"]          = "#{LmeAuthClient::BASE_URL}#{referer_path}"
+
+    # 3) form-urlencoded で送る（キー名を cURL と同一に）
+    form = URI.encode_www_form(
+      line_user_id: line_user_id,
+      is_all_tag:   is_all_tag,
+      botIdCurrent: (bot_id || ENV['LME_BOT_ID'] || '17106').to_s
+    )
+
+    resp = conn.post('/basic/chat/get-categories-tags') do |req|
+      req.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
+      req.body = form
+    end
+    auth.refresh_from_response_cookies!(resp.headers)
+
+    json = safe_json(resp.body)
+    arr  = json['data'] || json['result'] || []
+    arr.is_a?(Array) ? arr : []
+  rescue Faraday::Error => e
+    Rails.logger.warn("[LME] fetch_user_categories_tags 404/err for #{line_user_id}: #{e.class} #{e.message}")
+    []
+  end
+
 
   def safe_json(str) JSON.parse(str) rescue {} end
 
@@ -440,20 +444,27 @@ class LmeLineInflowsWorker
     }
   end
 
-  def build_proaka_tags_cache(conn, line_user_ids, auth:)
-    bot_id = (ENV['LME_BOT_ID'].presence || '17106').to_s
+  def build_proaka_tags_cache(_conn, line_user_ids, auth:)
+    ids = Array(line_user_ids).uniq
     cache = {}
-    Rails.logger.info("[LME] build_proaka_tags_cache: processing #{line_user_ids.size} users")
-    
-    line_user_ids.each do |uid|
-      Rails.logger.info("[LME] build_proaka_tags_cache: processing user #{uid}")
-      cats = fetch_user_categories_tags(conn, uid, auth: auth, bot_id: bot_id)
-      flags = proaka_flags_from_categories(cats)
-      cache[uid] = flags
-      Rails.logger.info("[LME] build_proaka_tags_cache: user #{uid} flags=#{flags}")
+    q = Queue.new
+    ids.each { |id| q << id }
+
+    workers = Integer(ENV['LME_TAG_THREADS'] || 6)
+    threads = Array.new(workers) do
+      Thread.new do
+        local = auth.conn # スレッド専用 conn
+        while (uid = q.pop(true) rescue nil)
+          cats  = fetch_user_categories_tags(local, uid, auth: auth, bot_id: (ENV['LME_BOT_ID'] || '17106'))
+          flags = proaka_flags_from_categories(cats)
+          Thread.current[:count] = (Thread.current[:count] || 0) + 1
+          cache[uid] = flags
+        end
+      rescue ThreadError
+        # queue empty
+      end
     end
-    
-    Rails.logger.info("[LME] build_proaka_tags_cache: completed, cache size=#{cache.size}")
+    threads.each(&:join)
     cache
   end
 
@@ -534,7 +545,7 @@ class LmeLineInflowsWorker
   private
 
   def default_start_on
-    raw = ENV['LME_DEFAULT_START_DATE'].presence || '2025-09-01'
+    raw = ENV['LME_DEFAULT_START_DATE'].presence || '2025-01-01'
     Date.parse(raw).strftime('%F')
   rescue
     '2024-01-01'

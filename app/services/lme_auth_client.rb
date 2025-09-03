@@ -45,6 +45,28 @@ class LmeAuthClient
     end
   end
 
+   def csrf_token_for(referer_path = "/basic/chat-v3?lastTimeUpdateFriend=0", cookie_str = cookie)
+    c = Faraday.new(url: BASE_URL) do |f|
+      f.response :raise_error
+      f.adapter  Faraday.default_adapter
+      f.headers["Cookie"]     = cookie_str
+      f.headers["User-Agent"] = "Mozilla/5.0"
+      f.headers["Accept"]     = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+      f.headers["Referer"]    = "#{BASE_URL}/basic/overview"
+    end
+    res = c.get(referer_path)
+    refresh_from_response_cookies!(res.headers, current: cookie_str)
+
+    html = res.body.to_s
+    # <meta name="csrf-token" content="...">
+    meta = html.match(/<meta\s+name=["']csrf-token["']\s+content=["']([^"']+)["']/i)
+    meta && meta[1]
+  rescue Faraday::ClientError => e
+    Rails.logger.warn("[LmeAuthClient] csrf_token_for failed status=#{e.response&.dig(:status)}")
+    nil
+  end
+
+
   # ---- ヘルスチェック（緩め） ----------------------------------------------
   def valid_cookie?(cookie_str = cookie)
     c = conn(cookie_str)
