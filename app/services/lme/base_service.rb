@@ -20,7 +20,7 @@ module Lme
 
     # ---- x-www-form-urlencoded を投げる系（/basic/chat/...）
     def apply_form_headers!(conn, referer:)
-      apply_common_csrf!(conn, referer: referer)  # ← ここを修正
+      apply_common_csrf!(conn, referer: referer)
       conn.headers["Accept"]           = "*/*"
       conn.headers["x-requested-with"] = "XMLHttpRequest"
       conn
@@ -28,7 +28,7 @@ module Lme
 
     # ---- application/json を投げる系（/ajax/...）
     def apply_json_headers!(conn, referer:)
-      apply_common_csrf!(conn, referer: referer)  # ← ここを修正
+      apply_common_csrf!(conn, referer: referer)
       conn.headers["Accept"]       = "application/json, text/plain, */*"
       conn.headers["Content-Type"] = "application/json;charset=UTF-8"
       conn
