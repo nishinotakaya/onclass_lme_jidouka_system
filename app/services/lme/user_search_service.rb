@@ -2,7 +2,6 @@
 # frozen_string_literal: true
 module Lme
   class UserSearchService < BaseService
-    # ここはプロジェクトの要件/APIに合わせて拡張してください。
     # 例: キーワード検索エンドポイントがあるなら search(conn, keyword:)
     # 例: line_user_id から簡易情報取得など。
 

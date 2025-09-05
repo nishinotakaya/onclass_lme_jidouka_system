@@ -2,28 +2,40 @@
 class OnclassMentionsWorker
   include Sidekiq::Worker
   sidekiq_options queue: :onclass_comunity_Mentions, retry: 3
-  TARGET_CHANNEL_ID = ENV.fetch("ONCLASS_CHANNEL_ID", "oyIDI6g2Y").freeze
+
+  TARGET_CHANNEL_ID   = ENV.fetch("ONCLASS_CHANNEL_ID", "oyIDI6g2Y").freeze
   MANAGER_COMMUNITY_URL = "https://manager.the-online-class.com/community".freeze
 
   def perform
-    OnclassSignInWorker.new.perform
-
-    client  = OnclassAuthClient.new
-    headers = client.headers
-
-    mentions = get_mentions(headers)
-
-    # 対象チャンネルのメンションは除外
-    unread = mentions.select { |m|
-      m["is_read"] == false && m.dig("chat", "channel", "id") != TARGET_CHANNEL_ID
-    }
-
-    if unread.any?
-      unread.each { |m| notify_line_mention(m) }
-      Rails.logger.info("[OnclassMentionsWorker] sent #{unread.size} unread mention(s) to LINE")
-    else
-      Rails.logger.info("[OnclassMentionsWorker] No unread mentions found (excluding #{TARGET_CHANNEL_ID}).")
+    creds = OnclassAuthClient.credentials_from_env
+    if creds.empty?
+      Rails.logger.warn("[OnclassMentionsWorker] No credentials found in ENV.")
+      return
     end
+
+    total = 0
+
+    creds.each do |cred|
+      client  = OnclassAuthClient.new(email: cred[:email], password: cred[:password])
+      headers = client.headers
+
+      mentions = get_mentions(headers)
+
+      # 対象チャンネルのメンションは除外
+      unread = mentions.select { |m|
+        m["is_read"] == false && m.dig("chat", "channel", "id") != TARGET_CHANNEL_ID
+      }
+
+      if unread.any?
+        unread.each { |m| notify_line_mention(m, account: cred[:email]) }
+        Rails.logger.info("[OnclassMentionsWorker] account=#{cred[:email]} sent #{unread.size} unread mention(s) to LINE")
+        total += unread.size
+      else
+        Rails.logger.info("[OnclassMentionsWorker] account=#{cred[:email]}: No unread mentions found (excluding #{TARGET_CHANNEL_ID}).")
+      end
+    end
+
+    Rails.logger.info("[OnclassMentionsWorker] total sent #{total} mention(s) across #{creds.size} account(s)")
 
   rescue Faraday::Error => e
     Rails.logger.error("[OnclassMentionsWorker] HTTP error: #{e.class} #{e.message}")
@@ -44,13 +56,14 @@ class OnclassMentionsWorker
     JSON.parse(res.body)["data"] || []
   end
 
-  def notify_line_mention(mention)
+  def notify_line_mention(mention, account: nil)
     ch_name   = mention.dig("chat", "channel", "name")
     user_name = mention.dig("chat", "user_name")
     text      = mention.dig("chat", "text").to_s
     created   = mention["created_at"]
 
     title = "【チャンネル名: #{ch_name}】投稿者: #{user_name}"
+    title = "[#{account}] " + title if account.present?
 
     ts  = (Time.zone ? Time.zone.parse(created) : Time.parse(created)).strftime("%Y-%m-%d %H:%M")
     to_names = Array(mention.dig("chat", "mention_targets")).map { |t| t["name"] }.join(", ")
