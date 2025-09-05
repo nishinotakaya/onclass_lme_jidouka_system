@@ -1,10 +1,10 @@
 # config/scheduler_development.yml
 onclass_mentions_every:
   class: "OnclassMentionsWorker"
-  cron: "0 7-24/30 * * * *"   # 30分おきに実行
+  cron: "0,30 7-23 * * *"   # 7-23時の間で30分おきに実行
   queue: onclass_comunity_Mentions
   tz: "Asia/Tokyo"
-  description: "コミュニティメンション機能通知(30分おきに実行)"
+  description: "コミュニティメンション機能通知(7-23時の間で30分おきに実行)"
 
 onclass_pdca_every:
   class: "OnclassPdcaStudentsWorker"

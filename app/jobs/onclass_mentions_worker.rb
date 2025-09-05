@@ -72,7 +72,6 @@ class OnclassMentionsWorker
     created   = mention["created_at"]
 
     title = "【チャンネル名: #{ch_name}】投稿者: #{user_name}"
-    title = "[#{account}] " + title if account.present?
 
     ts  = (Time.zone ? Time.zone.parse(created) : Time.parse(created)).strftime("%Y-%m-%d %H:%M")
     to_names = Array(mention.dig("chat", "mention_targets")).map { |t| t["name"] }.join(", ")
