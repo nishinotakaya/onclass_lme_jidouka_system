@@ -22,9 +22,18 @@ class OnclassMentionsWorker
       mentions = get_mentions(headers)
 
       # 対象チャンネルのメンションは除外
+      # 対象チャンネルのメンションは除外
       unread = mentions.select { |m|
         m["is_read"] == false && m.dig("chat", "channel", "id") != TARGET_CHANNEL_ID
       }
+
+      # ← ここを追加：created_at 昇順（古い→新しい）
+      unread.sort_by! do |m|
+        s = m["created_at"].to_s
+        (Time.zone ? Time.zone.parse(s) : Time.parse(s))
+      rescue
+        Time.at(0)
+      end
 
       if unread.any?
         unread.each { |m| notify_line_mention(m, account: cred[:email]) }
