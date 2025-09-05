@@ -21,10 +21,9 @@ class OnclassMentionsWorker
 
       mentions = get_mentions(headers)
 
-      # 対象チャンネルのメンションは除外
-      # 対象チャンネルのメンションは除外
+      # メンションの未読のみ抽出
       unread = mentions.select { |m|
-        m["is_read"] == false && m.dig("chat", "channel", "id") != TARGET_CHANNEL_ID
+        m["is_read"] == false && m.dig("chat", "channel", "id")
       }
 
       # ← ここを追加：created_at 昇順（古い→新しい）
@@ -40,7 +39,7 @@ class OnclassMentionsWorker
         Rails.logger.info("[OnclassMentionsWorker] account=#{cred[:email]} sent #{unread.size} unread mention(s) to LINE")
         total += unread.size
       else
-        Rails.logger.info("[OnclassMentionsWorker] account=#{cred[:email]}: No unread mentions found (excluding #{TARGET_CHANNEL_ID}).")
+        Rails.logger.info("[OnclassMentionsWorker] account=#{cred[:email]}: No unread mentions found.")
       end
     end
 
