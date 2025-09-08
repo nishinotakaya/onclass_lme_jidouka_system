@@ -13,13 +13,21 @@ onclass_pdca_every:
   tz: "Asia/Tokyo"
   description: "コミュニティ機能毎日のPDCA通知(7~23時に2時間おきに実行)"
 
-onclass_students_data:
-  class: "OnclassStudentsDataWorker"
-  cron: "0 7-23/2 * * *"   # 07,09,11,13,15,17,19,21,23
+onclass_students_front:
+  cron: "0 */2 * * *"   # 2時間毎など
+  class: OnclassStudentsDataWorker
   queue: onclass_students_data
-  tz: "Asia/Tokyo"
-  description: "オンクラス受講生データ同期"
+  args:
+    - "oYTO4UDI6MGb"
+    - "受講生自動化"
 
+onclass_students_free_engineer:
+  cron: "15 */2 * * *"  # 2時間毎 + 15分（ずらす）
+  class: OnclassStudentsDataWorker
+  queue: onclass_students_data
+  args:
+    - "oEDI6MGb"
+    - "フリーエンジニア養成コース"
 
 lme_line_inflows_daily:
   cron: "0 7-23/2 * * *"   # 07,09,11,13,15,17,19,21,23

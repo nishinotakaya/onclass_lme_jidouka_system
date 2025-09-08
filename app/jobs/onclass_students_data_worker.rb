@@ -2,6 +2,9 @@
 
 require 'csv'
 require 'date'
+require 'json'
+require 'fileutils'
+require 'faraday'
 
 class OnclassStudentsDataWorker
   include Sidekiq::Worker
@@ -10,8 +13,10 @@ class OnclassStudentsDataWorker
   require 'google/apis/sheets_v4'
   require 'googleauth'
 
+  # デフォルト（未指定時に使うコースID）
+  DEFAULT_LEARNING_COURSE_ID = 'oYTO4UDI6MGb' # 旧: フロント
 
-  LEARNING_COURSE_ID = 'oYTO4UDI6MGb' # フロントコース
+  # 表示順（上から）
   STATUS_ORDER = [
     ['very_good', '素晴らしい'],
     ['good',      '順調'],
@@ -22,12 +27,18 @@ class OnclassStudentsDataWorker
 
   TARGET_COLUMNS = %w[name email last_sign_in_at course_name course_start_at course_progress].freeze
 
-  def perform
-    # 1) サインイン → トークン取得
+  # course_id / sheet_name を引数で切り替え可能に
+  # 引数未指定時は ENV（ONCLASS_COURSE_ID / ONCLASS_SHEET_NAME）→ デフォルト の順で使用
+  def perform(course_id = nil, sheet_name = nil)
+    course_id  ||= ENV.fetch('ONCLASS_COURSE_ID', DEFAULT_LEARNING_COURSE_ID)
+    sheet_name ||= ENV.fetch('ONCLASS_SHEET_NAME', '受講生自動化')
+
+    # 1) サインイン（トークン更新）
     OnclassSignInWorker.new.perform
     client  = OnclassAuthClient.new
-    headers = client.headers # => { "access-token", "client", "uid", "token-type", "expiry" }
-    # 2) Faraday 接続（cURL相当ヘッダも付与）
+    headers = client.headers # => { "access-token", "client", "uid", ... }
+
+    # 2) Faraday 接続
     conn = Faraday.new(url: client.base_url) do |f|
       f.request  :json
       f.response :raise_error
@@ -35,59 +46,80 @@ class OnclassStudentsDataWorker
     end
 
     default_headers = {
-      'accept'            => 'application/json, text/plain, */*',
-      'content-type'      => 'application/json',
-      'origin'            => 'https://manager.the-online-class.com',
-      'referer'           => 'https://manager.the-online-class.com/',
-      'user-agent'        => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
-      'access-token'      => headers['access-token'],
-      'client'            => headers['client'],
-      'uid'               => headers['uid']
+      'accept'       => 'application/json, text/plain, */*',
+      'content-type' => 'application/json',
+      'origin'       => 'https://manager.the-online-class.com',
+      'referer'      => 'https://manager.the-online-class.com/',
+      'user-agent'   => 'Mozilla/5.0',
+      'access-token' => headers['access-token'],
+      'client'       => headers['client'],
+      'uid'          => headers['uid']
     }.compact
 
-    # 3) 各モチベーション別にユーザー取得（ページング考慮）
-    grouped_rows = {} # motivation => [{...row...}]
+    # 3) モチベーション別ページング取得
+    grouped_rows = {} # motivation => rows
     STATUS_ORDER.each do |motivation, jp_label|
-      rows = fetch_users_by_motivation(conn, default_headers, motivation, jp_label)
+      rows = fetch_users_by_motivation(conn, default_headers, motivation, jp_label, course_id)
       grouped_rows[motivation] = rows
-      Rails.logger.info("[OnclassStudentsDataWorker] fetched #{rows.size} users for #{motivation}(#{jp_label})")
+      Rails.logger.info("[OnclassStudentsDataWorker] fetched #{rows.size} users for #{motivation}(#{jp_label}) course=#{course_id}")
     end
 
-    # 4) 指定の順で結合 + 右端に日本語ステータス列
+    # 4) 結合 & IDユニーク化
     combined_rows = STATUS_ORDER.flat_map { |motivation, _| grouped_rows[motivation] }
-    # 重複防止のため uniq
-    student_ids = combined_rows.map { |r| r['id'] }.compact.uniq
+    student_ids   = combined_rows.map { |r| r['id'] }.compact.uniq
 
-    # (A) 同期でこのWorkerの中で詳細も取って “手元のconn/headersを再利用” する場合
+    # 5) 受講状況詳細 / 基本情報
     details_by_id = {}
     student_ids.each do |sid|
-      details_by_id[sid] = fetch_user_learning_course(conn, default_headers, sid, LEARNING_COURSE_ID)
-      # 例：combined_rows の各行にマージしたければここで：
-      # row = combined_rows.find { |r| r['id'] == sid }
-      # row['course_progress_rate'] = details_by_id[sid]['course_progress_rate']
+      details_by_id[sid] = fetch_user_learning_course(conn, default_headers, sid, course_id)
+      sleep 0.05
     end
+
+    basic_by_id = {}
+    student_ids.each do |sid|
+      begin
+        basic_by_id[sid] = fetch_user_basic(conn, default_headers, sid)
+        sleep 0.03
+      rescue => e
+        Rails.logger.warn("[OnclassStudentsDataWorker] basic fetch failed for #{sid}: #{e.class} #{e.message}")
+      end
+    end
+
+    # 6) 付加情報をマージ
+    combined_rows.each do |r|
+      d = details_by_id[r['id']] || {}
+      r['current_category']  = current_category_name(d) || ''
+      r['current_block']     = current_block_name(d) || ''
+      r['course_join_date']  = d['course_join_date']
+      r['course_login_rate'] = d['course_login_rate']
+
+      b = basic_by_id[r['id']] || {}
+      r['pdca_url'] = extract_gsheets_url(b['free_text'])
+    end
+
+    # 受講日で新しい順
+    combined_rows.sort_by! { |r| (Date.parse(r['course_join_date'].to_s) rescue Date.new(1900,1,1)) }
+    combined_rows.reverse!
+
+    # 7) ローカル書き出し（任意）
     timestamp = Time.zone.now.strftime('%Y%m%d_%H%M%S')
     dir       = Rails.root.join('tmp')
     FileUtils.mkdir_p(dir)
+    course_tag = course_id
 
-    # 個別CSV（任意: ご要望に合わせて出力）
     status_files = {}
     grouped_rows.each do |motivation, rows|
-      fname = dir.join("onclass_frontcourse_#{timestamp}_#{motivation}.csv")
+      fname = dir.join("onclass_#{course_tag}_#{timestamp}_#{motivation}.csv")
       write_csv(fname, rows)
       status_files[motivation] = fname.to_s
     end
 
-    # 結合CSV
-    combined_csv_path = dir.join("onclass_frontcourse_#{timestamp}_combined.csv")
+    combined_csv_path  = dir.join("onclass_#{course_tag}_#{timestamp}_combined.csv")
     write_csv(combined_csv_path, combined_rows)
 
-    # 可能ならExcel(xlsx)も出力（axlsx が無ければスキップ）
-    combined_xlsx_path = maybe_write_xlsx(dir, timestamp, combined_rows)
+    combined_xlsx_path = maybe_write_xlsx(dir, course_tag, timestamp, combined_rows)
 
-    # 5) 公式エクスポートAPI（/v1/enterprise_manager/users/export_csv）を叩いてCSVも保存
-    #    対象は結合結果の user_id（= APIの id）全体
-    export_api_csv_path = export_official_csv(conn, default_headers, combined_rows, dir, timestamp)
+    export_api_csv_path = export_official_csv(conn, default_headers, combined_rows, dir, course_tag, timestamp)
 
     result = {
       combined_csv: combined_csv_path.to_s,
@@ -96,55 +128,12 @@ class OnclassStudentsDataWorker
       official_export_csv: export_api_csv_path
     }
 
-    # 保存したCSV（ステータス別）を「素晴らしい→順調→離脱→停滞中→停滞気味」の順で読み込み・結合してからアップロード
-    load_and_merge_csvs(ordered_status_csv_paths(status_files))
-
-    student_ids   = combined_rows.map { |r| r['id'] }.compact.uniq
-    details_by_id = {}
-    student_ids.each do |sid|
-      begin
-        details_by_id[sid] = fetch_user_learning_course(conn, default_headers, sid, LEARNING_COURSE_ID)
-        sleep 0.05 # 必要に応じて調整
-      rescue => e
-        Rails.logger.warn("[OnclassStudentsDataWorker] detail fetch failed for #{sid}: #{e.class} #{e.message}")
-      end
-    end
-
-    basic_by_id = {}
-    student_ids.each do |sid|
-      begin
-        basic = fetch_user_basic(conn, default_headers, sid)
-        basic_by_id[sid] = basic
-        sleep 0.03
-      rescue => e
-        Rails.logger.warn("[OnclassStudentsDataWorker] basic fetch failed for #{sid}: #{e.class} #{e.message}")
-      end
-    end
-
-    # 'current_category' 列を追加
-    combined_rows.each do |r|
-      d = details_by_id[r['id']] || {}
-      r['current_category']  = current_category_name(d) || ''
-      r['current_block']     = current_block_name(d) || ''
-      r['course_join_date']  = d['course_join_date']     # 例: "2025-07-31"
-      r['course_login_rate'] = d['course_login_rate']    # 例: 73.7
-
-      b = basic_by_id[r['id']] || {}
-      r['pdca_url'] = extract_gsheets_url(b['free_text'])
-    end
-
-    combined_rows.sort_by! do |r|
-      (Date.parse(r['course_join_date'].to_s) rescue Date.new(1900,1,1))
-    end
-    combined_rows.reverse!  # 新しい順
-
-
+    # 8) スプレッドシートへアップロード
     upload_to_gsheets!(
       rows: combined_rows,
       spreadsheet_id: ENV.fetch('ONCLASS_SPREADSHEET_ID'),
-      sheet_name:     ENV.fetch('ONCLASS_SHEET_NAME', '受講生自動化')
+      sheet_name:     sheet_name
     )
-
 
     Rails.logger.info("[OnclassStudentsDataWorker] done: #{result.inspect}")
     result
@@ -158,16 +147,15 @@ class OnclassStudentsDataWorker
 
   private
 
-  # --- cURL(検索) の Ruby 実装 ---
-  # GET /v1/enterprise_manager/users?learning_course_id=...&motivation=...
-  def fetch_users_by_motivation(conn, headers, motivation, jp_label)
+  # --- 一覧取得（モチベーション別 + ページング） ---
+  def fetch_users_by_motivation(conn, headers, motivation, jp_label, learning_course_id)
     page = 1
     rows = []
 
     loop do
       params = {
         page: page,
-        learning_course_id: LEARNING_COURSE_ID,
+        learning_course_id: learning_course_id,
         name_or_email: '',
         admission_day_from: '',
         admission_day_to: '',
@@ -181,7 +169,6 @@ class OnclassStudentsDataWorker
       resp = conn.get('/v1/enterprise_manager/users', params, headers)
       json = JSON.parse(resp.body) rescue {}
 
-      # APIの配列キーに備えてフォールバック（users / data / records など）
       list =
         if json.is_a?(Array)
           json
@@ -189,26 +176,20 @@ class OnclassStudentsDataWorker
           json['users'] || json['data'] || json['records'] || []
         end
 
-      # レコード正規化（列名はご指定の target_columns を中心に、存在しなければnil）
       list.each do |u|
-        # 受講コースで最終フィルタ（API側でlearning_course_id指定済みだが念のため）
-        course_name = u['course_name'] || u['learning_course_name'] || u.dig('learning_course', 'name')
-        next if course_name && !course_name.include?('フロント') # ゆるめフィルタ
-
         rows << {
           'id'               => u['id'] || u['user_id'] || u['uid'],
           'name'             => u['name'],
           'email'            => u['email'],
           'last_sign_in_at'  => u['last_sign_in_at'],
-          'course_name'      => course_name,
+          'course_name'      => u['course_name'] || u['learning_course_name'] || u.dig('learning_course', 'name'),
           'course_start_at'  => u['course_start_at'] || u.dig('learning_course', 'start_at'),
           'course_progress'  => u['course_progress'],
           'latest_login_at'  => fetch_latest_login_at(conn, headers, u['id']),
-          'status'           => jp_label # 右端に日本語ステータス
+          'status'           => jp_label
         }
       end
 
-      # ページング判定：よくある total_pages/current_page/next_page → 無ければ「空になったら終了」
       total_pages   = (json['total_pages'] || json.dig('meta', 'total_pages')).to_i
       current_page  = (json['current_page'] || json.dig('meta', 'current_page') || page).to_i
       next_page     = json['next_page'] || json.dig('links', 'next')
@@ -224,20 +205,19 @@ class OnclassStudentsDataWorker
     headers = %w[id name email last_sign_in_at course_name course_start_at course_progress status]
     CSV.open(path, 'w', encoding: 'UTF-8') do |csv|
       csv << headers
-      rows.each do |r|
-        csv << headers.map { |h| r[h] }
-      end
+      rows.each { |r| csv << headers.map { |h| r[h] } }
     end
   end
 
-  def maybe_write_xlsx(dir, timestamp, rows)
+  # xlsx 書き出し（axlsx が無ければスキップ）
+  def maybe_write_xlsx(dir, course_tag, timestamp, rows)
     begin
       require 'axlsx'
-      path = dir.join("onclass_frontcourse_#{timestamp}_combined.xlsx")
+      path = dir.join("onclass_#{course_tag}_#{timestamp}_combined.xlsx")
       p = Axlsx::Package.new
       wb = p.workbook
       headers = %w[id name email last_sign_in_at course_name course_start_at course_progress status]
-      wb.add_worksheet(name: 'FrontCourse') do |sheet|
+      wb.add_worksheet(name: 'Course') do |sheet|
         sheet.add_row headers
         rows.each { |r| sheet.add_row headers.map { |h| r[h] } }
       end
@@ -249,9 +229,8 @@ class OnclassStudentsDataWorker
     end
   end
 
-  # --- cURL(公式CSVエクスポート) の Ruby 実装 ---
-  # POST /v1/enterprise_manager/users/export_csv
-  def export_official_csv(conn, headers, rows, dir, timestamp)
+  # 公式CSVエクスポートAPI
+  def export_official_csv(conn, headers, rows, dir, course_tag, timestamp)
     user_ids = rows.map { |r| r['id'] }.compact.uniq
     return nil if user_ids.empty?
 
@@ -263,21 +242,18 @@ class OnclassStudentsDataWorker
     resp = conn.post('/v1/enterprise_manager/users/export_csv', body.to_json, headers)
     content_type = resp.headers['content-type'].to_s
 
-    path = dir.join("onclass_frontcourse_#{timestamp}_official_export.csv")
+    path = dir.join("onclass_#{course_tag}_#{timestamp}_official_export.csv")
 
     if content_type.include?('text/csv') || content_type.include?('application/octet-stream')
-      # そのままCSVとして保存
       File.binwrite(path, resp.body)
       return path.to_s
     end
 
-    # APIがJSONでURLを返すタイプにも一応対応
     json = JSON.parse(resp.body) rescue {}
     if (csv_str = json['csv'])
       File.write(path, csv_str)
       return path.to_s
     elsif (file_url = json['file_url'])
-      # 外部URLダウンロードが必要な場合（社内NWやS3署名URLなど）
       bin = Faraday.get(file_url).body rescue nil
       if bin
         File.binwrite(path, bin)
@@ -289,27 +265,22 @@ class OnclassStudentsDataWorker
     nil
   end
 
+  # ---- Google Sheets ----
   def build_sheets_service
     service = Google::Apis::SheetsV4::SheetsService.new
-    service.client_options.application_name = 'Onclass FrontCourse Uploader'
+    service.client_options.application_name = 'Onclass Course Uploader'
 
     scope   = [Google::Apis::SheetsV4::AUTH_SPREADSHEETS]
     keyfile = ENV['GOOGLE_APPLICATION_CREDENTIALS']
 
-    # 事前チェック（分かりやすい例外にする）
-    if keyfile.nil? || keyfile.strip.empty?
-      raise "ENV GOOGLE_APPLICATION_CREDENTIALS is not set."
-    end
-    unless File.exist?(keyfile)
-      raise "Service account key not found: #{keyfile}"
-    end
+    raise "ENV GOOGLE_APPLICATION_CREDENTIALS is not set." if keyfile.nil? || keyfile.strip.empty?
+    raise "Service account key not found: #{keyfile}" unless File.exist?(keyfile)
 
     json = JSON.parse(File.read(keyfile)) rescue nil
     unless json && json['type'] == 'service_account' && json['private_key'] && json['client_email']
       raise "Invalid service account JSON: missing private_key/client_email/type=service_account"
     end
 
-    # ★ ここがポイント：鍵JSONを“明示的に”渡す（= nil.gsub 回避）
     authorizer = Google::Auth::ServiceAccountCredentials.make_creds(
       json_key_io: File.open(keyfile),
       scope: scope
@@ -318,7 +289,6 @@ class OnclassStudentsDataWorker
     service.authorization = authorizer
     service
   end
-
 
   def ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
     ss = service.get_spreadsheet(spreadsheet_id)
@@ -334,34 +304,6 @@ class OnclassStudentsDataWorker
     service.batch_update_spreadsheet(spreadsheet_id, batch)
   end
 
-  def hyperlink_name(id, name)
-    return name.to_s if id.to_s.strip.empty?
-    label = name.to_s.gsub('"', '""') # ダブルクォートエスケープ
-    url   = "https://manager.the-online-class.com/accounts/#{id}"
-    %Q(=HYPERLINK("#{url}","#{label}"))
-  end
-
-  # 日本時間の更新日時文字列を返す
-  def jp_timestamp
-    Time.now.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日 %H時 %M分')
-  end
-
-  # "2025-08-29T09:46:40.915+09:00" → "2025年8月29日"
-  def to_jp_ymd(str)
-    return '' if str.blank?
-    t = (Time.zone.parse(str.to_s) rescue Time.parse(str.to_s) rescue nil)
-    return '' unless t
-    t.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日')
-  end
-
-  # "2025-08-29T09:46:40.915+09:00" → "2025年8月29日 09時46分"
-  def to_jp_ymdhm(str)
-    return '' if str.blank?
-    t = (Time.zone.parse(str.to_s) rescue Time.parse(str.to_s) rescue nil)
-    return '' unless t
-    t.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日 %H時%M分')
-  end
-
   # スプレッドシート書き込み
   def upload_to_gsheets!(rows:, spreadsheet_id:, sheet_name:)
     service = build_sheets_service
@@ -372,7 +314,6 @@ class OnclassStudentsDataWorker
     service.clear_values(spreadsheet_id, "#{sheet_name}!B3:L",  clear_req)
 
     # B2（メタ）
-    # B..L は11列 → 先頭2つの後ろに 9 個の空欄
     meta_row   = ['バッチ実行タイミング', jp_timestamp] + Array.new(9, '')
     meta_range = "#{sheet_name}!B2:L2"
     service.update_spreadsheet_value(
@@ -414,9 +355,10 @@ class OnclassStudentsDataWorker
         to_jp_ymd(r['course_join_date']) || '',
         (r['course_login_rate'].nil? ? '' : r['course_login_rate'].to_s),
         to_jp_ymdhm(r['latest_login_at']) || '',
-        hyperlink_pdca(r['pdca_url'], r['name'])  # ← L列(PDCA)
+        hyperlink_pdca(r['pdca_url'], r['name']) # L列: PDCA
       ]
     end
+
     if data_values.any?
       data_range = "#{sheet_name}!B4"
       service.update_spreadsheet_value(
@@ -430,34 +372,78 @@ class OnclassStudentsDataWorker
     Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{sanitized_rows.size} rows with PDCA column.")
   end
 
-  def load_and_merge_csvs(csv_paths)
-    headers = %w[id name email last_sign_in_at course_name course_start_at course_progress status]
-    rows = []
-    csv_paths.each do |path|
-      CSV.foreach(path, headers: true, encoding: 'UTF-8') do |row|
-        rows << headers.index_with { |h| row[h] }
-      end
-    end
-    # 重複除去（idとstatusでユニークにする）
-    rows.uniq { |r| [r['id'], r['status']] }
+  # ---- 表示ヘルパ ----
+  def jp_timestamp
+    Time.now.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日 %H時 %M分')
   end
 
-  def ordered_status_csv_paths(status_files)
-    # STATUS_ORDER の順番に、生成済みCSVのパスを並べる
-    STATUS_ORDER.map { |motivation, _| status_files[motivation] }.compact
+  def to_jp_ymd(str)
+    return '' if str.blank?
+    t = (Time.zone.parse(str.to_s) rescue Time.parse(str.to_s) rescue nil)
+    return '' unless t
+    t.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日')
   end
 
+  def to_jp_ymdhm(str)
+    return '' if str.blank?
+    t = (Time.zone.parse(str.to_s) rescue Time.parse(str.to_s) rescue nil)
+    return '' unless t
+    t.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日 %H時%M分')
+  end
+
+  def hyperlink_name(id, name)
+    return name.to_s if id.to_s.strip.empty?
+    label = name.to_s.gsub('"', '""')
+    url   = "https://manager.the-online-class.com/accounts/#{id}"
+    %Q(=HYPERLINK("#{url}","#{label}"))
+  end
+
+  # ---- API: 個別詳細 / ログイン履歴 / 基本情報 ----
   def fetch_user_learning_course(conn, headers, student_id, learning_course_id)
     params = { learning_course_id: learning_course_id }
-    resp = conn.get("/v1/enterprise_manager/users/#{student_id}/learning_course", params, headers)
-    json = JSON.parse(resp.body) rescue {}
+    resp   = conn.get("/v1/enterprise_manager/users/#{student_id}/learning_course", params, headers)
+    json   = JSON.parse(resp.body) rescue {}
     json['data'] || json
   end
 
+  def fetch_latest_login_at(conn, headers, user_id)
+    resp = conn.get("/v1/enterprise_manager/users/#{user_id}/logins", { page: 1 }, headers)
+    json = JSON.parse(resp.body) rescue {}
+    list = json['data'] || json['logins'] || json['records'] || []
+    first = list.is_a?(Array) ? list.first : nil
+    first && first['created_at']
+  rescue Faraday::Error => e
+    Rails.logger.warn("[OnclassStudentsDataWorker] fetch_latest_login_at error for #{user_id}: #{e.class} #{e.message}")
+    nil
+  end
+
+  def fetch_user_basic(conn, headers, student_id)
+    resp = conn.get("/v1/enterprise_manager/users/#{student_id}", {}, headers)
+    json = JSON.parse(resp.body) rescue {}
+    json['data'] || json
+  rescue Faraday::Error => e
+    Rails.logger.warn("[OnclassStudentsDataWorker] fetch_user_basic error for #{student_id}: #{e.class} #{e.message}")
+    {}
+  end
+
+  # free_text からGoogleスプレッドシートURLを抽出
+  def extract_gsheets_url(free_text)
+    return nil if free_text.to_s.strip.empty?
+    m = free_text.match(%r{(https?://)?(docs\.google\.com/spreadsheets/d/[^\s"'>]+)}i)
+    return nil unless m
+    url = m.to_s
+    url = "https://#{url}" unless url.start_with?('http')
+    url
+  end
+
+  # HYPERLINK（PDCA）
+  def hyperlink_pdca(url, name)
+    return '' if url.to_s.strip.empty?
+    label = "#{name}_PDCA".gsub('"', '""')
+    %Q(=HYPERLINK("#{url}","#{label}"))
+  end
+
   # 進行中の親カテゴリ（オブジェクト）を返す
-  # - 最後の true の“次”を採用
-  # - 全て true → nil（=全完了）
-  # - true が一つも無い → 先頭の false、なければ先頭
   def current_category_object(detail)
     cats = Array(detail&.dig('course_categories'))
     return nil if cats.empty?
@@ -472,13 +458,11 @@ class OnclassStudentsDataWorker
     end
   end
 
-  # 既存の名前関数はオブジェクト版を使って実装
   def current_category_name(detail)
     cat = current_category_object(detail)
     cat ? cat['name'] : '全て完了'
   end
 
-  # 親カテゴリの“子”ブロック（最初の未完了）の名前を返す
   def current_block_name(detail)
     cat = current_category_object(detail)
     return '' unless cat
@@ -490,45 +474,4 @@ class OnclassStudentsDataWorker
     blk  = blocks.find { |b| !bool.call(b['is_completed']) } || blocks.first
     blk['name'].to_s
   end
-
-  # 最新ログイン日時を1件取得
-  def fetch_latest_login_at(conn, headers, user_id)
-    resp = conn.get("/v1/enterprise_manager/users/#{user_id}/logins", { page: 1 }, headers)
-    json = JSON.parse(resp.body) rescue {}
-    list = json['data'] || json['logins'] || json['records'] || []
-    first = list.is_a?(Array) ? list.first : nil
-    first && first['created_at']
-  rescue Faraday::Error => e
-    Rails.logger.warn("[OnclassStudentsDataWorker] fetch_latest_login_at error for #{user_id}: #{e.class} #{e.message}")
-    nil
-  end
-
-  # 追加: ユーザー基本情報（free_textを含む）取得
-  def fetch_user_basic(conn, headers, student_id)
-    resp = conn.get("/v1/enterprise_manager/users/#{student_id}", {}, headers)
-    json = JSON.parse(resp.body) rescue {}
-    json['data'] || json
-  rescue Faraday::Error => e
-    Rails.logger.warn("[OnclassStudentsDataWorker] fetch_user_basic error for #{student_id}: #{e.class} #{e.message}")
-    {}
-  end
-
-  # 追加: free_text からGoogleスプレッドシートURLを抽出
-  def extract_gsheets_url(free_text)
-    return nil if free_text.to_s.strip.empty?
-    # プロトコルなしの docs.google.com も拾う
-    m = free_text.match(%r{(https?://)?(docs\.google\.com/spreadsheets/d/[^\s"'>]+)}i)
-    return nil unless m
-    url = m.to_s
-    url = "https://#{url}" unless url.start_with?('http')
-    url
-  end
-
-  # 追加: HYPERLINK作成（名前は "#{name}_PDCA"）
-  def hyperlink_pdca(url, name)
-    return '' if url.to_s.strip.empty?
-    label = "#{name}_PDCA".gsub('"', '""')
-    %Q(=HYPERLINK("#{url}","#{label}"))
-  end
-
 end
