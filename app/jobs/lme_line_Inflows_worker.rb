@@ -27,55 +27,17 @@ class LmeLineInflowsWorker
     start_on = (start_date.presence || default_start_on)
     end_on   = (end_date.presence   || Time.zone.today.to_s)
 
+    # 🚀 統合サービスでフレンド履歴 + タグ情報を一括取得
     friend_service = Lme::FriendHistoryService.new(auth: auth)
-    overview       = friend_service.overview(conn, start_on: start_on, end_on: end_on)
-
-    days =
-      case overview
-      when Hash
-        overview.each_with_object([]) { |(date, stats), acc| acc << date if stats.to_h['followed'].to_i > 0 }.sort
-      when Array
-        overview.filter_map { |row|
-          next unless row.is_a?(Hash)
-          (row['followed'] || row[:followed]).to_i > 0 ? (row['date'] || row[:date]).to_s : nil
-        }.sort
-      else
-        []
-      end
-    Rails.logger.info("[LME] days_need_detail=#{days.inspect}")
-
-    # 詳細行を集める
-    rows = []
-    days.each do |date|
-      next if date.blank?
-      detail = friend_service.day_details(conn, date: date)
-      Array(detail).each do |r|
-        rec = r.respond_to?(:with_indifferent_access) ? r.with_indifferent_access : r
-        lu  = (rec['line_user'] || {})
-        lu  = lu.with_indifferent_access if lu.respond_to?(:with_indifferent_access)
-        Rails.logger.debug("[LME] detail #{date}: #{rec.inspect}")
-
-        rows << {
-          'date'         => date,
-          'followed_at'  => rec['followed_at'],
-          'landing_name' => rec['landing_name'],
-          'name'         => lu['name'],
-          'line_user_id' => rec['line_user_id'],
-          'line_id'      => lu['line_id'],
-          'is_blocked'   => (rec['is_blocked'] || 0).to_i
-        }
-      end
-    end
-
-    # 重複除去
-    rows.uniq! { |r| [r['line_user_id'], r['followed_at']] }
-
-    # タグのフラグキャッシュ（P列=select を含む）
-    service = Lme::UserTagsService.new(auth: auth)  # ← これでOK（BaseServiceが受け取れるようになった）
-    ids     = rows.map { |r| r['line_user_id'] }.compact.uniq
-    bot_id  = (ENV['LME_BOT_ID'].presence || '17106')
-    tags_cache = service.build_flags_cache(ids, bot_id: bot_id)
-    Rails.logger.info("[LmeLineInflowsWorker] fetched tags for #{tags_cache.size} users (of #{ids.size} unique)")
+    bot_id = (ENV['LME_BOT_ID'].presence || '17106')
+    
+    Rails.logger.info("[LmeLineInflowsWorker] Starting integrated data fetch...")
+    result = friend_service.overview_with_tags(conn, start_on: start_on, end_on: end_on, bot_id: bot_id)
+    
+    rows = result[:rows]
+    tags_cache = result[:tags_cache]
+    
+    Rails.logger.info("[LmeLineInflowsWorker] ✅ Integrated fetch completed: #{rows.size} rows, #{tags_cache.size} users tagged")
 
 
     # スプレッドシート反映
