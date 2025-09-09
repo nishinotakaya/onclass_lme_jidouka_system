@@ -3,8 +3,24 @@ FROM ruby:3.0.3
 RUN apt-get update -qq && apt-get install -y \
     build-essential \
     default-mysql-client \
-    nodejs \
-    redis-server
+    redis-server \
+    wget \
+    gnupg \
+    ca-certificates \
+    curl \
+    chromium \
+    chromium-driver
+
+# Node.js 18のインストール
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs \
+    && node --version \
+    && npm --version
+
+# Playwrightのインストール
+RUN npm install -g playwright@1.55.0 \
+    && npx playwright install chromium \
+    && npx playwright install-deps chromium
 
 ENV APP_PATH=/myapp
 WORKDIR $APP_PATH

@@ -81,6 +81,10 @@ services:
       # GOOGLE_SERVICE_ACCOUNT_JSON_BASE64: ${GOOGLE_SERVICE_ACCOUNT_JSON_BASE64}
       ONCLASS_SPREADSHEET_ID: ${ONCLASS_SPREADSHEET_ID}
       ONCLASS_SHEET_NAME: ${ONCLASS_SHEET_NAME:-受講生自動化}
+      
+      # ▼ LME Cookie自動更新用
+      GOOGLE_EMAIL: ${GOOGLE_EMAIL}
+      GOOGLE_PASSWORD: ${GOOGLE_PASSWORD}
     ports:
       - "${API_PORT_ON_HOST:-3008}:${RAILS_PORT:-3000}"
     depends_on:
@@ -126,6 +130,10 @@ services:
       # GOOGLE_SERVICE_ACCOUNT_JSON_BASE64: ${GOOGLE_SERVICE_ACCOUNT_JSON_BASE64}
       ONCLASS_SPREADSHEET_ID: ${ONCLASS_SPREADSHEET_ID}
       ONCLASS_SHEET_NAME: ${ONCLASS_SHEET_NAME:-受講生自動化}
+      
+      # ▼ LME Cookie自動更新用（Worker はこちらで使う）
+      GOOGLE_EMAIL: ${GOOGLE_EMAIL}
+      GOOGLE_PASSWORD: ${GOOGLE_PASSWORD}
     depends_on:
       db:
         condition: service_healthy
