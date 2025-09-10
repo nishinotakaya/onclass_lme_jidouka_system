@@ -31,7 +31,7 @@ class OnclassStudentsDataWorker
   # 引数未指定時は ENV（ONCLASS_COURSE_ID / ONCLASS_SHEET_NAME）→ デフォルト の順で使用
   def perform(course_id = nil, sheet_name = nil)
     course_id  ||= ENV.fetch('ONCLASS_COURSE_ID', DEFAULT_LEARNING_COURSE_ID)
-    sheet_name ||= ENV.fetch('ONCLASS_SHEET_NAME', '受講生自動化')
+    sheet_name ||= ENV.fetch('ONCLASS_SHEET_NAME', 'フロントコース受講生')
 
     # 1) サインイン（トークン更新）
     OnclassSignInWorker.new.perform

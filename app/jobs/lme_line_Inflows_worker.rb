@@ -43,7 +43,7 @@ class LmeLineInflowsWorker
     # スプレッドシート反映
     spreadsheet_id = ENV.fetch('ONCLASS_SPREADSHEET_ID')
     sheet_name     = ENV.fetch('LME_SHEET_NAME', 'Line流入者')
-    anchor_name    = ENV.fetch('ONCLASS_SHEET_NAME', '受講生自動化')
+    anchor_name    = ENV.fetch('ONCLASS_SHEET_NAME', 'フロントコース受講生')
 
     service = build_sheets_service
     ensure_sheet_exists_adjacent!(service, spreadsheet_id, sheet_name, anchor_name)
