@@ -89,6 +89,28 @@ class LmeAuthClient
     end
   end
 
+  def valid_cookie_with_refresh?(cookie_str = cookie)
+    if valid_cookie?(cookie_str)
+      return true
+    end
+
+    Rails.logger.info("[LmeAuthClient] Cookie validation failed, attempting automatic refresh...")
+    
+    begin
+      # Railsの自動読み込みを強制実行
+      Rails.application.eager_load!
+      LmeCookieRefresher.run_with_fallback
+      Rails.logger.info("[LmeAuthClient] Cookie refresh completed")
+      
+      # リフレッシュ後に再度検証
+      return valid_cookie?
+    rescue => refresh_error
+      Rails.logger.error("[LmeAuthClient] Cookie refresh failed: #{refresh_error.message}")
+      Rails.logger.info("[LmeAuthClient] Please run manually: bin/rails lme:cookie:auto_refresh")
+      return false
+    end
+  end
+
   # ---- Set-Cookie -> Redis 反映 ---------------------------------------------
   def refresh_from_response_cookies!(headers, current: cookie)
     set_cookie = headers["set-cookie"] || headers["Set-Cookie"]

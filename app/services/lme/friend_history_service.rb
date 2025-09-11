@@ -78,7 +78,7 @@ module Lme
     end
 
     # タグ情報を並列取得（UserTagsServiceから移植）
-    def build_tags_cache(conn, line_user_ids, bot_id:, threads: Integer(ENV["LME_TAG_THREADS"] || 6))
+    def build_tags_cache(conn, line_user_ids, bot_id:, threads: Integer(ENV["LME_TAG_THREADS"] || 2))
       ids   = Array(line_user_ids).compact.uniq
       cache = {}
       q     = Queue.new
@@ -88,7 +88,14 @@ module Lme
         Thread.new do
           local_conn = auth.conn # スレッド専用
           while (uid = q.pop(true) rescue nil)
-            cache[uid] = flags_for_user(local_conn, uid, bot_id: bot_id)
+            begin
+              cache[uid] = flags_for_user(local_conn, uid, bot_id: bot_id)
+              # リクエスト間隔を空ける
+              sleep(0.1)
+            rescue => e
+              Rails.logger.warn("[FriendHistoryService] categories_tags(#{uid}) failed: #{e.class} #{e.message}")
+              cache[uid] = empty_flags
+            end
           end
         rescue ThreadError
         end

@@ -91,6 +91,8 @@ class OnclassStudentsDataWorker
       r['current_block']     = current_block_name(d) || ''
       r['course_join_date']  = d['course_join_date']
       r['course_login_rate'] = d['course_login_rate']
+      r['current_category_scheduled_at'] = scheduled_completed_at_for_current(d)  # ← 追加
+      r['categories_schedule']           = categories_schedule_map(d)
 
       b = basic_by_id[r['id']] || {}
       r['pdca_url'] = extract_gsheets_url(b['free_text'])
@@ -311,6 +313,7 @@ class OnclassStudentsDataWorker
     clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
     service.clear_values(spreadsheet_id, "#{sheet_name}!B2:L2", clear_req)
     service.clear_values(spreadsheet_id, "#{sheet_name}!B3:L",  clear_req)
+    service.clear_values(spreadsheet_id, "#{sheet_name}!M2:ZZ", clear_req)
 
     # B2（メタ）
     meta_row   = ['バッチ実行タイミング', jp_timestamp] + Array.new(9, '')
@@ -322,10 +325,10 @@ class OnclassStudentsDataWorker
       value_input_option: 'USER_ENTERED'
     )
 
-    # 見出し（B3:L3）※ L列に PDCA を追加
+    # 見出し（B3:L3）※ G列名を変更
     headers = %w[
       id 名前 メールアドレス ステータス ステータス_B
-      現在進行カテゴリ 現在進行ブロック 受講日 ログイン率 最新ログイン日 PDCA
+      現在進行カテゴリ/完了予定日 現在進行ブロック 受講日 ログイン率 最新ログイン日 PDCA
     ]
     header_range = "#{sheet_name}!B3:L3"
     service.update_spreadsheet_value(
@@ -344,13 +347,18 @@ class OnclassStudentsDataWorker
     end
 
     data_values = sanitized_rows.map do |r|
+      g_val_name   = r['current_category'].to_s
+      g_val_date   = to_jp_ymd(r['current_category_scheduled_at'])
+      g_val_combined = g_val_name
+      g_val_combined = "#{g_val_name} / #{g_val_date}" unless g_val_name.empty? || g_val_date.empty?
+
       [
         r['id'],
         hyperlink_name(r['id'], r['name']),
         r['email'],
         r['status'].presence || '',
-        status_b_for(r), #「声かけ必須」を自動判定
-        r['current_category']  || '',
+        status_b_for(r),
+        g_val_combined,
         r['current_block']     || '',
         to_jp_ymd(r['course_join_date']) || '',
         (r['course_login_rate'].nil? ? '' : r['course_login_rate'].to_s),
@@ -369,10 +377,75 @@ class OnclassStudentsDataWorker
       )
     end
 
-    Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{sanitized_rows.size} rows with PDCA column.")
+    # ===== ここから M列以降の「カリキュラム完了予定日」 =====
+
+    # 1) 見出し（M2 にタイトル、M3 からカテゴリ名）
+    service.update_spreadsheet_value(
+      spreadsheet_id,
+      "#{sheet_name}!M2",
+      Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!M2", values: [['カリキュラム完了予定日']]),
+      value_input_option: 'USER_ENTERED'
+    )
+
+    # すべての行からカテゴリ名の順序を決める（初出順）
+    category_order = []
+    seen = {}
+    rows.each do |r|
+      (r['categories_schedule'] || {}).each_key do |name|
+        next if name.to_s.empty? || seen[name]
+        seen[name] = true
+        category_order << name
+      end
+    end
+
+    if category_order.any?
+      # M3: カテゴリ見出し行
+      service.update_spreadsheet_value(
+        spreadsheet_id,
+        "#{sheet_name}!M3",
+        Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!M3", values: [category_order]),
+        value_input_option: 'USER_ENTERED'
+      )
+
+      # 2) 受講生ごとの scheduled_completed_at をカテゴリ順に並べて M4 から書く
+      schedule_matrix = sanitized_rows.map do |r|
+        sched_map = r['categories_schedule'] || {}
+        category_order.map do |name|
+          to_jp_ymd(sched_map[name])
+        end
+      end
+
+      if schedule_matrix.any?
+        service.update_spreadsheet_value(
+          spreadsheet_id,
+          "#{sheet_name}!M4",
+          Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!M4", values: schedule_matrix),
+          value_input_option: 'USER_ENTERED'
+        )
+      end
+    end
+
+    Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{sanitized_rows.size} rows with schedules (G列+M列〜).")
   end
 
   # ---- 表示ヘルパ ----
+  # ==== 追加: 現在進行カテゴリの scheduled_completed_at を返す ====
+  def scheduled_completed_at_for_current(detail)
+    cur = current_category_object(detail)
+    cur && cur['scheduled_completed_at']
+  end
+
+  # ==== 追加: カテゴリ→scheduled_completed_at のハッシュ ====
+  def categories_schedule_map(detail)
+    map = {}
+    Array(detail&.dig('course_categories')).each do |cat|
+      name = cat['name'].to_s
+      next if name.empty?
+      map[name] = cat['scheduled_completed_at']
+    end
+    map
+  end
+
   def jp_timestamp
     Time.now.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日 %H時 %M分')
   end
