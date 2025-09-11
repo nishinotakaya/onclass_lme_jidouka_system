@@ -14,7 +14,7 @@ class OnclassStudentsDataWorker
   require 'googleauth'
 
   # デフォルト（未指定時に使うコースID）
-  DEFAULT_LEARNING_COURSE_ID = 'oYTO4UDI6MGb' # 旧: フロント
+  DEFAULT_LEARNING_COURSE_ID = 'oYTO4UDI6MGb' # フロント
 
   # 表示順（上から）
   STATUS_ORDER = [
@@ -28,7 +28,6 @@ class OnclassStudentsDataWorker
   TARGET_COLUMNS = %w[name email last_sign_in_at course_name course_start_at course_progress].freeze
 
   # course_id / sheet_name を引数で切り替え可能に
-  # 引数未指定時は ENV（ONCLASS_COURSE_ID / ONCLASS_SHEET_NAME）→ デフォルト の順で使用
   def perform(course_id = nil, sheet_name = nil)
     course_id  ||= ENV.fetch('ONCLASS_COURSE_ID', DEFAULT_LEARNING_COURSE_ID)
     sheet_name ||= ENV.fetch('ONCLASS_SHEET_NAME', 'フロントコース受講生')
@@ -336,6 +335,7 @@ class OnclassStudentsDataWorker
       value_input_option: 'USER_ENTERED'
     )
 
+    # 見出し行などを除外
     sanitized_rows = rows.reject do |r|
       id    = r['id'].to_s.strip
       name  = r['name'].to_s.strip
@@ -349,13 +349,13 @@ class OnclassStudentsDataWorker
         hyperlink_name(r['id'], r['name']),
         r['email'],
         r['status'].presence || '',
-        '',  # ステータス_B（空）
+        status_b_for(r), #「声かけ必須」を自動判定
         r['current_category']  || '',
         r['current_block']     || '',
         to_jp_ymd(r['course_join_date']) || '',
         (r['course_login_rate'].nil? ? '' : r['course_login_rate'].to_s),
         to_jp_ymdhm(r['latest_login_at']) || '',
-        hyperlink_pdca(r['pdca_url'], r['name']) # L列: PDCA
+        hyperlink_pdca(r['pdca_url'], r['name'])
       ]
     end
 
@@ -474,4 +474,37 @@ class OnclassStudentsDataWorker
     blk  = blocks.find { |b| !bool.call(b['is_completed']) } || blocks.first
     blk['name'].to_s
   end
+
+  # ---- ステータスB（声かけ必須）判定 ----
+  def status_b_for(row)
+    return '声かけ必須' if stale_login?(row['latest_login_at']) && row['status'].to_s == '離脱' && slow_category_progress?(row)
+    ''
+  end
+
+  def stale_login?(latest_login_at_str)
+    t = parse_time_jst(latest_login_at_str)
+    return true if t.nil?
+    (now_jst - t) >= 4.days
+  end
+
+  def slow_category_progress?(row)
+    cat = row['current_category'].to_s
+    return false if cat.empty? || cat == '人工インターン'
+    return false if cat.empty? || cat == '全て完了'
+
+    started_at = parse_time_jst(row['current_category_started_at'])
+    return false if started_at.nil?
+
+    (now_jst - started_at) >= 7.days
+  end
+
+  def parse_time_jst(str)
+    return nil if str.to_s.strip.empty?
+    Time.zone ? (Time.zone.parse(str) rescue nil) : (Time.parse(str) rescue nil)
+  end
+
+  def now_jst
+    Time.zone ? Time.zone.now : Time.now
+  end
+
 end
