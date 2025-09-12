@@ -84,15 +84,21 @@ class OnclassStudentsDataWorker
       end
     end
 
-    # 6) 付加情報をマージ
+    extension_by_id = {}
+    student_ids.each do |sid|
+      extension_by_id[sid] = fetch_extension_study_date(conn, default_headers, sid, course_id)
+      sleep 0.03
+    end
+
     combined_rows.each do |r|
       d = details_by_id[r['id']] || {}
       r['current_category']  = current_category_name(d) || ''
       r['current_block']     = current_block_name(d) || ''
       r['course_join_date']  = d['course_join_date']
       r['course_login_rate'] = d['course_login_rate']
-      r['current_category_scheduled_at'] = scheduled_completed_at_for_current(d)  # ← 追加
+      r['current_category_scheduled_at'] = scheduled_completed_at_for_current(d)
       r['categories_schedule']           = categories_schedule_map(d)
+      r['extension_study_date'] = extension_by_id[r['id']]
 
       b = basic_by_id[r['id']] || {}
       r['pdca_url'] = extract_gsheets_url(b['free_text'])
@@ -311,13 +317,13 @@ class OnclassStudentsDataWorker
     ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
 
     clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
-    service.clear_values(spreadsheet_id, "#{sheet_name}!B2:L2", clear_req)
-    service.clear_values(spreadsheet_id, "#{sheet_name}!B3:L",  clear_req)
-    service.clear_values(spreadsheet_id, "#{sheet_name}!M2:ZZ", clear_req)
+    service.clear_values(spreadsheet_id, "#{sheet_name}!B2:M2", clear_req)
+    service.clear_values(spreadsheet_id, "#{sheet_name}!B3:M",  clear_req)
+    service.clear_values(spreadsheet_id, "#{sheet_name}!N2:ZZ", clear_req)
 
     # B2（メタ）
-    meta_row   = ['バッチ実行タイミング', jp_timestamp] + Array.new(9, '')
-    meta_range = "#{sheet_name}!B2:L2"
+    meta_row   = ['バッチ実行タイミング', jp_timestamp] + Array.new(10, '')
+    meta_range = "#{sheet_name}!B2:M2"
     service.update_spreadsheet_value(
       spreadsheet_id,
       meta_range,
@@ -325,12 +331,12 @@ class OnclassStudentsDataWorker
       value_input_option: 'USER_ENTERED'
     )
 
-    # 見出し（B3:L3）※ G列名を変更
+    # 見出し（B3:M3）
     headers = %w[
       id 名前 メールアドレス ステータス ステータス_B
-      現在進行カテゴリ/完了予定日 現在進行ブロック 受講日 ログイン率 最新ログイン日 PDCA
+      現在進行カテゴリ/完了予定日 現在進行ブロック 受講日 受講期限日 ログイン率 最新ログイン日 PDCA
     ]
-    header_range = "#{sheet_name}!B3:L3"
+    header_range = "#{sheet_name}!B3:M3"
     service.update_spreadsheet_value(
       spreadsheet_id,
       header_range,
@@ -346,6 +352,7 @@ class OnclassStudentsDataWorker
       id.casecmp('id').zero? || name == '名前' || email == 'メールアドレス'
     end
 
+    # G列の表示
     data_values = sanitized_rows.map do |r|
       g_val_name   = r['current_category'].to_s
       g_val_date   = to_jp_ymd(r['current_category_scheduled_at'])
@@ -359,10 +366,11 @@ class OnclassStudentsDataWorker
         r['status'].presence || '',
         status_b_for(r),
         g_val_combined,
-        r['current_block']     || '',
-        to_jp_ymd(r['course_join_date']) || '',
+        r['current_block']                 || '',
+        to_jp_ymd(r['course_join_date'])   || '',
+        to_jp_ymd(r['extension_study_date']) || '',
         (r['course_login_rate'].nil? ? '' : r['course_login_rate'].to_s),
-        to_jp_ymdhm(r['latest_login_at']) || '',
+        to_jp_ymdhm(r['latest_login_at'])  || '',
         hyperlink_pdca(r['pdca_url'], r['name'])
       ]
     end
@@ -377,17 +385,17 @@ class OnclassStudentsDataWorker
       )
     end
 
-    # ===== ここから M列以降の「カリキュラム完了予定日」 =====
+    # ====== 右側の「カリキュラム完了予定日」マトリクス======
 
-    # 1) 見出し（M2 にタイトル、M3 からカテゴリ名）
+    # N2: タイトル
     service.update_spreadsheet_value(
       spreadsheet_id,
-      "#{sheet_name}!M2",
-      Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!M2", values: [['カリキュラム完了予定日']]),
+      "#{sheet_name}!N2",
+      Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!N2", values: [['カリキュラム完了予定日']]),
       value_input_option: 'USER_ENTERED'
     )
 
-    # すべての行からカテゴリ名の順序を決める（初出順）
+    # カテゴリの順序（初出順）
     category_order = []
     seen = {}
     rows.each do |r|
@@ -399,33 +407,31 @@ class OnclassStudentsDataWorker
     end
 
     if category_order.any?
-      # M3: カテゴリ見出し行
+      # N3: カテゴリ見出し行
       service.update_spreadsheet_value(
         spreadsheet_id,
-        "#{sheet_name}!M3",
-        Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!M3", values: [category_order]),
+        "#{sheet_name}!N3",
+        Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!N3", values: [category_order]),
         value_input_option: 'USER_ENTERED'
       )
 
-      # 2) 受講生ごとの scheduled_completed_at をカテゴリ順に並べて M4 から書く
+      # N4〜: 受講生×カテゴリの scheduled_completed_at
       schedule_matrix = sanitized_rows.map do |r|
         sched_map = r['categories_schedule'] || {}
-        category_order.map do |name|
-          to_jp_ymd(sched_map[name])
-        end
+        category_order.map { |name| to_jp_ymd(sched_map[name]) }
       end
 
       if schedule_matrix.any?
         service.update_spreadsheet_value(
           spreadsheet_id,
-          "#{sheet_name}!M4",
-          Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!M4", values: schedule_matrix),
+          "#{sheet_name}!N4",
+          Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!N4", values: schedule_matrix),
           value_input_option: 'USER_ENTERED'
         )
       end
     end
 
-    Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{sanitized_rows.size} rows with schedules (G列+M列〜).")
+    Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{sanitized_rows.size} rows with extension date and schedules (G列+N列〜).")
   end
 
   # ---- 表示ヘルパ ----
@@ -578,6 +584,22 @@ class OnclassStudentsDataWorker
 
   def now_jst
     Time.zone ? Time.zone.now : Time.now
+  end
+
+  # 受講期限日（extension_study_date）を取得
+  def fetch_extension_study_date(conn, headers, user_id, learning_course_id)
+    resp = conn.get(
+      "/v1/enterprise_manager/enterprise_managers/current/learning_courses_for_user",
+      { user_id: user_id },
+      headers
+    )
+    json  = JSON.parse(resp.body) rescue {}
+    list  = json['data'] || json['learning_courses'] || []
+    item  = Array(list).find { |c| (c['id'] || c[:id]).to_s == learning_course_id.to_s }
+    item && (item['extension_study_date'] || item[:extension_study_date])
+  rescue Faraday::Error => e
+    Rails.logger.warn("[OnclassStudentsDataWorker] fetch_extension_study_date error for #{user_id}: #{e.class} #{e.message}")
+    nil
   end
 
 end
