@@ -4,11 +4,9 @@ class OnclassSignInWorker
   include Sidekiq::Worker
   sidekiq_options queue: :default, retry: 3
 
-  # 使い方:
-  # OnclassSignInWorker.perform_async
-  # OnclassSignInWorker.new.perform
+  # デフォルト資格情報でサインイン（従来どおり）
   def perform
-    client = OnclassAuthClient.new
+    client  = OnclassAuthClient.new
     headers = client.sign_in!
     masked = headers.merge(
       "access-token" => mask(headers["access-token"]),
@@ -23,6 +21,15 @@ class OnclassSignInWorker
   rescue => e
     Rails.logger.error("[OnclassSignInWorker] unexpected error: #{e.class} #{e.message}")
     raise
+  end
+
+  # ===== 追加: 任意アカウントでサインインしてヘッダ取得 =====
+  def self.sign_in_headers_for(email:, password:)
+    client = OnclassAuthClient.new(email: email, password: password)
+    client.headers
+  rescue Faraday::Error => e
+    Rails.logger.warn("[OnclassSignInWorker] sign_in_headers_for(#{email}) error: #{e.class} #{e.message}")
+    nil
   end
 
   private
