@@ -22,7 +22,7 @@ onclass_students_front:
     - "フロントコース受講生"
   description: "オンクラス受講生データ取得(2時間毎)_フロントコース"
 
-onclass_students_free_engineer:
+onclass_students_backend:
   cron: "15 */2 * * *"  # 2時間毎 + 15分（ずらす）
   class: OnclassStudentsDataWorker
   queue: onclass_students_data
