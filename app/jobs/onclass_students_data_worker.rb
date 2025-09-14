@@ -112,12 +112,12 @@ class OnclassStudentsDataWorker
       key_name = normalize_name(r['name'])
 
       r['nishino_mentions_count'] =
-        (nishino_maps[:id][key_id] || 0) +
-        (nishino_maps[:name][key_name] || 0)
+        (nishino_maps[:id][key_id]&.values&.sum || 0) +
+        (nishino_maps[:name][key_name]&.values&.sum || 0)
 
       r['kato_mentions_count'] =
-        (kato_maps[:id][key_id] || 0) +
-        (kato_maps[:name][key_name] || 0)
+        (kato_maps[:id][key_id]&.values&.sum || 0) +
+        (kato_maps[:name][key_name]&.values&.sum || 0)
     end
 
 
@@ -154,8 +154,11 @@ class OnclassStudentsDataWorker
     upload_to_gsheets!(
       rows: combined_rows,
       spreadsheet_id: ENV.fetch('ONCLASS_SPREADSHEET_ID'),
-      sheet_name:     sheet_name
+      sheet_name:     sheet_name,
+      nishino_maps:   nishino_maps,
+      kato_maps:      kato_maps
     )
+
 
     Rails.logger.info("[OnclassStudentsDataWorker] done: #{result.inspect}")
     result
@@ -322,7 +325,7 @@ class OnclassStudentsDataWorker
     service.batch_update_spreadsheet(spreadsheet_id, batch)
   end
 
-  def upload_to_gsheets!(rows:, spreadsheet_id:, sheet_name:)
+  def upload_to_gsheets!(rows:, spreadsheet_id:, sheet_name:, nishino_maps:, kato_maps:)
     service = build_sheets_service
     ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
 
@@ -384,8 +387,8 @@ class OnclassStudentsDataWorker
         (r['course_login_rate'].nil? ? '' : r['course_login_rate'].to_s),
         to_jp_ymdhm(r['latest_login_at'])    || '',
         hyperlink_pdca(r['pdca_url'], r['name']),
-        mention_cell(r['nishino_mentions_count']),
-        mention_cell(r['kato_mentions_count'])
+        mention_cell(channel_counts_for(nishino_maps, r)),
+        mention_cell(channel_counts_for(kato_maps, r))
       ]
     end
 
@@ -438,7 +441,7 @@ class OnclassStudentsDataWorker
         )
       end
     end
-
+    apply_mention_highlight_rule!(service, spreadsheet_id, sheet_name)
     Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{sanitized_rows.size} rows with extension date, mentions and schedules (O列まで + P列〜).")
   end
 
@@ -512,8 +515,6 @@ class OnclassStudentsDataWorker
   end
 
   # -------- メンション --------
-  # ログイン済み token_headers で未読メンションを取得し、
-  #  { id: {sender_id=>count}, name: {normalized_user_name=>count} } を返す
   def fetch_unread_mentions_map(conn, token_headers)
     headers = base_http_headers.merge(token_headers.slice('uid','access-token','client','token-type','expiry').compact)
     resp = conn.get('/v1/enterprise_manager/communities/activity/mentions', {}, headers)
@@ -521,25 +522,25 @@ class OnclassStudentsDataWorker
     json = JSON.parse(resp.body) rescue {}
     list = Array(json['data'] || json['records'] || json)
 
-    id_counts   = Hash.new(0)
-    name_counts = Hash.new(0)
+    by_id   = Hash.new { |h,k| h[k] = Hash.new(0) }   # { sender_id => { channel => count } }
+    by_name = Hash.new { |h,k| h[k] = Hash.new(0) }   # { norm_name => { channel => count } }
 
     list.each do |m|
       next unless m.is_a?(Hash) && m['is_read'] == false
 
-      # 送信者のID
-      sender_id = m['sender_id'] || m.dig('chat', 'sender_id')
-      id_counts[sender_id] += 1 if sender_id.present?
+      channel_name = m.dig('chat','channel','name') || m.dig('channel','name') || '不明チャンネル'
+      sender_id    = m['sender_id'] || m.dig('chat','sender_id')
+      by_id[sender_id][channel_name] += 1 if sender_id.present?
 
-      # 送信者の表示名（例: "西野 鷹也(受講生アカウント)"）
-      sender_name = m['user_name'] || m.dig('chat', 'user_name')
+      sender_name = m['user_name'] || m.dig('chat','user_name')
       if sender_name.present?
-        name_counts[normalize_name(sender_name)] += 1
+        by_name[normalize_name(sender_name)][channel_name] += 1
       end
     end
 
-    Rails.logger.info("[OnclassStudentsDataWorker] mentions uid=#{token_headers['uid']} unread_total=#{id_counts.values.sum + name_counts.values.sum}")
-    { id: id_counts, name: name_counts }
+    uid = token_headers && token_headers['uid']
+    Rails.logger.info("[OnclassStudentsDataWorker] mentions uid=#{uid} unread_total=#{by_id.values.sum { |h| h.values.sum } + by_name.values.sum { |h| h.values.sum }}")
+    { id: by_id, name: by_name }
   rescue Faraday::Error => e
     uid = token_headers && token_headers['uid']
     Rails.logger.warn("[OnclassStudentsDataWorker] fetch_unread_mentions_map(uid=#{uid}) error: #{e.class} #{e.message}")
@@ -547,10 +548,14 @@ class OnclassStudentsDataWorker
   end
 
 
-  def mention_cell(count)
-    c = count.to_i
-    return '' if c <= 0
-    %Q(=HYPERLINK("https://manager.the-online-class.com/community","メンション#{c}件あり"))
+  # 例: {"TechPutチーム"=>3} => "TechPutチームより3件"
+  # 複数チャンネルは " / " で連結
+  def mention_cell(channel_counts)
+    counts = channel_counts || {}
+    return '' if counts.empty?
+    parts = counts.map { |ch, c| "#{ch}より#{c}件" }
+    label = parts.join(' / ')
+    %Q(=HYPERLINK("https://manager.the-online-class.com/community","#{label.gsub('"','""')}"))
   end
 
   # -------- ステータスB（声かけ必須） --------
@@ -684,5 +689,90 @@ class OnclassStudentsDataWorker
     base
   end
 
+  # シートIDを取得_条件式書式
+  def sheet_id_for(service, spreadsheet_id, sheet_name)
+    ss = service.get_spreadsheet(spreadsheet_id)
+    sheet = ss.sheets.find { |s| s.properties&.title == sheet_name }
+    sheet&.properties&.sheet_id
+  end
+
+  # N/O 列に「メンション」が含まれる行の背景をオレンジにする条件付き書式を追加
+  def apply_mention_highlight_rule!(service, spreadsheet_id, sheet_name)
+    sid = sheet_id_for(service, spreadsheet_id, sheet_name)
+    return unless sid # 念のため
+
+    # 適用範囲: B4:O（行は4行目以降、列はB〜O）
+    grid_range = Google::Apis::SheetsV4::GridRange.new(
+      sheet_id: sid,
+      start_row_index: 3,   # 0-based -> 4行目
+      start_column_index: 1,# B列
+      end_column_index: 15  # O列(排他的) => 15でB..O
+    )
+
+    # 条件: =COUNTIF($N4:$O4,"*メンション*")>0
+    # ※ 行番号「4」は相対参照（行方向は固定しない）なので、各行に適用時に自動で 5,6,... とずれます
+    cond = Google::Apis::SheetsV4::BooleanCondition.new(
+      type: 'CUSTOM_FORMULA',
+      values: [Google::Apis::SheetsV4::ConditionValue.new(
+        # N/O列のどちらかに値が入っていればハイライト
+        user_entered_value: '=COUNTA($N4:$O4)>0'
+      )]
+    )
+
+    format = Google::Apis::SheetsV4::CellFormat.new(
+      background_color: Google::Apis::SheetsV4::Color.new(red: 1.0, green: 0.9, blue: 0.6) # やわらかいオレンジ
+    )
+
+    rule = Google::Apis::SheetsV4::ConditionalFormatRule.new(
+      ranges: [grid_range],
+      boolean_rule: Google::Apis::SheetsV4::BooleanRule.new(
+        condition: cond,
+        format: format
+      )
+    )
+
+    add_req = Google::Apis::SheetsV4::AddConditionalFormatRuleRequest.new(
+      index: 0, # 先頭に追加
+      rule: rule
+    )
+
+    batch = Google::Apis::SheetsV4::BatchUpdateSpreadsheetRequest.new(
+      requests: [Google::Apis::SheetsV4::Request.new(
+        add_conditional_format_rule: add_req
+      )]
+    )
+    service.batch_update_spreadsheet(spreadsheet_id, batch)
+  end
+
+  # 2つの {channel=>count} を合算
+  def merge_channel_counts(a, b)
+    total = Hash.new(0)
+    Array(a).each { |k,v| total[k.to_s] += v.to_i }
+    Array(b).each { |k,v| total[k.to_s] += v.to_i }
+    total
+  end
+
+  # 受講生のメンションをチャンネル別に集計して返す
+  # maps は fetch_unread_mentions_map の戻り値
+  def channel_counts_for(maps, row)
+    return {} if maps.blank?
+    id_map   = maps[:id]   || {}
+    name_map = maps[:name] || {}
+    by_id    = id_map[row['id']] || {}
+    by_name  = name_map[normalize_name(row['name'])] || {}
+    merge_channel_counts(by_id, by_name)
+  end
+
+
+  # 受講生のメンションをチャンネル別に集計して返す
+  # maps は fetch_unread_mentions_map の戻り値
+  def channel_counts_for(maps, row)
+    return {} if maps.blank?
+    id_map   = maps[:id]   || {}
+    name_map = maps[:name] || {}
+    by_id    = id_map[row['id']] || {}
+    by_name  = name_map[normalize_name(row['name'])] || {}
+    merge_channel_counts(by_id, by_name)
+  end
 
 end
