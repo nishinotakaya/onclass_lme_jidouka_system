@@ -10,12 +10,12 @@ class OnclassAuthClient
 
   def initialize(base_url: ENV.fetch("ONLINE_CLASS_API_BASE", "https://api.the-online-class.com"),
                  login_path: ENV.fetch("ONLINE_CLASS_LOGIN_PATH", "/v1/enterprise_manager/auth/sign_in"),
-                 email: ENV.fetch("ONLINE_CLASS_EMAIL"),
-                 password: ENV.fetch("ONLINE_CLASS_PASSWORD"))
-    @base_url  = base_url
+                 email: ENV.fetch("ONLINE_CLASS_EMAIL", nil),
+                 password: ENV.fetch("ONLINE_CLASS_PASSWORD", nil))
+    @base_url   = base_url
     @login_path = login_path
-    @email     = email
-    @password  = password
+    @email      = email
+    @password   = password
 
     @conn = Faraday.new(url: @base_url) do |f|
       f.request :json
@@ -24,12 +24,7 @@ class OnclassAuthClient
     end
   end
 
-  # ===== 追加: 複数資格情報の取り出し =====
-  # 優先順:
-  # 1) ONLINE_CLASS_CREDENTIALS='[{"email":"a","password":"x"}, {"email":"b","password":"y"}]'
-  # 2) ONLINE_CLASS_EMAIL_1 / ONLINE_CLASS_PASSWORD_1, ONLINE_CLASS_EMAIL_2 / ... の連番
-  # 3) ONLINE_CLASS_EMAIL='a,b' / ONLINE_CLASS_PASSWORD='x,y' のカンマ・セミコロン・改行区切り
-  # 4) ONLINE_CLASS_EMAIL / ONLINE_CLASS_PASSWORD 単体（従来互換）
+  # ========= 複数資格情報の取り出し =========
   def self.credentials_from_env
     creds = []
 
@@ -42,7 +37,7 @@ class OnclassAuthClient
           creds << { email: e, password: p } if e.present? && p.present?
         end
       rescue JSON::ParserError
-        # 無視して次へ
+        # 無視
       end
     end
 
@@ -71,21 +66,21 @@ class OnclassAuthClient
       creds <<({ email: e, password: p }) if e.present? && p.present?
     end
 
-    # 同じ組を除外
     creds.uniq { |h| [h[:email], h[:password]] }
   end
 
-  # ====== 既存動作（ただしメール別にキャッシュ） ======
-
+  # ========= 既存動作（メール別キャッシュ） =========
   def cached_headers
     raw = Sidekiq.redis { |r| r.get(redis_key) }
     raw ? JSON.parse(raw) : nil
   end
 
   def sign_in!
+    raise "email/password required" if email.blank? || @password.blank?
+
     res = @conn.post(@login_path) do |req|
       req.headers["Content-Type"] = "application/json"
-      req.body = { email: @email, password: @password }
+      req.body = { email: email, password: @password }
     end
     headers = extract_token_headers(res)
     save_headers!(headers)
@@ -106,7 +101,6 @@ class OnclassAuthClient
   private
 
   def redis_key
-    # メールアドレスごとのキーにする（多アカウント衝突回避）
     "#{REDIS_KEY_PREFIX}:#{email}"
   end
 

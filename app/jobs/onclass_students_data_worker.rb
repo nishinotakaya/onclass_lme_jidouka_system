@@ -94,7 +94,7 @@ class OnclassStudentsDataWorker
     nishino_maps = nishino_headers ? fetch_unread_mentions_map(conn, nishino_headers) : { id: {}, name: {} }
     kato_maps    = kato_headers    ? fetch_unread_mentions_map(conn, kato_headers)    : { id: {}, name: {} }
 
-    # 6) 付加情報（★ここを差し替え）
+    # 6) 付加情報
     combined_rows.each do |r|
       d = details_by_id[r['id']] || {}
       r['current_category']              = current_category_name(d) || ''
@@ -441,7 +441,8 @@ class OnclassStudentsDataWorker
         )
       end
     end
-    apply_mention_highlight_rule!(service, spreadsheet_id, sheet_name)
+    # Todo::条件式書式を使いたい時のみ使用(1回きりでOK)
+    # apply_mention_highlight_rule!(service, spreadsheet_id, sheet_name)
     Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{sanitized_rows.size} rows with extension date, mentions and schedules (O列まで + P列〜).")
   end
 
