@@ -106,7 +106,9 @@ class OnclassStudentsDataWorker
       r['extension_study_date']          = extension_by_id[r['id']]
 
       b = basic_by_id[r['id']] || {}
-      r['pdca_url'] = extract_gsheets_url(b['free_text'])
+      free = b['free_text']
+      r['pdca_url'] = extract_gsheets_url(free)
+      r['line_url'] = extract_line_url(free) 
 
       key_id   = r['id']
       key_name = normalize_name(r['name'])
@@ -347,7 +349,7 @@ class OnclassStudentsDataWorker
 
     # 見出し（B3:O3）
     headers = %w[
-      id 名前 メールアドレス ステータス ステータス_B
+      名前 Line メールアドレス ステータス ステータス_B
       現在進行カテゴリ/完了予定日 現在進行ブロック 受講日 受講期限日 ログイン率 最新ログイン日 PDCA
       西野メンション 加藤メンション
     ]
@@ -364,10 +366,8 @@ class OnclassStudentsDataWorker
       id    = r['id'].to_s.strip
       name  = r['name'].to_s.strip
       email = r['email'].to_s.strip
-      ext   = r['extension_study_date'].to_s.strip
-      id.casecmp('id').zero? || name == '名前' || email == 'メールアドレス' || !ext.empty?
+      id.casecmp('id').zero? || name == '名前' || email == 'メールアドレス'
     end
-
     data_values = sanitized_rows.map do |r|
       g_val_name     = r['current_category'].to_s
       g_val_date     = to_jp_ymd(r['current_category_scheduled_at'])
@@ -375,8 +375,8 @@ class OnclassStudentsDataWorker
       g_val_combined = "#{g_val_name} / #{g_val_date}" unless g_val_name.empty? || g_val_date.empty?
 
       [
-        r['id'],
         hyperlink_name(r['id'], r['name']),
+        hyperlink_line(r['line_url'], r['name']),
         r['email'],
         r['status'].presence || '',
         status_b_for(r),
@@ -391,6 +391,7 @@ class OnclassStudentsDataWorker
         mention_cell(channel_counts_for(kato_maps, r))
       ]
     end
+
 
     if data_values.any?
       service.update_spreadsheet_value(
@@ -573,17 +574,17 @@ class OnclassStudentsDataWorker
     (now_jst - t) >= 4.days
   end
 
-  # 「現在進行カテゴリが終わるのに1週間以上」判定
+  # 「現在進行カテゴリが終わるのに2週間以上」判定
   def slow_category_progress?(row)
     cat = row['current_category'].to_s
     return false if cat.empty? || cat == '人工インターン' || cat == '全て完了'
 
     started_at = parse_time_jst(row['current_category_started_at'])
-    return (now_jst - started_at) >= 7.days if started_at
+    return (now_jst - started_at) >= 12.days if started_at
 
     sched = parse_time_jst(row['current_category_scheduled_at'])
     return false unless sched
-    (now_jst - sched) >= 7.days
+    (now_jst - sched) >= 12.days
   end
 
   def parse_time_jst(str)
@@ -775,5 +776,22 @@ class OnclassStudentsDataWorker
     by_name  = name_map[normalize_name(row['name'])] || {}
     merge_channel_counts(by_id, by_name)
   end
+
+
+  # free_text(自由項目) から LINE の URL を抽出
+  def extract_line_url(free_text)
+    return nil if free_text.to_s.strip.empty?
+    m = free_text.match(%r{https?://step\.lme\.jp/basic/friendlist/my_page/\S+}i)
+    return nil unless m
+    m.to_s.strip
+  end
+
+  # HYPERLINK作成（名前は "#{name}_Line"）
+  def hyperlink_line(url, name)
+    return '' if url.to_s.strip.empty?
+    label = "#{name}_Line".gsub('"', '""')
+    %Q(=HYPERLINK("#{url}","#{label}"))
+  end
+
 
 end
