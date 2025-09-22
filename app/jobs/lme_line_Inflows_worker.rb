@@ -66,54 +66,54 @@ class LmeLineInflowsWorker
           launched_browser.new_context
         end
 
-      begin
-        # Selenium の Cookie を注入（バージョン差分に両対応）
-        add_cookies_to_context!(context, login_result[:cookies])
-
-        page = context.new_page
-        pw_add_init_script(page, "window.open = (url, target) => { location.href = url; }")
-
-        # 管理TOPへ
-        page.goto("#{ORIGIN}/admin/home")
-        pw_wait_networkidle(page)
-
-        # /basic を踏んで cookie & XSRF 生やす
         begin
-          page.goto("#{ORIGIN}/basic/overview?botIdCurrent=#{bot_id}&isOtherBot=1")
+          # Selenium の Cookie を注入（バージョン差分に両対応）
+          add_cookies_to_context!(context, login_result[:cookies])
+
+          page = context.new_page
+          pw_add_init_script(page, "window.open = (url, target) => { location.href = url; }")
+
+          # 管理TOPへ
+          page.goto("#{ORIGIN}/admin/home")
           pw_wait_networkidle(page)
-        rescue => e
-          Rails.logger.debug("[BOT] skip basic/overview goto: #{e.class} #{e.message}")
+
+          # /basic を踏んで cookie & XSRF 生やす
+          begin
+            page.goto("#{ORIGIN}/basic/overview?botIdCurrent=#{bot_id}&isOtherBot=1")
+            pw_wait_networkidle(page)
+          rescue => e
+            Rails.logger.debug("[BOT] skip basic/overview goto: #{e.class} #{e.message}")
+          end
+
+          begin
+            page.goto("#{ORIGIN}/basic/friendlist/friend-history?botIdCurrent=#{bot_id}&isOtherBot=1")
+            pw_wait_for_url(page, %r{/basic/friendlist/friend-history}, 15_000)
+            pw_wait_networkidle(page)
+          rescue => e
+            Rails.logger.debug("[BOT] friend-history goto warn: #{e.class} #{e.message}")
+          end
+
+          # Playwright 側の Cookie を抜き出し → Header/XSRF 生成
+          pl_cookies = ctx_cookies(context, "step.lme.jp")
+          names = pl_cookies.map { |c| (c["name"] || c[:name]).to_s }
+          Rails.logger.debug("[PW] cookie names: #{names.join(', ')}")
+
+          unless names.include?("laravel_session") && names.include?("XSRF-TOKEN")
+            raise "Playwright に laravel_session / XSRF-TOKEN が載っていません（未ログイン）"
+          end
+
+          cookie_header = pl_cookies.map { |c|
+            "#{(c["name"]||c[:name])}=#{(c["value"]||c[:value])}"
+          }.join("; ")
+
+          xsrf_cookie = pl_cookies.find { |c| (c["name"] || c[:name]) == "XSRF-TOKEN" }
+          xsrf_raw    = xsrf_cookie && (xsrf_cookie["value"] || xsrf_cookie[:value])
+          xsrf        = xsrf_raw && CGI.unescape(xsrf_raw.to_s)
+        ensure
+          context&.close rescue nil
+          connected_browser&.close rescue nil
+          launched_browser&.close rescue nil
         end
-
-        begin
-          page.goto("#{ORIGIN}/basic/friendlist/friend-history?botIdCurrent=#{bot_id}&isOtherBot=1")
-          pw_wait_for_url(page, %r{/basic/friendlist/friend-history}, 15_000)
-          pw_wait_networkidle(page)
-        rescue => e
-          Rails.logger.debug("[BOT] friend-history goto warn: #{e.class} #{e.message}")
-        end
-
-        # Playwright 側の Cookie を抜き出し → Header/XSRF 生成
-        pl_cookies = ctx_cookies(context, "step.lme.jp")
-        names = pl_cookies.map { |c| (c["name"] || c[:name]).to_s }
-        Rails.logger.debug("[PW] cookie names: #{names.join(', ')}")
-
-        unless names.include?("laravel_session") && names.include?("XSRF-TOKEN")
-          raise "Playwright に laravel_session / XSRF-TOKEN が載っていません（未ログイン）"
-        end
-
-        cookie_header = pl_cookies.map { |c|
-          "#{(c["name"]||c[:name])}=#{(c["value"]||c[:value])}"
-        }.join("; ")
-
-        xsrf_cookie = pl_cookies.find { |c| (c["name"] || c[:name]) == "XSRF-TOKEN" }
-        xsrf_raw    = xsrf_cookie && (xsrf_cookie["value"] || xsrf_cookie[:value])
-        xsrf        = xsrf_raw && CGI.unescape(xsrf_raw.to_s)
-      ensure
-        context&.close rescue nil
-        connected_browser&.close rescue nil
-        launched_browser&.close rescue nil
-      end
     end
 
     # 3) Faraday へセッション適用（既存メソッド）
@@ -160,7 +160,9 @@ class LmeLineInflowsWorker
     end
 
     # (c) /ajax/init-data-history-add-friend — JSON ボディ {"data":"{\"start\":\"..\",\"end\":\"..\"}"}
+    #     * 追加: x-xsrf-token / X-XSRF-TOKEN の両方を送る（cURLトレース準拠）
     begin
+      # 直近のブラウザ計測に合わせて start/end を使い分けたい場合はここで調整
       payload = { data: { start: start_on, end: end_on }.to_json }.to_json
 
       res = conn.post("/ajax/init-data-history-add-friend") do |req|
@@ -170,60 +172,136 @@ class LmeLineInflowsWorker
         req.headers["user-agent"]        = UA
         req.headers["origin"]            = ORIGIN
         req.headers["referer"]           = "#{ORIGIN}/basic/friendlist/friend-history"
-        # XSRF はどちら表記でも受けるケースがあるため両方付与
+        # XSRF はどちら表記でも受けるケースがあるため 3 種付与
         req.headers["x-csrf-token"]      = xsrf.to_s
         req.headers["x-xsrf-token"]      = xsrf.to_s
+        req.headers["X-XSRF-TOKEN"]      = xsrf.to_s
         req.body = payload
       end
       Rails.logger.debug("[curl-init-data-history-add-friend] status=#{res.status} body=#{safe_head(res.body)}")
     rescue => e
       Rails.logger.debug("[curl-init-data-history-add-friend] #{e.class}: #{e.message}")
     end
-    # (d) 必要に応じ “予熱” で post-advance-filter-v2 を 1 回叩く（レスは捨てる）
-    begin
-      res = conn.post("/basic/friendlist/post-advance-filter-v2") do |req|
-        req.headers["accept"]            = "*/*"
-        req.headers["content-type"]      = "application/x-www-form-urlencoded; charset=UTF-8"
-        req.headers["x-requested-with"]  = "XMLHttpRequest"
-        req.headers["user-agent"]        = UA
-        req.headers["origin"]            = ORIGIN
-        req.headers["referer"]           = "#{ORIGIN}/basic/friendlist?followed_from=#{start_on}&followed_to=#{end_on}"
-        form = {
-          item_search: '[]',
-          item_search_or: '[]',
-          scenario_stop_id: '',
-          scenario_id_running: '',
-          scenario_unfinish_id: '',
-          orderBy: 0,
-          sort_followed_at_increase: '',
-          sort_last_time_increase: '',
-          keyword: '',
-          rich_menu_id: '',
-          page: 1,
-          followed_to: end_on,
-          followed_from: start_on,
-          connect_db_replicate: 'false',
-          line_user_id_deleted: '',
-          is_cross: 'false'
-        }
-        req.body = URI.encode_www_form(form)
-      end
-      Rails.logger.debug("[post-advance-filter-v2] status=#{res.status} body=#{safe_head(res.body)}")
-    rescue => e
-      Rails.logger.debug("[post-advance-filter-v2] #{e.class}: #{e.message}")
-    end
-    debugger
-    # 5) ★既存ロジックに戻る（FriendHistoryService は変更なし）
-    result = Lme::FriendHistoryService.new(auth: auth_client).overview_with_tags(
-      auth_client.conn,
-      start_on: start_on,
-      end_on:   end_on,
-      bot_id:   bot_id
-    )
 
-    rows       = result[:rows]
-    tags_cache = result[:tags_cache]
-    Rails.logger.info("[LmeLineInflowsWorker] ✅ Integrated fetch completed: #{rows.size} rows, #{tags_cache.size} users tagged")
+    # (d) データ取得本体：post-advance-filter-v2（ページング対応）
+    #     ここから rows を構築
+    Rails.logger.info("[Inflows] Fetching friendlist (v2, paginated)...")
+    rows = []
+    begin
+      page_no = 1
+      last_page = nil
+      loop do
+        res = conn.post("/basic/friendlist/post-advance-filter-v2") do |req|
+          req.headers["accept"]            = "*/*"
+          req.headers["content-type"]      = "application/x-www-form-urlencoded; charset=UTF-8"
+          req.headers["x-requested-with"]  = "XMLHttpRequest"
+          req.headers["user-agent"]        = UA
+          req.headers["origin"]            = ORIGIN
+          req.headers["referer"]           = "#{ORIGIN}/basic/friendlist?followed_from=#{start_on}&followed_to=#{end_on}"
+          form = {
+            item_search: '[]',
+            item_search_or: '[]',
+            scenario_stop_id: '',
+            scenario_id_running: '',
+            scenario_unfinish_id: '',
+            orderBy: 0,
+            sort_followed_at_increase: '',
+            sort_last_time_increase: '',
+            keyword: '',
+            rich_menu_id: '',
+            page: page_no,
+            followed_to: end_on,
+            followed_from: start_on,
+            connect_db_replicate: 'false',
+            line_user_id_deleted: '',
+            is_cross: 'false'
+          }
+          req.body = URI.encode_www_form(form)
+        end
+
+        Rails.logger.debug("[post-advance-filter-v2] page=#{page_no} status=#{res.status} body=#{safe_head(res.body)}")
+        break unless res.status.to_i == 200
+
+        json = JSON.parse(res.body) rescue {}
+        data_block = json.is_a?(Hash) ? json["data"] : nil
+        page_items = data_block.is_a?(Hash) ? (data_block["data"] || []) : []
+        current_page = data_block.is_a?(Hash) ? data_block["current_page"].to_i : page_no
+        last_page    = data_block.is_a?(Hash) ? (data_block["last_page"] || last_page || (page_items.empty? ? current_page : current_page)) : last_page
+
+        # 取得したレコードを rows に寄せる
+        Array(page_items).each do |rec|
+          rec = rec.respond_to?(:with_indifferent_access) ? rec.with_indifferent_access : (rec || {})
+          lu_link = rec['link_my_page']
+          uid     = rec['line_user_id'] || last_id_from_my_page(lu_link) || rec['line_id']
+
+          followed_at = rec['followed_at']
+          date_key    = begin
+                          Time.zone.parse(followed_at.to_s).to_date.strftime('%Y-%m-%d')
+                        rescue
+                          (Date.parse(followed_at.to_s) rescue nil)&.strftime('%Y-%m-%d')
+                        end
+
+          rows << {
+            'date'         => date_key,
+            'followed_at'  => rec['followed_at'],
+            'landing_name' => rec['landing_name'],
+            'name'         => rec['name'],
+            'line_user_id' => uid,
+            'line_id'      => rec['line_id'],
+            'is_blocked'   => (rec['is_blocked'] || 0).to_i
+          }
+        end
+
+        break if last_page && current_page >= last_page
+        break if page_items.blank?
+        page_no += 1
+        sleep 0.15 # 連打抑制
+      end
+    rescue => e
+      Rails.logger.debug("[post-advance-filter-v2] fetch error: #{e.class}: #{e.message}")
+    end
+
+    # 重複除去
+    rows.uniq! { |r| [r['line_user_id'], r['followed_at']] }
+
+    # 5) タグ情報を perform 内で取得（/basic/chat/get-categories-tags）
+    Rails.logger.info("[Inflows] Fetching tags for #{rows.size} rows (unique users)...")
+    user_ids = rows.map { |r| r['line_user_id'] }.compact.uniq
+    tags_cache = {}
+    user_ids.each_with_index do |uid, i|
+      begin
+        res = conn.post("/basic/chat/get-categories-tags") do |req|
+          req.headers["accept"]            = "*/*"
+          req.headers["content-type"]      = "application/x-www-form-urlencoded; charset=UTF-8"
+          req.headers["x-requested-with"]  = "XMLHttpRequest"
+          req.headers["x-csrf-token"]      = xsrf.to_s
+          req.headers["x-xsrf-token"]      = xsrf.to_s
+          req.headers["X-XSRF-TOKEN"]      = xsrf.to_s
+          req.headers["user-agent"]        = UA
+          req.headers["origin"]            = ORIGIN
+          req.headers["referer"]           = "#{ORIGIN}/basic/chat-v3?friend_id=#{uid}"
+          form = {
+            line_user_id: uid,
+            is_all_tag:   0,
+            botIdCurrent: bot_id
+          }
+          req.body = URI.encode_www_form(form)
+        end
+        Rails.logger.debug("[get-categories-tags] uid=#{uid} status=#{res.status} body=#{safe_head(res.body)}")
+
+        flags = extract_tag_flags_from_payload(res.body)
+        tags_cache[uid] = flags if flags.present?
+      rescue => e
+        Rails.logger.debug("[get-categories-tags] uid=#{uid} #{e.class}: #{e.message}")
+      ensure
+        sleep 0.12 # 速すぎ注意
+      end
+    end
+
+    Rails.logger.info("[Inflows] ✅ Integrated fetch completed: #{rows.size} rows, #{tags_cache.size} users tagged")
+
+    # === 旧 FriendHistoryService 呼び出しは使用しない ===
+    # result = Lme::FriendHistoryService.new(auth: auth_client).overview_with_tags(...)
 
     # 6) GSheets 反映（元のまま）
     spreadsheet_id = ENV.fetch('ONCLASS_SPREADSHEET_ID')
@@ -579,5 +657,81 @@ class LmeLineInflowsWorker
   def safe_head(s, n = 200)
     str = s.to_s
     str.bytesize > n ? str.byteslice(0, n) + "...(trunc)" : str
+  end
+
+  # =========================================================
+  # タグ検出ヘルパ（レスポンスを柔軟にパース）
+  # =========================================================
+  def extract_tag_flags_from_payload(body)
+    json = JSON.parse(body) rescue {}
+    strings = deep_collect_strings(json)
+    return {} if strings.empty?
+
+    # “選択肢”の値（最初に見つかったもの）を拾う
+    select_label = strings.find { |s| s.include?("選択肢") } || strings.find { |s| s =~ /選択/ }
+
+    patterns = {
+      dv1: [/動画.?①.*ダイジェスト/i, /ダイジェスト.*1/i, /Digest.*1/i],
+      v1:  [/プロアカ.?動画.?①/i, /動画.?①.*(本編|視聴|購入|フル)/i],
+      dv2: [/動画.?②.*ダイジェスト/i, /ダイジェスト.*2/i, /Digest.*2/i],
+      v2:  [/プロアカ.?動画.?②/i, /動画.?②.*(本編|視聴|購入|フル)/i],
+      dv3: [/動画.?③.*ダイジェスト/i, /ダイジェスト.*3/i, /Digest.*3/i],
+      v3:  [/プロアカ.?動画.?③/i, /動画.?③.*(本編|視聴|購入|フル)/i],
+      v4:  [/プロアカ.?動画.?④/i, /動画.?④/i]
+    }
+
+    names = extract_probable_tag_names(json)
+    pool  = (names + strings).uniq
+
+    flags = {}
+    patterns.each do |k, regs|
+      flags[k] = regs.any? { |re| pool.any? { |s| s =~ re } }
+    end
+    flags[:select] = select_label
+    flags
+  rescue => e
+    Rails.logger.debug("[extract_tag_flags] #{e.class}: #{e.message}")
+    {}
+  end
+
+  # “name/label/title/text/value” といったキーから文字列を拾いやすくする
+  def extract_probable_tag_names(obj)
+    keys = %w[name tag_name category_name title label text value]
+    out  = []
+    walk = lambda do |v|
+      case v
+      when Hash
+        v.each do |k, vv|
+          out << vv.to_s if keys.include?(k.to_s) && vv.is_a?(String)
+          walk.call(vv)
+        end
+      when Array
+        v.each { |e| walk.call(e) }
+      end
+    end
+    walk.call(obj)
+    out.compact.map(&:to_s)
+  end
+
+  # JSON 全体を深掘りして “文字列値” を収集（ロバスト用）
+  def deep_collect_strings(obj)
+    out = []
+    walk = lambda do |v|
+      case v
+      when String
+        out << v
+      when Hash
+        v.each_value { |vv| walk.call(vv) }
+      when Array
+        v.each { |e| walk.call(e) }
+      end
+    end
+    walk.call(obj)
+    out.compact.map(&:to_s)
+  end
+
+  def last_id_from_my_page(link)
+    return nil if link.blank?
+    link.to_s.split("/").last
   end
 end
