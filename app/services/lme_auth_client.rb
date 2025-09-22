@@ -1,213 +1,109 @@
-# frozen_string_literal: true
-require "json"
-require "cgi"
-require "faraday"
-
+# app/services/lme_auth_client.rb
 class LmeAuthClient
-  REDIS_KEY = ENV.fetch("LME_COOKIE_REDIS_KEY", "lme:cookie")
-  BASE_URL  = ENV.fetch("LME_BASE_URL", "https://step.lme.jp")
+  require "http/cookie_jar"
+  attr_accessor :current_cookies, :driver
 
-  class RecaptchaRequired < StandardError; end
+  BASE_URL = "https://step.lme.jp"
 
-  # ---- Cookie ソース --------------------------------------------------------
-  def cookie
-    ck = Sidekiq.redis { |r| r.get(REDIS_KEY) } ||
-         Rails.application.credentials.dig(:lme, :cookie) ||
-         ENV["LME_COOKIE"]
-    raise "Bootstrap cookie missing. Please set via rake lme:cookie:set" if ck.blank?
-    ck
+  def initialize(driver = nil)
+    @driver = driver
   end
 
-  def manual_set!(cookie_str)
-    raise "cookie_str blank" if cookie_str.to_s.strip.empty?
-    Sidekiq.redis { |r| r.set(REDIS_KEY, cookie_str) }
-    cookie_str
-  end
+  # Cookie 文字列と配列（任意）を受け取り、Faraday ヘッダに反映
+  def manual_set!(cookie_str, cookies = [])
+    @cookie = cookie_str.to_s
+    @current_cookies = cookies if cookies.any?
 
-  # ---- 接続（API 用） -------------------------------------------------------
-  def conn(cookie_str = cookie)
-    xsrf = extract_cookie(cookie_str, "XSRF-TOKEN")
-    xsrf = xsrf ? CGI.unescape(xsrf) : nil
+    conn.headers["Cookie"] = @cookie
 
-    Faraday.new(url: BASE_URL) do |f|
-      f.request  :json
-      f.response :raise_error
-      f.adapter  Faraday.default_adapter
-      f.headers["Accept"]           = "application/json, text/plain, */*"
-      f.headers["Content-Type"]     = "application/json;charset=UTF-8"
-      f.headers["Origin"]           = BASE_URL
-      f.headers["Referer"]          = "#{BASE_URL}/basic/friendlist/friend-history"
-      f.headers["User-Agent"]       = "Mozilla/5.0"
-      f.headers["X-Requested-With"] = "XMLHttpRequest"
-      f.headers["x-xsrf-token"]     = xsrf if xsrf.present?
-      f.headers["x-server"]         = "ovh"
-      f.headers["Cookie"]           = cookie_str
+    xsrf = if cookies.any?
+      cookies.find { |c| (c[:name] || c["name"]) == "XSRF-TOKEN" }&.dig(:value) ||
+        cookies.find { |c| (c[:name] || c["name"]) == "XSRF-TOKEN" }&.dig("value")
+    else
+      extract_cookie(@cookie, "XSRF-TOKEN")
+    end
+
+    if xsrf
+      token = CGI.unescape(xsrf.to_s)
+      conn.headers["X-XSRF-TOKEN"] = token
+      conn.headers["x-xsrf-token"] = token
     end
   end
 
-   def csrf_token_for(referer_path = "/basic/chat-v3?lastTimeUpdateFriend=0", cookie_str = cookie)
-    c = Faraday.new(url: BASE_URL) do |f|
-      f.response :raise_error
-      f.adapter  Faraday.default_adapter
-      f.headers["Cookie"]     = cookie_str
-      f.headers["User-Agent"] = "Mozilla/5.0"
-      f.headers["Accept"]     = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-      f.headers["Referer"]    = "#{BASE_URL}/basic/overview"
-    end
-    res = c.get(referer_path)
-    refresh_from_response_cookies!(res.headers, current: cookie_str)
+  # Playwright などから取得した最新 Cookie/Token をまとめて適用
+  # app/services/lme_auth_client.rb
 
-    html = res.body.to_s
-    # <meta name="csrf-token" content="...">
-    meta = html.match(/<meta\s+name=["']csrf-token["']\s+content=["']([^"']+)["']/i)
-    meta && meta[1]
-  rescue Faraday::ClientError => e
-    Rails.logger.warn("[LmeAuthClient] csrf_token_for failed status=#{e.response&.dig(:status)}")
-    nil
+  def apply_session!(cookie_header, xsrf, referer:)
+    conn.headers["Cookie"]           = cookie_header
+    conn.headers["X-XSRF-TOKEN"]     = xsrf if xsrf
+    conn.headers["x-xsrf-token"]     = xsrf if xsrf
+    conn.headers["x-requested-with"] = "XMLHttpRequest"
+    conn.headers["Accept"]           = "application/json, text/plain, */*"
+    conn.headers["Content-Type"]     = "application/json;charset=UTF-8"
+    conn.headers["Referer"]          = referer
+    conn.headers["Origin"]           = LmeAuthClient::BASE_URL
+    @cookie = cookie_header
   end
 
 
-  # ---- ヘルスチェック（緩め） ----------------------------------------------
-  def valid_cookie?(cookie_str = cookie)
-    c = conn(cookie_str)
 
+  # Set-Cookie の取り込み（レスポンス -> 内部 Cookie へマージ）
+  def refresh_from_response_cookies!(headers)
+    raw = headers["set-cookie"] || headers["Set-Cookie"]
+    return unless raw.present?
+
+    merged = (Array(@current_cookies) + parse_cookie_header(raw)).uniq { |c| c[:name] }
+    @current_cookies = merged
+    @cookie = @current_cookies.map { |c| "#{c[:name]}=#{c[:value]}" }.join("; ")
+
+    @conn.headers["Cookie"] = @cookie if defined?(@conn) && @conn
+  end
+
+  # ✅ 追加：現在の Cookie が有効か簡易チェック
+  def valid_cookie?
+    return false if cookie.blank?
     begin
-      body = { data: { start: today, end: today }.to_json }
-      c.post("/ajax/init-data-history-add-friend", body.to_json)
-      return true
-    rescue Faraday::ClientError => e
-      Rails.logger.warn("[LmeAuthClient] /ajax/init-data-history-add-friend failed status=#{e.response&.dig(:status)}")
-    end
-
-    begin
-      top = Faraday.new(url: BASE_URL).get("/")
-      Rails.logger.info("[LmeAuthClient] '/' reachable (#{top.status})")
-      return top.status.between?(200,299)
-    rescue Faraday::Error => e
-      Rails.logger.warn("[LmeAuthClient] '/' check failed: #{e.class} #{e.message}")
-      return false
+      probe = Faraday.new(url: BASE_URL) { |f| f.response :raise_error; f.adapter Faraday.default_adapter }
+      probe.headers["Cookie"] = cookie
+      xsrf = extract_cookie(cookie, "XSRF-TOKEN")
+      probe.headers["x-xsrf-token"] = CGI.unescape(xsrf.to_s) if xsrf
+      res = probe.get("/basic/overview")
+      res.status == 200
+    rescue Faraday::Error
+      false
     end
   end
 
-  def valid_cookie_with_refresh?(cookie_str = cookie)
-    if valid_cookie?(cookie_str)
-      return true
-    end
+  def cookie = @cookie
 
-    Rails.logger.info("[LmeAuthClient] Cookie validation failed, attempting automatic refresh...")
-    
-    begin
-      # Railsの自動読み込みを強制実行
-      Rails.application.eager_load!
-      LmeCookieRefresher.run_with_fallback
-      Rails.logger.info("[LmeAuthClient] Cookie refresh completed")
-      
-      # リフレッシュ後に再度検証
-      return valid_cookie?
-    rescue => refresh_error
-      Rails.logger.error("[LmeAuthClient] Cookie refresh failed: #{refresh_error.message}")
-      Rails.logger.info("[LmeAuthClient] Please run manually: bin/rails lme:cookie:auto_refresh")
-      return false
-    end
-  end
-
-  # ---- Set-Cookie -> Redis 反映 ---------------------------------------------
-  def refresh_from_response_cookies!(headers, current: cookie)
-    set_cookie = headers["set-cookie"] || headers["Set-Cookie"]
-    return unless set_cookie
-
-    updated = current.dup
-    %w[XSRF-TOKEN laravel_session].each do |name|
-      v = extract_set_cookie_value(set_cookie, name)
-      next unless v
-      updated = replace_cookie_pair(updated, name, v)
-    end
-    manual_set!(updated) if updated != current
-  end
-
-  # ---（オプション）パスワードログイン（reCAPTCHA なら即中止）--------------
-  def attempt_password_login!(email:, password:)
-    form_conn = Faraday.new(url: BASE_URL) { |f| f.adapter Faraday.default_adapter }
-    form = form_conn.get("/login")
-    html = form.body.to_s
-    raise RecaptchaRequired, "CAPTCHA present" if html.include?("私はロボットではありません") || html.downcase.include?("captcha")
-
-    token = html.match(/name="_token"\s+value="([^"]+)"/)&.captures&.first
-    raise "CSRF token not found" if token.blank?
-
-    jar = build_cookie_jar_from_set_cookie(form.headers["set-cookie"])
-
-    login_conn = Faraday.new(url: BASE_URL) do |f|
+  def conn
+    @conn ||= Faraday.new(url: BASE_URL) do |f|
       f.request :url_encoded
       f.response :raise_error
       f.adapter Faraday.default_adapter
-      f.headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
-      f.headers["Cookie"]       = jar
     end
-
-    res = login_conn.post("/login", { email: email, password: password, _token: token })
-    body = res.body.to_s
-    raise RecaptchaRequired, "CAPTCHA present" if body.include?("私はロボットではありません") || body.downcase.include?("captcha")
-
-    fresh = merge_set_cookie_into_cookie(jar, res.headers["set-cookie"])
-    manual_set!(fresh)
-    true
   end
 
-  private
-
-  def today
-    Time.now.in_time_zone("Asia/Tokyo").to_date.to_s
+  # 🚀 追加：CSRF トークン取得（Cookie から）
+  def csrf_token_for(_path = nil)
+    extract_cookie(@cookie, "XSRF-TOKEN")
   end
 
-  def extract_cookie(cookie_str, key)
+  # レスポンス Set-Cookie から {name,value} 配列へ
+  private def parse_cookie_header(raw)
+    raw.split(/,(?=[^ ;]+=)/).map do |chunk|
+      pair = chunk.split(";", 2).first
+      k, v = pair.strip.split("=", 2)
+      { name: k, value: v }
+    end
+  end
+
+  private def extract_cookie(cookie_str, key)
     return nil if cookie_str.blank?
     cookie_str.split(";").map(&:strip).each do |pair|
       k, v = pair.split("=", 2)
-      return v if k == key
+      return CGI.unescape(v) if k == key
     end
     nil
-  end
-
-  def extract_set_cookie_value(set_cookie_header, name)
-    m = set_cookie_header&.match(/#{Regexp.escape(name)}=([^;]+);/i)
-    m && m[1]
-  end
-
-  def replace_cookie_pair(cookie_str, name, value)
-    pairs = cookie_str.split(";").map(&:strip)
-    found = false
-    pairs.map! do |pair|
-      k, _v = pair.split("=", 2)
-      if k == name
-        found = true
-        "#{name}=#{value}"
-      else
-        pair
-      end
-    end
-    pairs << "#{name}=#{value}" unless found
-    pairs.join("; ")
-  end
-
-  def build_cookie_jar_from_set_cookie(set_cookie)
-    return "" if set_cookie.blank?
-    names = %w[XSRF-TOKEN laravel_session]
-    parts = names.filter_map { |n|
-      v = extract_set_cookie_value(set_cookie, n)
-      v ? "#{n}=#{v}" : nil
-    }
-    parts.join("; ")
-  end
-
-  def merge_set_cookie_into_cookie(base_cookie, set_cookie)
-    return base_cookie if set_cookie.blank?
-    updated = base_cookie.dup
-    %w[XSRF-TOKEN laravel_session].each do |n|
-      v = extract_set_cookie_value(set_cookie, n)
-      next unless v
-      updated = replace_cookie_pair(updated, n, v)
-    end
-    updated
   end
 end

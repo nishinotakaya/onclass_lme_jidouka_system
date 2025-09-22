@@ -4,7 +4,7 @@ require "cgi"
 
 module Lme
   class BaseService
-    attr_reader :auth
+    attr_accessor :auth 
 
     def initialize(auth: nil)
       @auth = auth || LmeAuthClient.new
