@@ -7,7 +7,6 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
-      # 必要なら MYSQL_USER / MYSQL_PASSWORD も .env で定義して使ってください
       # MYSQL_USER: ${MYSQL_USER}
       # MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_general_ci
@@ -80,8 +79,8 @@ services:
       # GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON}
       # GOOGLE_SERVICE_ACCOUNT_JSON_BASE64: ${GOOGLE_SERVICE_ACCOUNT_JSON_BASE64}
       ONCLASS_SPREADSHEET_ID: ${ONCLASS_SPREADSHEET_ID}
-      ONCLASS_SHEET_NAME: ${ONCLASS_SHEET_NAME:-受講生自動化}
-      
+      ONCLASS_SHEET_NAME: ${ONCLASS_SHEET_NAME:-フロントコース受講生}
+
       # ▼ LME Cookie自動更新用
       GOOGLE_EMAIL: ${GOOGLE_EMAIL}
       GOOGLE_PASSWORD: ${GOOGLE_PASSWORD}
@@ -100,6 +99,7 @@ services:
       context: .
     user: "0:0"
     command: bash -c "bundle exec sidekiq"
+    init: true
     volumes:
       - .:/myapp
       - bundle:/usr/local/bundle
@@ -129,8 +129,8 @@ services:
       # GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON}
       # GOOGLE_SERVICE_ACCOUNT_JSON_BASE64: ${GOOGLE_SERVICE_ACCOUNT_JSON_BASE64}
       ONCLASS_SPREADSHEET_ID: ${ONCLASS_SPREADSHEET_ID}
-      ONCLASS_SHEET_NAME: ${ONCLASS_SHEET_NAME:-受講生自動化}
-      
+      ONCLASS_SHEET_NAME: ${ONCLASS_SHEET_NAME:-フロントコース受講生}
+
       # ▼ LME Cookie自動更新用（Worker はこちらで使う）
       GOOGLE_EMAIL: ${GOOGLE_EMAIL}
       GOOGLE_PASSWORD: ${GOOGLE_PASSWORD}

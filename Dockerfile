@@ -1,23 +1,33 @@
 FROM ruby:3.0.3
 
-RUN apt-get update -qq && apt-get install -y \
-    build-essential \
-    default-mysql-client \
-    redis-server \
-    wget \
-    gnupg \
-    ca-certificates \
-    curl \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
-    chromium-driver
+    chromium-driver \
+    fonts-liberation \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libcups2 \
+    libdrm2 \
+    libgbm1 \
+    libnspr4 \
+    libnss3 \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    xdg-utils \
+    xvfb \
+    && rm -rf /var/lib/apt/lists/*
 
-# Node.js 18のインストール
+# Node.js 18 のインストール
 RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y nodejs \
     && node --version \
     && npm --version
 
-# Playwrightのインストール
+# Playwright のインストール
 RUN npm install -g playwright@1.55.0 \
     && npx playwright install chromium \
     && npx playwright install-deps chromium
@@ -43,4 +53,6 @@ RUN chmod +x /usr/bin/entrypoint.sh
 ENTRYPOINT ["entrypoint.sh"]
 
 EXPOSE 3000
-CMD ["bundle", "exec", "rails", "server", "-b", "0.0.0.0", "-p", "3000"]
+
+# 👇 xvfb-run を噛ませて Rails 起動
+CMD ["xvfb-run", "-a", "bundle", "exec", "rails", "server", "-b", "0.0.0.0", "-p", "3000"]

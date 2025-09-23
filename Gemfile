@@ -5,8 +5,13 @@ ruby "3.0.3"
 gem 'google-apis-sheets_v4'
 gem 'googleauth'
 gem "playwright-ruby-client"
-gem "selenium-webdriver"
+gem "selenium-webdriver", "~> 4.23"
+gem "selenium-devtools", "= 0.120.0"
+gem "http-cookie"
 
+
+gem 'recaptcha', require: 'recaptcha/rails'
+gem 'google-cloud-recaptcha_enterprise'
 # Bundle edge Rails instead: gem "rails", github: "rails/rails", branch: "main"
 gem "rails", "~> 7.1.3", ">= 7.1.3.4"
 
@@ -79,5 +84,4 @@ end
 group :test do
   # Use system testing [https://guides.rubyonrails.org/testing.html#system-testing]
   gem "capybara"
-  gem "selenium-webdriver"
 end
