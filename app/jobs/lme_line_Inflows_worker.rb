@@ -38,8 +38,9 @@ class LmeLineInflowsWorker
     )
     login_result = login_service.fetch_friend_history
 
-    cookie_header = (login_result[:basic_cookie_header].presence || login_result[:cookie_str].to_s)
-    xsrf_cookie  = login_result[:basic_xsrf].to_s # ← これは “デコード済み” が来る想定
+    # === 修正: fallback を禁止して sanitize 済みだけ使う ===
+    cookie_header = login_result[:basic_cookie_header].to_s.strip
+    xsrf_cookie  = login_result[:basic_xsrf].to_s.strip
     raise 'basic_cookie_header missing' if cookie_header.blank?
     raise 'basic_xsrf missing' if xsrf_cookie.blank?
 
@@ -66,7 +67,7 @@ class LmeLineInflowsWorker
     start_on = (start_date.presence || default_start_on)
     end_on   = (end_date.presence   || Time.zone.today.to_s)
     bot_id   = (ENV['LME_BOT_ID'].presence || '17106').to_s
-
+    Rails.logger.debug("start_on=#{start_on} end_on=#{end_on} cookie_header#{cookie_header} xsrf_cookie#{xsrf_cookie}")
     # 4) 前座（JSON）: /ajax/init-data-history-add-friend  ※cURLどおり x-xsrf-token を使う
     Rails.logger.info('[Inflows] warmup: init-data-history-add-friend …')
     begin
@@ -100,13 +101,14 @@ class LmeLineInflowsWorker
           keyword: '',
           rich_menu_id: '',
           page: page_no,
-          botIdCurrent: bot_id,
           followed_to: end_on,
           followed_from: start_on,
           connect_db_replicate: 'false',
           line_user_id_deleted: '',
           is_cross: 'false'
         }
+
+        Rails.logger.debug(form.inspect)
 
         res_body = curl_post_form(
           path: '/basic/friendlist/post-advance-filter-v2',
@@ -120,17 +122,16 @@ class LmeLineInflowsWorker
         body = JSON.parse(res_body) rescue {}
         data = body.dig('data', 'data') || []
         # === ここで必ずログ ===
-        Rails.logger.debug("[post-advance-filter-v2] page=#{page_no} data_count=#{data.size} filtered=#{filtered.size}")
-
+        
         filtered = data.select do |row|
           blocked  = row['is_blocked'].to_i == 1
           followed = row['followed_at'].present? &&
-                    Date.parse(row['followed_at']) >= Date.parse(start_on) &&
-                    Date.parse(row['followed_at']) <= Date.parse(end_on)
+          Date.parse(row['followed_at']) >= Date.parse(start_on) &&
+          Date.parse(row['followed_at']) <= Date.parse(end_on)
           blocked || followed
         end
+        Rails.logger.debug("[post-advance-filter-v2] body=#{body} page=#{page_no} data_count=#{data.size} filtered=#{filtered.size}")
         raw_rows.concat(filtered)
-
         break if data.empty? || body.dig('data', 'current_page') >= body.dig('data', 'last_page')
         page_no += 1
         sleep 0.15
@@ -139,9 +140,13 @@ class LmeLineInflowsWorker
       Rails.logger.debug("[post-advance-filter-v2] fetch error: #{e.class}: #{e.message}")
     end
 
-    rows = raw_rows.select { |r| r['date'].to_s >= '2025-09-20' }
+    rows = raw_rows.select do |r|
+      r['followed_at'].present? &&
+        Date.parse(r['followed_at']) >= Date.parse('2025-09-20')
+    end
     rows.uniq! { |r| [r['line_user_id'], r['followed_at']] }
-    debugger
+    Rails.logger.debug("[rows-filter] raw_rows=#{raw_rows.size} → rows=#{rows.size}")
+    Rails.logger.debug("[rows-sample] #{rows.first.inspect}") if rows.present?
     # 7) タグ取得の前に、チャット画面でCookie/XSRFしつつmetaも再確認
     if rows.present?
       sample_uid = rows.first['line_user_id']
@@ -151,7 +156,7 @@ class LmeLineInflowsWorker
 
       # chat-v3 の DOM から meta 再取得（保険）
       meta2, cookie_header2, xsrf2, src2 =
-        playwright_fetch_meta_csrf!(login_result[:cookies], "/basic/chat-v3?friend_id=#{sample_uid}&botIdCurrent=#{bot_id}&isOtherBot=1")
+        playwright_fetch_meta_csrf!(login_result[:cookies], "/basic/chat-v3?friend_id=#{sample_uid}")
       csrf_meta    = (meta2.presence || csrf_meta)
       cookie_header = (cookie_header2.presence || cookie_header)
       xsrf_cookie   = (xsrf2.presence || xsrf_cookie)
@@ -164,7 +169,7 @@ class LmeLineInflowsWorker
     rows.each_with_index do |r, i|
       uid = r['line_user_id']
       begin
-        form = { line_user_id: uid, is_all_tag: 0, botIdCurrent: bot_id }
+        form = { line_user_id: uid, is_all_tag: 0 }
         res_body = curl_post_form(
           path: '/basic/chat/get-categories-tags',
           form: form,
@@ -779,7 +784,7 @@ class LmeLineInflowsWorker
         page = context.new_page
         pw_add_init_script(page, 'window.open = (url, target) => { location.href = url; }')
 
-        page.goto("#{ORIGIN}/basic/chat-v3?friend_id=#{sample_uid}&botIdCurrent=#{bot_id}&isOtherBot=1")
+        page.goto("#{ORIGIN}/basic/chat-v3?friend_id=#{sample_uid}")
         pw_wait_for_url(page, %r{/basic/chat-v3}, 15_000)
         pw_wait_networkidle(page)
 
