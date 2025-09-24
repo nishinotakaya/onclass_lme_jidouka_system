@@ -20,7 +20,7 @@ class LmeLineInflowsWorker
   sidekiq_options queue: 'lme_line_inflows', retry: 3
 
   GOOGLE_SCOPE = [Google::Apis::SheetsV4::AUTH_SPREADSHEETS].freeze
-  CUM_SINCE    = ENV['LME_CUM_SINCE'].presence || '2025-09-20'
+  CUM_SINCE    = ENV['LME_CUM_SINCE'].presence || '2025-09-01'
   ORIGIN       = 'https://step.lme.jp'
   UA           = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
   ACCEPT_LANG  = 'ja,en-US;q=0.9,en;q=0.8'
@@ -142,7 +142,7 @@ class LmeLineInflowsWorker
 
     rows = raw_rows.select do |r|
       r['followed_at'].present? &&
-        Date.parse(r['followed_at']) >= Date.parse('2025-09-20')
+        Date.parse(r['followed_at']) >= Date.parse('2025-09-01')
     end
     rows.uniq! { |r| [r['line_user_id'], r['followed_at']] }
     Rails.logger.debug("[rows-filter] raw_rows=#{raw_rows.size} → rows=#{rows.size}")
@@ -686,7 +686,7 @@ class LmeLineInflowsWorker
   private
 
   def default_start_on
-    '2025-09-20'
+    '2025-09-01'
   end
 
   def month_rates(rows, tags_cache, month:)

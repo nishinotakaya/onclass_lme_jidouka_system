@@ -15,6 +15,7 @@ class OnclassStudentsDataWorker
 
   DEFAULT_LEARNING_COURSE_ID = 'oYTO4UDI6MGb' # フロント
 
+  # 表示順
   STATUS_ORDER = [
     ['very_good', '素晴らしい'],
     ['good',      '順調'],
@@ -25,6 +26,16 @@ class OnclassStudentsDataWorker
 
   TARGET_COLUMNS = %w[name email last_sign_in_at course_name course_start_at course_progress].freeze
 
+  # APIのmotivation→日本語表示
+  API_TO_JP_MOTIVATION = {
+    'very_good' => '素晴らしい',
+    'good'      => '順調',
+    'very_bad'  => '離脱',
+    'bad'       => '停滞中',
+    'normal'    => '停滞気味'
+  }.freeze
+
+  # ================ Entry =================
   def perform(course_id = nil, sheet_name = nil)
     course_id  ||= ENV.fetch('ONCLASS_COURSE_ID', DEFAULT_LEARNING_COURSE_ID)
     sheet_name ||= ENV.fetch('ONCLASS_SHEET_NAME', 'フロントコース受講生')
@@ -45,10 +56,24 @@ class OnclassStudentsDataWorker
       f.adapter  Faraday.default_adapter
     end
 
-    # 3) 一覧取得
+    # 3) 一覧取得（normalが500のときは全件→クライアント側フィルタへフォールバック）
     grouped_rows = {}
     STATUS_ORDER.each do |motivation, jp_label|
-      rows = fetch_users_by_motivation(conn, base_headers, motivation, jp_label, course_id)
+      rows = []
+      begin
+        rows = fetch_users_by_motivation(conn, base_headers, motivation, jp_label, course_id)
+      rescue Faraday::Error => e
+        if motivation == 'normal'
+          body = (e.respond_to?(:response) ? e.response&.dig(:body) : nil)
+          Rails.logger.warn("[OnclassStudentsDataWorker] motivation=normal failed (#{e.class} #{e.message}) body=#{body.inspect}. fallback to client-side filtering")
+          all = fetch_users_all_pages(conn, base_headers, course_id)
+          rows = all.select { |r| normalize_motivation(r['motivation']) == 'normal' }
+          rows.each { |r| r['status'] = jp_label } # “停滞気味” に統一
+        else
+          raise
+        end
+      end
+
       grouped_rows[motivation] = rows
       Rails.logger.info("[OnclassStudentsDataWorker] fetched #{rows.size} users for #{motivation}(#{jp_label}) course=#{course_id}")
     end
@@ -97,22 +122,24 @@ class OnclassStudentsDataWorker
     # 6) 付加情報
     combined_rows.each do |r|
       d = details_by_id[r['id']] || {}
-      r['current_category']              = current_category_name(d) || ''
-      r['current_block']                 = current_block_name(d) || ''
-      r['course_join_date']              = d['course_join_date']
-      r['course_login_rate']             = d['course_login_rate']
-      r['current_category_scheduled_at'] = scheduled_completed_at_for_current(d)
-      r['categories_schedule']           = categories_schedule_map(d)
-      r['extension_study_date']          = extension_by_id[r['id']]
+      r['current_category']               = current_category_name(d) || ''
+      r['current_block']                  = current_block_name(d) || ''
+      r['course_join_date']               = d['course_join_date']
+      r['course_login_rate']              = d['course_login_rate']
+      r['current_category_scheduled_at']  = scheduled_completed_at_for_current(d)
+      r['current_category_started_at']    = (current_category_object(d) || {})['started_at'] # 追加
+      r['categories_schedule']            = categories_schedule_map(d)
+      r['extension_study_date']           = extension_by_id[r['id']]
 
       b = basic_by_id[r['id']] || {}
       free = b['free_text']
       r['pdca_url'] = extract_gsheets_url(free)
-      r['line_url'] = extract_line_url(free) 
+      r['line_url'] = extract_line_url(free)
 
       key_id   = r['id']
       key_name = normalize_name(r['name'])
 
+      # 合計件数（必要なら利用）
       r['nishino_mentions_count'] =
         (nishino_maps[:id][key_id]&.values&.sum || 0) +
         (nishino_maps[:name][key_name]&.values&.sum || 0)
@@ -121,7 +148,6 @@ class OnclassStudentsDataWorker
         (kato_maps[:id][key_id]&.values&.sum || 0) +
         (kato_maps[:name][key_name]&.values&.sum || 0)
     end
-
 
     # 受講日降順
     combined_rows.sort_by! { |r| (Date.parse(r['course_join_date'].to_s) rescue Date.new(1900,1,1)) }
@@ -161,7 +187,6 @@ class OnclassStudentsDataWorker
       kato_maps:      kato_maps
     )
 
-
     Rails.logger.info("[OnclassStudentsDataWorker] done: #{result.inspect}")
     result
   rescue Faraday::Error => e
@@ -172,9 +197,56 @@ class OnclassStudentsDataWorker
     raise
   end
 
+  # ================ Private =================
   private
 
-  # -------- 一覧 --------
+  # ---------- 共通 ----------
+  def normalize_motivation(v)
+    (v || '').to_s.strip.downcase
+  end
+
+  def base_http_headers
+    {
+      'accept'       => 'application/json, text/plain, */*',
+      'content-type' => 'application/json',
+      'origin'       => 'https://manager.the-online-class.com',
+      'referer'      => 'https://manager.the-online-class.com/',
+      'user-agent'   => 'Mozilla/5.0'
+    }
+  end
+
+  # Faraday GET（簡易バックオフ&ボディ付きログ）
+  def safe_get(conn, path, params, headers, tries: 3)
+    attempt = 0
+    begin
+      attempt += 1
+      return conn.get(path, params, headers)
+    rescue Faraday::Error => e
+      body = e.respond_to?(:response) ? e.response&.dig(:body) : nil
+      Rails.logger.warn("[OnclassStudentsDataWorker] GET #{path} #{params.inspect} failed (#{e.class} #{e.message}) body=#{body.inspect} attempt=#{attempt}/#{tries}")
+      raise if attempt >= tries
+      sleep(0.5 * attempt)
+      retry
+    end
+  end
+
+  # ---------- 一覧 ----------
+  def build_user_row(conn, headers, u, jp_label: nil)
+    m = normalize_motivation(u['motivation'] || u.dig('learning_course', 'motivation') || u['status'])
+    {
+      'id'              => u['id'] || u['user_id'] || u['uid'],
+      'name'            => u['name'],
+      'email'           => u['email'],
+      'last_sign_in_at' => u['last_sign_in_at'],
+      'course_name'     => u['course_name'] || u['learning_course_name'] || u.dig('learning_course', 'name'),
+      'course_start_at' => u['course_start_at'] || u.dig('learning_course', 'start_at'),
+      'course_progress' => u['course_progress'],
+      'latest_login_at' => fetch_latest_login_at(conn, headers, u['id']),
+      'motivation'      => m,
+      'status'          => jp_label || API_TO_JP_MOTIVATION[m] || ''
+    }
+  end
+
   def fetch_users_by_motivation(conn, headers, motivation, jp_label, learning_course_id)
     page = 1
     rows = []
@@ -192,35 +264,49 @@ class OnclassStudentsDataWorker
       }
       params[:motivation] = motivation unless motivation.nil?
 
-      resp = conn.get('/v1/enterprise_manager/users', params, headers)
+      resp = safe_get(conn, '/v1/enterprise_manager/users', params, headers)
       json = JSON.parse(resp.body) rescue {}
-
-      list =
-        if json.is_a?(Array)
-          json
-        else
-          json['users'] || json['data'] || json['records'] || []
-        end
+      list = json.is_a?(Array) ? json : (json['users'] || json['data'] || json['records'] || [])
 
       list.each do |u|
-        rows << {
-          'id'               => u['id'] || u['user_id'] || u['uid'],
-          'name'             => u['name'],
-          'email'            => u['email'],
-          'last_sign_in_at'  => u['last_sign_in_at'],
-          'course_name'      => u['course_name'] || u['learning_course_name'] || u.dig('learning_course', 'name'),
-          'course_start_at'  => u['course_start_at'] || u.dig('learning_course', 'start_at'),
-          'course_progress'  => u['course_progress'],
-          'latest_login_at'  => fetch_latest_login_at(conn, headers, u['id']),
-          'status'           => jp_label
-        }
+        rows << build_user_row(conn, headers, u, jp_label: jp_label)
       end
 
-      total_pages   = (json['total_pages'] || json.dig('meta', 'total_pages')).to_i
-      current_page  = (json['current_page'] || json.dig('meta', 'current_page') || page).to_i
-      next_page     = json['next_page'] || json.dig('links', 'next')
+      total_pages  = (json['total_pages'] || json.dig('meta', 'total_pages')).to_i
+      current_page = (json['current_page'] || json.dig('meta', 'current_page') || page).to_i
+      next_link    = json['next_page'] || json.dig('links', 'next')
+      break if list.empty? || (total_pages > 0 && current_page >= total_pages) || (!next_link.nil? && next_link == false)
+      page += 1
+    end
+    rows
+  end
 
-      break if list.empty? || (total_pages > 0 && current_page >= total_pages) || (!next_page.nil? && next_page == false)
+  # motivationフィルタなし全件ページング（フォールバック用）
+  def fetch_users_all_pages(conn, headers, learning_course_id)
+    page = 1
+    rows = []
+    loop do
+      params = {
+        page: page,
+        learning_course_id: learning_course_id,
+        name_or_email: '',
+        admission_day_from: '',
+        admission_day_to: '',
+        free_text: '',
+        category_id: '',
+        category_status: 'all',
+        account_group_id: ''
+      }
+      resp = safe_get(conn, '/v1/enterprise_manager/users', params, headers)
+      json = JSON.parse(resp.body) rescue {}
+      list = json.is_a?(Array) ? json : (json['users'] || json['data'] || json['records'] || [])
+
+      list.each { |u| rows << build_user_row(conn, headers, u) }
+
+      total_pages  = (json['total_pages'] || json.dig('meta', 'total_pages')).to_i
+      current_page = (json['current_page'] || json.dig('meta', 'current_page') || page).to_i
+      next_link    = json['next_page'] || json.dig('links', 'next')
+      break if list.empty? || (total_pages > 0 && current_page >= total_pages) || (!next_link.nil? && next_link == false)
       page += 1
     end
     rows
@@ -257,11 +343,7 @@ class OnclassStudentsDataWorker
     user_ids = rows.map { |r| r['id'] }.compact.uniq
     return nil if user_ids.empty?
 
-    body = {
-      target_columns: TARGET_COLUMNS,
-      target_user_ids: user_ids
-    }
-
+    body = { target_columns: TARGET_COLUMNS, target_user_ids: user_ids }
     resp = conn.post('/v1/enterprise_manager/users/export_csv', body.to_json, headers)
     content_type = resp.headers['content-type'].to_s
 
@@ -288,11 +370,10 @@ class OnclassStudentsDataWorker
     nil
   end
 
-  # -------- スプレットシートにデータ投入 --------
+  # ---------- Sheets ----------
   def build_sheets_service
     service = Google::Apis::SheetsV4::SheetsService.new
     service.client_options.application_name = 'Onclass Course Uploader'
-
     scope   = [Google::Apis::SheetsV4::AUTH_SPREADSHEETS]
     keyfile = ENV['GOOGLE_APPLICATION_CREDENTIALS']
 
@@ -368,6 +449,7 @@ class OnclassStudentsDataWorker
       email = r['email'].to_s.strip
       id.casecmp('id').zero? || name == '名前' || email == 'メールアドレス'
     end
+
     data_values = sanitized_rows.map do |r|
       g_val_name     = r['current_category'].to_s
       g_val_date     = to_jp_ymd(r['current_category_scheduled_at'])
@@ -378,7 +460,7 @@ class OnclassStudentsDataWorker
         hyperlink_name(r['id'], r['name']),
         hyperlink_line(r['line_url'], r['name']),
         r['email'],
-        r['status'].presence || '',
+        r['status'].to_s,
         status_b_for(r),
         g_val_combined,
         r['current_block']                   || '',
@@ -391,7 +473,6 @@ class OnclassStudentsDataWorker
         mention_cell(channel_counts_for(kato_maps, r))
       ]
     end
-
 
     if data_values.any?
       service.update_spreadsheet_value(
@@ -442,12 +523,14 @@ class OnclassStudentsDataWorker
         )
       end
     end
-    # Todo::条件式書式を使いたい時のみ使用(1回きりでOK)
+
+    # 条件付き書式は必要時に一度だけ呼ぶ
     # apply_mention_highlight_rule!(service, spreadsheet_id, sheet_name)
+
     Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{sanitized_rows.size} rows with extension date, mentions and schedules (O列まで + P列〜).")
   end
 
-  # -------- 表示ヘルパ(Todo::helperに移す) --------
+  # ---------- 表示ヘルパ ----------
   def jp_timestamp
     Time.now.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日 %H時 %M分')
   end
@@ -473,15 +556,28 @@ class OnclassStudentsDataWorker
     %Q(=HYPERLINK("#{url}","#{label}"))
   end
 
+  def hyperlink_pdca(url, name)
+    return '' if url.to_s.strip.empty?
+    label = "#{name}_PDCA".gsub('"', '""')
+    %Q(=HYPERLINK("#{url}","#{label}"))
+  end
+
+  def hyperlink_line(url, name)
+    return '' if url.to_s.strip.empty?
+    label = "#{name}_Line".gsub('"', '""')
+    %Q(=HYPERLINK("#{url}","#{label}"))
+  end
+
+  # ---------- 詳細/基本/期限 ----------
   def fetch_user_learning_course(conn, headers, student_id, learning_course_id)
     params = { learning_course_id: learning_course_id }
-    resp   = conn.get("/v1/enterprise_manager/users/#{student_id}/learning_course", params, headers)
+    resp   = safe_get(conn, "/v1/enterprise_manager/users/#{student_id}/learning_course", params, headers)
     json   = JSON.parse(resp.body) rescue {}
     json['data'] || json
   end
 
   def fetch_latest_login_at(conn, headers, user_id)
-    resp = conn.get("/v1/enterprise_manager/users/#{user_id}/logins", { page: 1 }, headers)
+    resp = safe_get(conn, "/v1/enterprise_manager/users/#{user_id}/logins", { page: 1 }, headers)
     json = JSON.parse(resp.body) rescue {}
     list = json['data'] || json['logins'] || json['records'] || []
     first = list.is_a?(Array) ? list.first : nil
@@ -492,7 +588,7 @@ class OnclassStudentsDataWorker
   end
 
   def fetch_user_basic(conn, headers, student_id)
-    resp = conn.get("/v1/enterprise_manager/users/#{student_id}", {}, headers)
+    resp = safe_get(conn, "/v1/enterprise_manager/users/#{student_id}", {}, headers)
     json = JSON.parse(resp.body) rescue {}
     json['data'] || json
   rescue Faraday::Error => e
@@ -500,9 +596,8 @@ class OnclassStudentsDataWorker
     {}
   end
 
-  # 受講期限日（extension_study_date）
   def fetch_extension_study_date(conn, headers, user_id, learning_course_id)
-    resp = conn.get(
+    resp = safe_get(conn,
       "/v1/enterprise_manager/enterprise_managers/current/learning_courses_for_user",
       { user_id: user_id },
       headers
@@ -516,11 +611,10 @@ class OnclassStudentsDataWorker
     nil
   end
 
-  # -------- メンション --------
+  # ---------- メンション ----------
   def fetch_unread_mentions_map(conn, token_headers)
     headers = base_http_headers.merge(token_headers.slice('uid','access-token','client','token-type','expiry').compact)
-    resp = conn.get('/v1/enterprise_manager/communities/activity/mentions', {}, headers)
-
+    resp = safe_get(conn, '/v1/enterprise_manager/communities/activity/mentions', {}, headers)
     json = JSON.parse(resp.body) rescue {}
     list = Array(json['data'] || json['records'] || json)
 
@@ -529,11 +623,9 @@ class OnclassStudentsDataWorker
 
     list.each do |m|
       next unless m.is_a?(Hash) && m['is_read'] == false
-
       channel_name = m.dig('chat','channel','name') || m.dig('channel','name') || '不明チャンネル'
       sender_id    = m['sender_id'] || m.dig('chat','sender_id')
       by_id[sender_id][channel_name] += 1 if sender_id.present?
-
       sender_name = m['user_name'] || m.dig('chat','user_name')
       if sender_name.present?
         by_name[normalize_name(sender_name)][channel_name] += 1
@@ -549,9 +641,6 @@ class OnclassStudentsDataWorker
     { id: {}, name: {} }
   end
 
-
-  # 例: {"TechPutチーム"=>3} => "TechPutチームより3件"
-  # 複数チャンネルは " / " で連結
   def mention_cell(channel_counts)
     counts = channel_counts || {}
     return '' if counts.empty?
@@ -560,7 +649,7 @@ class OnclassStudentsDataWorker
     %Q(=HYPERLINK("https://manager.the-online-class.com/community","#{label.gsub('"','""')}"))
   end
 
-  # -------- ステータスB（声かけ必須） --------
+  # ---------- ステータスB ----------
   def status_b_for(row)
     return '声かけ必須' if stale_login?(row['latest_login_at']) &&
                             row['status'].to_s == '離脱' &&
@@ -596,18 +685,7 @@ class OnclassStudentsDataWorker
     Time.zone ? Time.zone.now : Time.now
   end
 
-  # -------- 共通ヘッダ --------
-  def base_http_headers
-    {
-      'accept'       => 'application/json, text/plain, */*',
-      'content-type' => 'application/json',
-      'origin'       => 'https://manager.the-online-class.com',
-      'referer'      => 'https://manager.the-online-class.com/',
-      'user-agent'   => 'Mozilla/5.0'
-    }
-  end
-
-  # ---- 現在進行カテゴリ helper ----
+  # ---------- コース進行ヘルパ ----------
   def scheduled_completed_at_for_current(detail)
     cur = current_category_object(detail)
     cur && cur['scheduled_completed_at']
@@ -654,20 +732,9 @@ class OnclassStudentsDataWorker
     blk['name'].to_s
   end
 
-  # 追加: ユーザー基本情報（free_textを含む）取得
-  def fetch_user_basic(conn, headers, student_id)
-    resp = conn.get("/v1/enterprise_manager/users/#{student_id}", {}, headers)
-    json = JSON.parse(resp.body) rescue {}
-    json['data'] || json
-  rescue Faraday::Error => e
-    Rails.logger.warn("[OnclassStudentsDataWorker] fetch_user_basic error for #{student_id}: #{e.class} #{e.message}")
-    {}
-  end
-
-  # 追加: free_text からGoogleスプレッドシートURLを抽出
+  # ---------- テキスト抽出 ----------
   def extract_gsheets_url(free_text)
     return nil if free_text.to_s.strip.empty?
-    # プロトコルなしの docs.google.com も拾う
     m = free_text.match(%r{(https?://)?(docs\.google\.com/spreadsheets/d/[^\s"'>]+)}i)
     return nil unless m
     url = m.to_s
@@ -675,14 +742,13 @@ class OnclassStudentsDataWorker
     url
   end
 
-  # 追加: HYPERLINK作成（名前は "#{name}_PDCA"）
-  def hyperlink_pdca(url, name)
-    return '' if url.to_s.strip.empty?
-    label = "#{name}_PDCA".gsub('"', '""')
-    %Q(=HYPERLINK("#{url}","#{label}"))
+  def extract_line_url(free_text)
+    return nil if free_text.to_s.strip.empty?
+    m = free_text.match(%r{https?://step\.lme\.jp/basic/friendlist/my_page/\S+}i)
+    return nil unless m
+    m.to_s.strip
   end
 
-  # "（…）" や "(…)" の肩書きを削除、空白を除去、全角スペースも除去
   def normalize_name(str)
     base = str.to_s
     base = base.gsub(/（.*?）|\(.*?\)/, '') # 括弧内除去（全角/半角）
@@ -691,62 +757,46 @@ class OnclassStudentsDataWorker
     base
   end
 
-  # シートIDを取得_条件式書式
+  # ---------- Sheets装飾 ----------
   def sheet_id_for(service, spreadsheet_id, sheet_name)
     ss = service.get_spreadsheet(spreadsheet_id)
     sheet = ss.sheets.find { |s| s.properties&.title == sheet_name }
     sheet&.properties&.sheet_id
   end
 
-  # N/O 列に「メンション」が含まれる行の背景をオレンジにする条件付き書式を追加
   def apply_mention_highlight_rule!(service, spreadsheet_id, sheet_name)
     sid = sheet_id_for(service, spreadsheet_id, sheet_name)
-    return unless sid # 念のため
+    return unless sid
 
-    # 適用範囲: B4:O（行は4行目以降、列はB〜O）
     grid_range = Google::Apis::SheetsV4::GridRange.new(
       sheet_id: sid,
-      start_row_index: 3,   # 0-based -> 4行目
-      start_column_index: 1,# B列
-      end_column_index: 15  # O列(排他的) => 15でB..O
+      start_row_index: 3,
+      start_column_index: 1,
+      end_column_index: 15
     )
 
-    # 条件: =COUNTIF($N4:$O4,"*メンション*")>0
-    # ※ 行番号「4」は相対参照（行方向は固定しない）なので、各行に適用時に自動で 5,6,... とずれます
     cond = Google::Apis::SheetsV4::BooleanCondition.new(
       type: 'CUSTOM_FORMULA',
-      values: [Google::Apis::SheetsV4::ConditionValue.new(
-        # N/O列のどちらかに値が入っていればハイライト
-        user_entered_value: '=COUNTA($N4:$O4)>0'
-      )]
+      values: [Google::Apis::SheetsV4::ConditionValue.new(user_entered_value: '=COUNTA($N4:$O4)>0')]
     )
 
     format = Google::Apis::SheetsV4::CellFormat.new(
-      background_color: Google::Apis::SheetsV4::Color.new(red: 1.0, green: 0.9, blue: 0.6) # やわらかいオレンジ
+      background_color: Google::Apis::SheetsV4::Color.new(red: 1.0, green: 0.9, blue: 0.6)
     )
 
     rule = Google::Apis::SheetsV4::ConditionalFormatRule.new(
       ranges: [grid_range],
-      boolean_rule: Google::Apis::SheetsV4::BooleanRule.new(
-        condition: cond,
-        format: format
-      )
+      boolean_rule: Google::Apis::SheetsV4::BooleanRule.new(condition: cond, format: format)
     )
 
-    add_req = Google::Apis::SheetsV4::AddConditionalFormatRuleRequest.new(
-      index: 0, # 先頭に追加
-      rule: rule
-    )
-
+    add_req = Google::Apis::SheetsV4::AddConditionalFormatRuleRequest.new(index: 0, rule: rule)
     batch = Google::Apis::SheetsV4::BatchUpdateSpreadsheetRequest.new(
-      requests: [Google::Apis::SheetsV4::Request.new(
-        add_conditional_format_rule: add_req
-      )]
+      requests: [Google::Apis::SheetsV4::Request.new(add_conditional_format_rule: add_req)]
     )
     service.batch_update_spreadsheet(spreadsheet_id, batch)
   end
 
-  # 2つの {channel=>count} を合算
+  # ---------- メンション集計 ----------
   def merge_channel_counts(a, b)
     total = Hash.new(0)
     Array(a).each { |k,v| total[k.to_s] += v.to_i }
@@ -754,8 +804,6 @@ class OnclassStudentsDataWorker
     total
   end
 
-  # 受講生のメンションをチャンネル別に集計して返す
-  # maps は fetch_unread_mentions_map の戻り値
   def channel_counts_for(maps, row)
     return {} if maps.blank?
     id_map   = maps[:id]   || {}
@@ -764,34 +812,4 @@ class OnclassStudentsDataWorker
     by_name  = name_map[normalize_name(row['name'])] || {}
     merge_channel_counts(by_id, by_name)
   end
-
-
-  # 受講生のメンションをチャンネル別に集計して返す
-  # maps は fetch_unread_mentions_map の戻り値
-  def channel_counts_for(maps, row)
-    return {} if maps.blank?
-    id_map   = maps[:id]   || {}
-    name_map = maps[:name] || {}
-    by_id    = id_map[row['id']] || {}
-    by_name  = name_map[normalize_name(row['name'])] || {}
-    merge_channel_counts(by_id, by_name)
-  end
-
-
-  # free_text(自由項目) から LINE の URL を抽出
-  def extract_line_url(free_text)
-    return nil if free_text.to_s.strip.empty?
-    m = free_text.match(%r{https?://step\.lme\.jp/basic/friendlist/my_page/\S+}i)
-    return nil unless m
-    m.to_s.strip
-  end
-
-  # HYPERLINK作成（名前は "#{name}_Line"）
-  def hyperlink_line(url, name)
-    return '' if url.to_s.strip.empty?
-    label = "#{name}_Line".gsub('"', '""')
-    %Q(=HYPERLINK("#{url}","#{label}"))
-  end
-
-
 end
