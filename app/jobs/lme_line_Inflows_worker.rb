@@ -564,7 +564,7 @@ class LmeLineInflowsWorker
     service.batch_update_spreadsheet(spreadsheet_id, batch)
   end
 
-  # === クリア→統計→ヘッダー→データ（旧レイアウト互換 + セミナー動的列） ========
+  # === クリア→統計→ヘッダー→データ（レイアウト互換 + セミナー動的列） ========
   def upload_to_gsheets!(service:, rows:, spreadsheet_id:, sheet_name:, end_on:, seminar_dates:)
     clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
     %w[B2 B3 B4 B5 B6 B7].each do |r|
@@ -582,10 +582,14 @@ class LmeLineInflowsWorker
     this_m = end_d.strftime('%Y-%m')
     prev_m = end_d.prev_month.strftime('%Y-%m')
 
-    monthly_rates, cumulative_rates = calc_rates(rows, month: this_m, since: CUM_SINCE)
-    prev_month_rates = month_rates(rows, month: prev_m)
+    # ← 追加: rows → uid=>flags のキャッシュを生成
+    tags_cache = rows.each_with_object({}) { |r, h| h[r['line_user_id']] = (r['tags_flags'] || {}) }
 
-    # 動的セミナー列を組み立て（各日付について「M/D参加希望」「M/D参加」）
+    # ← 置換: tags_cache を使う集計版
+    monthly_rates, cumulative_rates = calc_rates(rows, tags_cache, month: this_m, since: CUM_SINCE)
+    prev_month_rates = month_rates(rows, tags_cache, month: prev_m)
+
+    # 動的セミナー列
     seminar_headers = seminar_dates.map do |ymd|
       md = Date.parse(ymd).strftime('%-m/%-d') rescue ymd
       ["#{md}参加希望", "#{md}参加"]
@@ -600,16 +604,37 @@ class LmeLineInflowsWorker
     ] + seminar_headers
     cols = headers.size
 
-    row3 = Array.new(cols, ''); row4 = Array.new(cols, ''); row5 = Array.new(cols, '')
+    # ← 追加: 3〜5行目に%行を作成
+    row3 = Array.new(cols, '')
+    row4 = Array.new(cols, '')
+    row5 = Array.new(cols, '')
     row3[0] = "今月%（#{this_m}）"
     row4[0] = "前月%（#{prev_m}）"
     row5[0] = "累計%（#{Date.parse(CUM_SINCE).strftime('%Y/%-m')}〜）" rescue row5[0] = "累計%"
 
-    # 旧配置（I/K/M/O列に%）: B起点0-indexで 7/9/11/13
-    put_percentages_old_layout!(row3, monthly_rates)
-    put_percentages_old_layout!(row4, prev_month_rates)
-    put_percentages_old_layout!(row5, cumulative_rates)
+    # v1〜v4 を I/K/M/O（=B起点 7/9/11/13）に配置
+    put_percentages!(row3, monthly_rates)
+    put_percentages!(row4, prev_month_rates)
+    put_percentages!(row5, cumulative_rates)
 
+    # ← 追加: %行を書き込み（B3〜B5）
+    service.update_spreadsheet_value(
+      spreadsheet_id, "#{sheet_name}!B3:#{a1_col(1 + headers.size)}3",
+      Google::Apis::SheetsV4::ValueRange.new(values: [row3]),
+      value_input_option: 'USER_ENTERED'
+    )
+    service.update_spreadsheet_value(
+      spreadsheet_id, "#{sheet_name}!B4:#{a1_col(1 + headers.size)}4",
+      Google::Apis::SheetsV4::ValueRange.new(values: [row4]),
+      value_input_option: 'USER_ENTERED'
+    )
+    service.update_spreadsheet_value(
+      spreadsheet_id, "#{sheet_name}!B5:#{a1_col(1 + headers.size)}5",
+      Google::Apis::SheetsV4::ValueRange.new(values: [row5]),
+      value_input_option: 'USER_ENTERED'
+    )
+
+    # ヘッダーは従来通り B6 に
     header_range = "#{sheet_name}!B6:#{a1_col(1 + headers.size)}6"
     service.update_spreadsheet_value(
       spreadsheet_id, header_range,
@@ -625,8 +650,7 @@ class LmeLineInflowsWorker
 
     data_values = sorted.map do |r|
       t = (r['tags_flags'] || {})
-      # 流入経路は qr_code を優先。無ければ landing_name
-      landing = r['qr_code'].presence || r['landing_name']
+      landing = r['qr_code'].presence || r['landing_name'] # QR優先
 
       row = [
         to_jp_ymdhm(r['followed_at']),
@@ -646,7 +670,6 @@ class LmeLineInflowsWorker
         (t[:select] || '')
       ]
 
-      # セミナー動的列（順序は seminar_dates に依存）
       sem = r['seminar_map'] || {}
       seminar_dates.each do |ymd|
         flags = sem[ymd] || {}
@@ -665,43 +688,41 @@ class LmeLineInflowsWorker
     end
   end
 
+
   # ==== 集計（旧フォーマット: any列なし, v1〜v4のみ） =========================
-  def calc_rates(rows, month:, since:)
+  def calc_rates(rows, tags_cache, month:, since:)
     month_rows = Array(rows).select { |r| month_key(r['date']) == month }
     cum_rows   = Array(rows).select { |r| r['date'].to_s >= since.to_s }
 
     monthly = {
-      v1: pct_for(month_rows, :v1),
-      v2: pct_for(month_rows, :v2),
-      v3: pct_for(month_rows, :v3),
-      v4: pct_for(month_rows, :v4)
+      v1: pct_for(month_rows, tags_cache, :v1),
+      v2: pct_for(month_rows, tags_cache, :v2),
+      v3: pct_for(month_rows, tags_cache, :v3),
+      v4: pct_for(month_rows, tags_cache, :v4)
     }
     cumulative = {
-      v1: pct_for(cum_rows, :v1),
-      v2: pct_for(cum_rows, :v2),
-      v3: pct_for(cum_rows, :v3),
-      v4: pct_for(cum_rows, :v4)
+      v1: pct_for(cum_rows, tags_cache, :v1),
+      v2: pct_for(cum_rows, tags_cache, :v2),
+      v3: pct_for(cum_rows, tags_cache, :v3),
+      v4: pct_for(cum_rows, tags_cache, :v4)
     }
     [monthly, cumulative]
   end
 
-  def month_rates(rows, month:)
+  def month_rates(rows, tags_cache, month:)
     month_rows = Array(rows).select { |r| month_key(r['date']) == month }
     {
-      v1: pct_for(month_rows, :v1),
-      v2: pct_for(month_rows, :v2),
-      v3: pct_for(month_rows, :v3),
-      v4: pct_for(month_rows, :v4)
+      v1: pct_for(month_rows, tags_cache, :v1),
+      v2: pct_for(month_rows, tags_cache, :v2),
+      v3: pct_for(month_rows, tags_cache, :v3),
+      v4: pct_for(month_rows, tags_cache, :v4)
     }
   end
 
-  def pct_for(rows, key)
+  def pct_for(rows, tags_cache, key)
     denom = rows.size
     return nil if denom.zero?
-    numer = rows.count do |r|
-      flags = (r['tags_flags'] || {})
-      !!flags[key]
-    end
+    numer = rows.count { |r| !!(tags_cache[r['line_user_id']] || {})[key] }
     ((numer.to_f / denom) * 100).round(1)
   end
 
@@ -710,7 +731,7 @@ class LmeLineInflowsWorker
   end
 
   # I/K/M/O に%を入れる（B基準0-indexで 7/9/11/13）
-  def put_percentages_old_layout!(row_array, rates)
+  def put_percentages!(row_array, rates)
     idx_map = { v1: 7, v2: 9, v3: 11, v4: 13 }
     idx_map.each do |k, idx|
       v = rates[k]
