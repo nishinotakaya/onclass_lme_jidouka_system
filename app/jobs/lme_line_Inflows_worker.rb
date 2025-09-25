@@ -22,8 +22,9 @@ class LmeLineInflowsWorker
   GOOGLE_SCOPE = [Google::Apis::SheetsV4::AUTH_SPREADSHEETS].freeze
 
   # ==== タグ判定用定数 =======================================================
-  PROAKA_CATEGORY_ID = 5_180_568
-  CUM_SINCE          = ENV['LME_CUM_SINCE'].presence || '2025-01-01' # 累計の起点
+  PROAKA_CATEGORY_ID       = 5_180_568
+  PROAKA_SEMINAR_CATEGORY  = 5_238_317 # 「プロアカ 体験会&セミナー」
+  CUM_SINCE                = ENV['LME_CUM_SINCE'].presence || '2023-01-01' # 累計の起点
 
   PROAKA_TAGS = { v1: 1_394_734, v2: 1_394_736, v3: 1_394_737, v4: 1_394_738 }.freeze
   PROAKA_DIGEST_NAMES = { dv1: '動画①_ダイジェスト', dv2: '動画②_ダイジェスト', dv3: '動画③_ダイジェスト' }.freeze
@@ -43,7 +44,7 @@ class LmeLineInflowsWorker
   def perform(start_date = nil, end_date = nil)
     Time.zone = 'Asia/Tokyo'
 
-    # 1) 自動ログイン → Cookie/XSRF 取得（※既存のセッション方針はそのまま）
+    # 1) 自動ログイン
     login_service = LmeLoginUserService.new(
       email:    ENV['GOOGLE_EMAIL'],
       password: ENV['GOOGLE_PASSWORD'],
@@ -63,7 +64,7 @@ class LmeLineInflowsWorker
     raise 'xsrf_cookie missing'   if xsrf_cookie.blank?
     xsrf_header = decode_xsrf(xsrf_cookie)
 
-    # 2) meta CSRF（x-csrf-token）を取得（HTTP → Playwright）
+    # 2) meta CSRF
     csrf_meta, meta_src = fetch_csrf_meta_with_cookies(cookie_header, ['/basic/friendlist', '/basic/overview', '/basic', '/admin/home', '/'])
     unless csrf_meta.present?
       Rails.logger.warn('[csrf-meta] HTTPで取得できず → Playwright で DOM から取得フォールバック')
@@ -83,7 +84,7 @@ class LmeLineInflowsWorker
     bot_id    = (ENV['LME_BOT_ID'].presence || '17106').to_s
     Rails.logger.info("[Inflows] range=#{start_on}..#{end_on}")
 
-    # 4) warmup: /ajax/init-data-history-add-friend（form: data=...）
+    # 4) warmup
     warmup_form = { data: { start: start_on, end: end_on }.to_json }
     _ = with_loa_retry(cookie_header, xsrf_header) do
       curl_post_form(
@@ -96,7 +97,7 @@ class LmeLineInflowsWorker
       )
     end
 
-    # 5) 本体: /basic/friendlist/post-advance-filter-v2（フォーム+ページネーション）
+    # 5) 通常の友だち一覧（期間フィルタ）: /basic/friendlist/post-advance-filter-v2
     raw_rows = []
     page_no = 1
     loop do
@@ -122,10 +123,8 @@ class LmeLineInflowsWorker
 
       body = JSON.parse(res_body) rescue {}
       data = Array(body.dig('data', 'data'))
-
       break if data.empty?
 
-      # 「ブロック or 期間内フォロー」だけを採用（旧ロジック踏襲）
       filtered = data.select do |row|
         blocked  = row['is_blocked'].to_i == 1
         followed = row['followed_at'].present? &&
@@ -134,7 +133,6 @@ class LmeLineInflowsWorker
         blocked || followed
       end
       filtered.each { |row| normalize_row!(row) }
-
       raw_rows.concat(filtered)
 
       cur  = body.dig('data', 'current_page').to_i
@@ -145,11 +143,16 @@ class LmeLineInflowsWorker
       sleep 0.15
     end
 
+    # 5.5) ブロック専用APIでの補完: /basic/friendlist/get-friend-user-block
+    blocked_rows = fetch_block_list(cookie_header, xsrf_header, csrf_meta, start_on, end_on)
+    Rails.logger.info("[blocked-api] fetched=#{blocked_rows.size}")
+    raw_rows.concat(blocked_rows)
+
     # 6) ユニーク化（user_id × followed_at）
     rows = raw_rows.uniq { |r| [extract_line_user_id_from_link(r['link_my_page']).to_i, r['followed_at'].to_s] }
     Rails.logger.info("[v2] total rows=#{rows.size}")
 
-    # 7) chat-v3 を一度踏んでタグ取得のための Cookie/Meta を安定化
+    # 7) chat-v3 を一度踏んで Cookie/Meta 安定化
     if rows.present?
       sample_uid = extract_line_user_id_from_link(rows.first['link_my_page'])
       chat_cookie_header, chat_xsrf = playwright_bake_chat_cookies!(login_result[:cookies], sample_uid, bot_id)
@@ -161,11 +164,12 @@ class LmeLineInflowsWorker
       xsrf_header   = xsrf2.presence   || xsrf_header
     end
 
-    # 8) タグ取得（/basic/chat/get-categories-tags → PROAKA_CATEGORY_ID で厳密判定）
-    tags_cache = {}
+    # 8) タグ取得（プロアカ/セミナーの両方） + 流入qr_code取得
+    seminar_dates_set = Set.new
     rows.each_with_index do |r, i|
       uid = extract_line_user_id_from_link(r['link_my_page'])
       begin
+        # タグ（カテゴリ一覧）
         form = { line_user_id: uid, is_all_tag: 0, botIdCurrent: bot_id }
         res_body = with_loa_retry(cookie_header, xsrf_header) do
           curl_post_form(
@@ -177,18 +181,25 @@ class LmeLineInflowsWorker
             referer: "#{ORIGIN}/basic/chat-v3?friend_id=#{uid}"
           )
         end
-        flags = extract_tag_flags_from_payload(res_body) # ← PROAKA_CATEGORY_ID 判定
-        tags_cache[uid] = flags if flags.present?
-        r['tags_flags'] = flags
+        proaka_flags, seminar_map = extract_proaka_and_seminar_from_payload(res_body)
+        r['tags_flags']  = proaka_flags
+        r['seminar_map'] = seminar_map || {}
+
+        # 動的列のために、見つかった日付キーを収集
+        r['seminar_map'].keys.each { |ymd| seminar_dates_set << ymd }
+
+        # 流入経路：qr_code を取得
+        qr_code = fetch_user_qr_code(cookie_header, xsrf_header, uid)
+        r['qr_code'] = qr_code if qr_code.present?
       rescue => e
-        Rails.logger.debug("[tags] uid=#{uid} #{e.class}: #{e.message}")
+        Rails.logger.debug("[tags/qr] uid=#{uid} #{e.class}: #{e.message}")
       end
       sleep 0.12
       Rails.logger.debug("[tags] #{i+1}/#{rows.size}") if (i % 200).zero?
     end
-    Rails.logger.info("[tags] completed users=#{tags_cache.size}")
+    Rails.logger.info("[tags] seminar dates unique=#{seminar_dates_set.size}")
 
-    # 9) GSheets 反映（旧レイアウト：タグ有無列は入れない／%の列位置も旧配置）
+    # 9) GSheets 反映（旧レイアウト + セミナー動的列）
     spreadsheet_id = ENV.fetch('ONCLASS_SPREADSHEET_ID')
     sheet_name     = ENV.fetch('LME_SHEET_NAME', 'Line流入者')
     anchor_name    = ENV.fetch('ONCLASS_SHEET_NAME', 'フロントコース受講生')
@@ -200,8 +211,8 @@ class LmeLineInflowsWorker
       rows: to_sheet_rows(rows),
       spreadsheet_id: spreadsheet_id,
       sheet_name: sheet_name,
-      tags_cache: tags_cache,
-      end_on: end_on
+      end_on: end_on,
+      seminar_dates: seminar_dates_set.to_a.sort # 'YYYY-MM-DD' 昇順
     )
 
     Rails.logger.info("[LmeLineInflowsWorker] wrote #{rows.size} rows to #{sheet_name}")
@@ -244,6 +255,28 @@ class LmeLineInflowsWorker
   end
   private :curl_post_form
 
+  def curl_get_json(path:, cookie:, referer:)
+    conn = Faraday.new(url: ORIGIN) { |f| f.adapter Faraday.default_adapter }
+    res = conn.get(path) do |req|
+      req.headers['accept'] = 'application/json, text/javascript, */*; q=0.01'
+      req.headers['accept-language'] = ACCEPT_LANG
+      req.headers['cookie'] = cookie.to_s
+      req.headers['referer'] = referer
+      req.headers['sec-ch-ua'] = CH_UA
+      req.headers['sec-ch-ua-mobile'] = '?0'
+      req.headers['sec-ch-ua-platform'] = %Q("macOS")
+      req.headers['sec-fetch-dest'] = 'empty'
+      req.headers['sec-fetch-mode'] = 'cors'
+      req.headers['sec-fetch-site'] = 'same-origin'
+      req.headers['user-agent'] = UA
+      req.headers['x-requested-with'] = 'XMLHttpRequest'
+      req.headers['cache-control'] = 'no-cache'
+      req.headers['pragma'] = 'no-cache'
+    end
+    JSON.parse(res.body.to_s) rescue {}
+  end
+  private :curl_get_json
+
   # 404/419/401 時に LOA を踏み直して 1 回だけ再試行
   def with_loa_retry(cookie_header, xsrf_header)
     tries = 0
@@ -269,7 +302,83 @@ class LmeLineInflowsWorker
   private :with_loa_retry
 
   # =========================================================
-  # データ整形 / タグ判定
+  # ブロック専用 API 取得
+  # =========================================================
+  # 
+  def extract_categories_list(json)
+    return [] unless json.is_a?(Hash)
+    cand = json['data'] || json['result'] || json
+    # data がさらに { data: [...] } のことがある
+    cand = cand['data'] if cand.is_a?(Hash) && cand.key?('data') && cand['data'].is_a?(Array)
+    # 別形式で categories キーの可能性にも対応
+    cand = cand['categories'] if cand.is_a?(Hash) && cand.key?('categories')
+    cand.is_a?(Array) ? cand : []
+  end
+
+  def fetch_block_list(cookie_header, xsrf_header, csrf_meta, start_on, end_on)
+    all = []
+    page_no = 1
+    start_jp = Date.parse(start_on).strftime('%Y/%-m/%-d') rescue start_on.to_s
+    end_jp   = Date.parse(end_on).strftime('%Y/%-m/%-d')   rescue end_on.to_s
+
+    loop do
+      form = { page: page_no, start_date: start_jp, end_date: end_jp }
+      res_body = with_loa_retry(cookie_header, xsrf_header) do
+        curl_post_form(
+          path: '/basic/friendlist/get-friend-user-block',
+          form: form,
+          cookie: cookie_header,
+          csrf_meta: csrf_meta,
+          xsrf_cookie: xsrf_header,
+          referer: "#{ORIGIN}/basic/friendlist/user-block"
+        )
+      end
+
+      payload = JSON.parse(res_body) rescue {}
+      # ペイロードの正規化（{data:{data:[...], current_page, last_page}} / {data:[...]} / {...} など全部吸収）
+      container   = payload['data'] || payload['result'] || payload
+      list_source = if container.is_a?(Hash)
+                      container['data'] || container['list'] || container['items'] || container['rows'] || []
+                    else
+                      container
+                    end
+      data = Array(list_source)
+      break if data.empty?
+
+      data.each do |row|
+        next unless row.is_a?(Hash)
+        r = row.dup
+        r['is_blocked'] = 1
+
+        uid = (r['line_user_id'] || r['user_id']).to_i
+        if uid <= 0
+          # link からの救済（なければスキップ）
+          uid = extract_line_user_id_from_link(r['link_my_page']).to_i rescue 0
+        end
+        r['link_my_page'] ||= "#{ORIGIN}/basic/friendlist/my_page/#{uid}" if uid.positive?
+
+        r['followed_at'] ||= (r['block_at'] || r['blocked_at'] || r['created_at'] || r['updated_at'])
+        normalize_row!(r)
+        all << r
+      end
+
+      # ページング判定
+      cur  = if container.is_a?(Hash) then container['current_page'].to_i else 0 end
+      last = if container.is_a?(Hash) then container['last_page'].to_i    else 0 end
+      page_no += 1
+      break if last.nonzero? && cur >= last
+      sleep 0.15
+    end
+
+    all
+  rescue => e
+    Rails.logger.debug("[blocked-api] #{e.class}: #{e.message}")
+    []
+  end
+
+
+  # =========================================================
+  # データ整形 / タグ判定 / セミナー & QR
   # =========================================================
   def to_sheet_rows(v2_rows)
     v2_rows.map do |rec|
@@ -282,19 +391,24 @@ class LmeLineInflowsWorker
         'line_user_id' => uid,
         'line_id'      => nil, # v2では取得不可
         'is_blocked'   => (rec['is_blocked'] || 0).to_i,
-        'tags_flags'   => rec['tags_flags'] || {}
+        'tags_flags'   => rec['tags_flags'] || {},
+        'seminar_map'  => rec['seminar_map'] || {},
+        'qr_code'      => rec['qr_code']
       }
     end
   end
 
-  # /basic/chat/get-categories-tags の JSON を厳密にパースしてフラグ化
-  def extract_tag_flags_from_payload(body)
+  # /basic/chat/get-categories-tags → プロアカ通常フラグ + セミナー日付マップ
+  # 戻り値: [proaka_flags(Hash), seminar_map(Hash<"YYYY-MM-DD",{hope:boolean, attend:boolean}>)]
+  def extract_proaka_and_seminar_from_payload(body)
     json = JSON.parse(body) rescue {}
-    cats = json['data'] || json['result'] || []
-    proaka_flags_from_categories(cats)
+    categories = json['data'] || json['result'] || []
+    proaka = proaka_flags_from_categories(categories)
+    seminar = seminar_map_from_categories(categories)
+    [proaka, seminar]
   rescue => e
-    Rails.logger.debug("[extract_tag_flags] #{e.class}: #{e.message}")
-    {}
+    Rails.logger.debug("[extract_tags] #{e.class}: #{e.message}")
+    [{ v1: false, v2: false, v3: false, v4: false, dv1: false, dv2: false, dv3: false, select: nil }, {}]
   end
 
   def proaka_flags_from_categories(categories)
@@ -304,8 +418,7 @@ class LmeLineInflowsWorker
     tag_list  = Array(target['tags'] || target[:tags])
     tag_ids   = tag_list.map  { |t| (t['tag_id'] || t[:tag_id]).to_i }.to_set
     tag_names = tag_list.map  { |t| (t['name']   || t[:name]).to_s }.to_set
-
-    selected = RICHMENU_SELECT_NAMES.find { |nm| tag_names.include?(nm) }
+    selected  = RICHMENU_SELECT_NAMES.find { |nm| tag_names.include?(nm) }
 
     {
       v1:  tag_ids.include?(PROAKA_TAGS[:v1]),
@@ -317,6 +430,62 @@ class LmeLineInflowsWorker
       dv3: tag_names.include?(PROAKA_DIGEST_NAMES[:dv3]),
       select: selected
     }
+  end
+
+  # 「プロアカ 体験会&セミナー」カテゴリから
+  #   「参加希望 YYYY-M-D」→ hope=true
+  #   「参加 YYYY-M-D」    → attend=true
+  # を日付キー"YYYY-MM-DD"で集約
+  def seminar_map_from_categories(categories)
+    cat = Array(categories).find { |c| (c['id'] || c[:id]).to_i == PROAKA_SEMINAR_CATEGORY }
+    return {} unless cat
+    tag_list = Array(cat['tags'] || cat[:tags])
+    result = Hash.new { |h, k| h[k] = { hope: false, attend: false } }
+
+    tag_list.each do |t|
+      name = (t['name'] || t[:name]).to_s
+      # "参加希望 2025-8-20" / "参加 2025-08-20" を吸収
+      if name =~ /(参加希望|参加)\s+(\d{4})-(\d{1,2})-(\d{1,2})/
+        what, y, m, d = $1, $2.to_i, $3.to_i, $4.to_i
+        begin
+          ymd = Date.new(y, m, d).strftime('%Y-%m-%d')
+          if what == '参加希望'
+            result[ymd][:hope] = true
+          else
+            result[ymd][:attend] = true
+          end
+        rescue ArgumentError
+          # 不正日付はスキップ
+        end
+      end
+    end
+    result
+  end
+
+  def fetch_user_qr_code(cookie_header, xsrf_header, uid)
+    path = "/ajax/get_data_my_page?page=1&type=common&user_id=#{uid}"
+    json = curl_get_json(path: path, cookie: cookie_header, referer: "#{ORIGIN}/basic/friendlist/my_page/#{uid}")
+    find_value_by_key(json, 'qr_code')
+  rescue => e
+    Rails.logger.debug("[qr_code] uid=#{uid} #{e.class}: #{e.message}")
+    nil
+  end
+
+  def find_value_by_key(obj, key)
+    return nil if obj.nil?
+    return obj[key] if obj.is_a?(Hash) && obj.key?(key)
+    if obj.is_a?(Hash)
+      obj.each_value do |v|
+        found = find_value_by_key(v, key)
+        return found unless found.nil?
+      end
+    elsif obj.is_a?(Array)
+      obj.each do |v|
+        found = find_value_by_key(v, key)
+        return found unless found.nil?
+      end
+    end
+    nil
   end
 
   # =========================================================
@@ -395,11 +564,11 @@ class LmeLineInflowsWorker
     service.batch_update_spreadsheet(spreadsheet_id, batch)
   end
 
-  # === クリア→統計→ヘッダー→データ（旧レイアウト互換） =========================
-  def upload_to_gsheets!(service:, rows:, spreadsheet_id:, sheet_name:, tags_cache:, end_on:)
+  # === クリア→統計→ヘッダー→データ（旧レイアウト互換 + セミナー動的列） ========
+  def upload_to_gsheets!(service:, rows:, spreadsheet_id:, sheet_name:, end_on:, seminar_dates:)
     clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
     %w[B2 B3 B4 B5 B6 B7].each do |r|
-      service.clear_values(spreadsheet_id, "#{sheet_name}!#{r}:Z", clear_req)
+      service.clear_values(spreadsheet_id, "#{sheet_name}!#{r}:ZZZ", clear_req)
     end
 
     meta_values = [['バッチ実行タイミング', jp_timestamp]]
@@ -413,8 +582,14 @@ class LmeLineInflowsWorker
     this_m = end_d.strftime('%Y-%m')
     prev_m = end_d.prev_month.strftime('%Y-%m')
 
-    monthly_rates, cumulative_rates = calc_rates(rows, tags_cache, month: this_m, since: CUM_SINCE)
-    prev_month_rates = month_rates(rows, tags_cache, month: prev_m)
+    monthly_rates, cumulative_rates = calc_rates(rows, month: this_m, since: CUM_SINCE)
+    prev_month_rates = month_rates(rows, month: prev_m)
+
+    # 動的セミナー列を組み立て（各日付について「M/D参加希望」「M/D参加」）
+    seminar_headers = seminar_dates.map do |ymd|
+      md = Date.parse(ymd).strftime('%-m/%-d') rescue ymd
+      ["#{md}参加希望", "#{md}参加"]
+    end.flatten
 
     headers = [
       '友達追加時刻', '流入元', 'line_user_id', '名前', 'LINE_ID', 'ブロック?',
@@ -422,7 +597,7 @@ class LmeLineInflowsWorker
       '動画②_ダイジェスト', 'プロアカ_動画②',
       '動画③_ダイジェスト', 'プロアカ_動画③',
       '', 'プロアカ_動画④', '選択肢'
-    ]
+    ] + seminar_headers
     cols = headers.size
 
     row3 = Array.new(cols, ''); row4 = Array.new(cols, ''); row5 = Array.new(cols, '')
@@ -442,15 +617,20 @@ class LmeLineInflowsWorker
       value_input_option: 'USER_ENTERED'
     )
 
-    sorted = Array(rows).sort_by { |r|
-      [ r['date'].to_s, (Time.zone.parse(r['followed_at'].to_s) rescue r['followed_at'].to_s) ]
-    }.reverse
+    # 友達追加の降順（最新が上）
+    sorted = Array(rows).sort_by do |r|
+      t = (Time.zone.parse(r['followed_at'].to_s) rescue Time.parse(r['followed_at'].to_s) rescue nil)
+      [t ? t.to_i : 0, r['line_user_id'].to_i]
+    end.reverse
 
     data_values = sorted.map do |r|
-      t = (r['tags_flags'] || tags_cache[r['line_user_id']] || {})
-      [
+      t = (r['tags_flags'] || {})
+      # 流入経路は qr_code を優先。無ければ landing_name
+      landing = r['qr_code'].presence || r['landing_name']
+
+      row = [
         to_jp_ymdhm(r['followed_at']),
-        r['landing_name'],
+        landing.to_s,
         r['line_user_id'],
         hyperlink_line_user(r['line_user_id'], r['name']),
         r['line_id'],
@@ -465,6 +645,15 @@ class LmeLineInflowsWorker
         (t[:v4]  ? 'タグあり' : ''),
         (t[:select] || '')
       ]
+
+      # セミナー動的列（順序は seminar_dates に依存）
+      sem = r['seminar_map'] || {}
+      seminar_dates.each do |ymd|
+        flags = sem[ymd] || {}
+        row << (flags[:hope]   ? '◯' : '')
+        row << (flags[:attend] ? '◯' : '')
+      end
+      row
     end
 
     if data_values.any?
@@ -477,40 +666,40 @@ class LmeLineInflowsWorker
   end
 
   # ==== 集計（旧フォーマット: any列なし, v1〜v4のみ） =========================
-  def calc_rates(rows, tags_cache, month:, since:)
+  def calc_rates(rows, month:, since:)
     month_rows = Array(rows).select { |r| month_key(r['date']) == month }
     cum_rows   = Array(rows).select { |r| r['date'].to_s >= since.to_s }
 
     monthly = {
-      v1: pct_for(month_rows, tags_cache, :v1),
-      v2: pct_for(month_rows, tags_cache, :v2),
-      v3: pct_for(month_rows, tags_cache, :v3),
-      v4: pct_for(month_rows, tags_cache, :v4)
+      v1: pct_for(month_rows, :v1),
+      v2: pct_for(month_rows, :v2),
+      v3: pct_for(month_rows, :v3),
+      v4: pct_for(month_rows, :v4)
     }
     cumulative = {
-      v1: pct_for(cum_rows, tags_cache, :v1),
-      v2: pct_for(cum_rows, tags_cache, :v2),
-      v3: pct_for(cum_rows, tags_cache, :v3),
-      v4: pct_for(cum_rows, tags_cache, :v4)
+      v1: pct_for(cum_rows, :v1),
+      v2: pct_for(cum_rows, :v2),
+      v3: pct_for(cum_rows, :v3),
+      v4: pct_for(cum_rows, :v4)
     }
     [monthly, cumulative]
   end
 
-  def month_rates(rows, tags_cache, month:)
+  def month_rates(rows, month:)
     month_rows = Array(rows).select { |r| month_key(r['date']) == month }
     {
-      v1: pct_for(month_rows, tags_cache, :v1),
-      v2: pct_for(month_rows, tags_cache, :v2),
-      v3: pct_for(month_rows, tags_cache, :v3),
-      v4: pct_for(month_rows, tags_cache, :v4)
+      v1: pct_for(month_rows, :v1),
+      v2: pct_for(month_rows, :v2),
+      v3: pct_for(month_rows, :v3),
+      v4: pct_for(month_rows, :v4)
     }
   end
 
-  def pct_for(rows, tags_cache, key)
+  def pct_for(rows, key)
     denom = rows.size
     return nil if denom.zero?
     numer = rows.count do |r|
-      flags = (r['tags_flags'] || tags_cache[r['line_user_id']] || {})
+      flags = (r['tags_flags'] || {})
       !!flags[key]
     end
     ((numer.to_f / denom) * 100).round(1)
@@ -733,7 +922,7 @@ class LmeLineInflowsWorker
   end
   private :pw_add_init_script
 
-  def playwright_bake_chat_cookies!(raw_cookies, sample_uid, bot_id)
+  def playwright_bake_chat_cookies!(raw_cookies, sample_uid, _bot_id)
     cookie_header = nil
     xsrf = nil
 
@@ -749,10 +938,7 @@ class LmeLineInflowsWorker
         pw_wait_networkidle(page)
 
         pl_cookies = ctx_cookies(context, 'step.lme.jp')
-        cookie_header = pl_cookies.map { |c|
-          "#{(c['name']||c[:name])}=#{(c['value']||c[:value])}"
-        }.join('; ')
-
+        cookie_header = pl_cookies.map { |c| "#{(c['name']||c[:name])}=#{(c['value']||c[:value])}" }.join('; ')
         xsrf_cookie = pl_cookies.find { |c| (c['name'] || c[:name]) == 'XSRF-TOKEN' }
         xsrf_raw = xsrf_cookie && (xsrf_cookie['value'] || xsrf_cookie[:value])
         xsrf = xsrf_raw && CGI.unescape(xsrf_raw.to_s)
@@ -854,9 +1040,9 @@ class LmeLineInflowsWorker
   private
 
   def default_start_on
-    raw = ENV['LME_DEFAULT_START_DATE'].presence || '2025-01-01'
+    raw = ENV['LME_DEFAULT_START_DATE'].presence || '2023-01-01'
     Date.parse(raw).strftime('%F')
   rescue
-    '2024-01-01'
+    '2023-01-01'
   end
 end
