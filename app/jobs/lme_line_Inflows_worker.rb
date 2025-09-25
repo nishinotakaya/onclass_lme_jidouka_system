@@ -146,7 +146,7 @@ class LmeLineInflowsWorker
     # 5.5) ブロック専用APIでの補完: /basic/friendlist/get-friend-user-block
     blocked_rows = fetch_block_list(cookie_header, xsrf_header, csrf_meta, start_on, end_on)
     Rails.logger.info("[blocked-api] fetched=#{blocked_rows.size}")
-    raw_rows.concat(blocked_rows)
+    raw_rows = merge_block_info!(raw_rows, blocked_rows)
 
     # 6) ユニーク化（user_id × followed_at）
     rows = raw_rows.uniq { |r| [extract_line_user_id_from_link(r['link_my_page']).to_i, r['followed_at'].to_s] }
@@ -199,7 +199,7 @@ class LmeLineInflowsWorker
     end
     Rails.logger.info("[tags] seminar dates unique=#{seminar_dates_set.size}")
 
-    # 9) GSheets 反映（旧レイアウト + セミナー動的列）
+    # 9) GSheets 反映（レイアウト互換 + セミナー動的列）
     spreadsheet_id = ENV.fetch('ONCLASS_SPREADSHEET_ID')
     sheet_name     = ENV.fetch('LME_SHEET_NAME', 'Line流入者')
     anchor_name    = ENV.fetch('ONCLASS_SHEET_NAME', 'フロントコース受講生')
@@ -304,13 +304,10 @@ class LmeLineInflowsWorker
   # =========================================================
   # ブロック専用 API 取得
   # =========================================================
-  # 
   def extract_categories_list(json)
     return [] unless json.is_a?(Hash)
     cand = json['data'] || json['result'] || json
-    # data がさらに { data: [...] } のことがある
     cand = cand['data'] if cand.is_a?(Hash) && cand.key?('data') && cand['data'].is_a?(Array)
-    # 別形式で categories キーの可能性にも対応
     cand = cand['categories'] if cand.is_a?(Hash) && cand.key?('categories')
     cand.is_a?(Array) ? cand : []
   end
@@ -335,7 +332,6 @@ class LmeLineInflowsWorker
       end
 
       payload = JSON.parse(res_body) rescue {}
-      # ペイロードの正規化（{data:{data:[...], current_page, last_page}} / {data:[...]} / {...} など全部吸収）
       container   = payload['data'] || payload['result'] || payload
       list_source = if container.is_a?(Hash)
                       container['data'] || container['list'] || container['items'] || container['rows'] || []
@@ -352,19 +348,18 @@ class LmeLineInflowsWorker
 
         uid = (r['line_user_id'] || r['user_id']).to_i
         if uid <= 0
-          # link からの救済（なければスキップ）
           uid = extract_line_user_id_from_link(r['link_my_page']).to_i rescue 0
         end
         r['link_my_page'] ||= "#{ORIGIN}/basic/friendlist/my_page/#{uid}" if uid.positive?
 
-        r['followed_at'] ||= (r['block_at'] || r['blocked_at'] || r['created_at'] || r['updated_at'])
+        # ブロック時刻は blocked_at 優先で保持
+        r['blocked_at'] ||= (r['blocked_at'] || r['block_at'] || r['updated_at'] || r['created_at'])
         normalize_row!(r)
         all << r
       end
 
-      # ページング判定
-      cur  = if container.is_a?(Hash) then container['current_page'].to_i else 0 end
-      last = if container.is_a?(Hash) then container['last_page'].to_i    else 0 end
+      cur  = container.is_a?(Hash) ? container['current_page'].to_i : 0
+      last = container.is_a?(Hash) ? container['last_page'].to_i    : 0
       page_no += 1
       break if last.nonzero? && cur >= last
       sleep 0.15
@@ -376,7 +371,6 @@ class LmeLineInflowsWorker
     []
   end
 
-
   # =========================================================
   # データ整形 / タグ判定 / セミナー & QR
   # =========================================================
@@ -386,6 +380,7 @@ class LmeLineInflowsWorker
       {
         'date'         => rec['followed_at'].to_s[0, 10],
         'followed_at'  => rec['followed_at'],
+        'blocked_at'   => rec['blocked_at'],  # ← 追加：ブロック日時を保持
         'landing_name' => safe_landing_name(rec),
         'name'         => rec['name'],
         'line_user_id' => uid,
@@ -444,7 +439,6 @@ class LmeLineInflowsWorker
 
     tag_list.each do |t|
       name = (t['name'] || t[:name]).to_s
-      # "参加希望 2025-8-20" / "参加 2025-08-20" を吸収
       if name =~ /(参加希望|参加)\s+(\d{4})-(\d{1,2})-(\d{1,2})/
         what, y, m, d = $1, $2.to_i, $3.to_i, $4.to_i
         begin
@@ -455,7 +449,6 @@ class LmeLineInflowsWorker
             result[ymd][:attend] = true
           end
         rescue ArgumentError
-          # 不正日付はスキップ
         end
       end
     end
@@ -582,10 +575,9 @@ class LmeLineInflowsWorker
     this_m = end_d.strftime('%Y-%m')
     prev_m = end_d.prev_month.strftime('%Y-%m')
 
-    # ← 追加: rows → uid=>flags のキャッシュを生成
+    # rows → uid=>flags のキャッシュ
     tags_cache = rows.each_with_object({}) { |r, h| h[r['line_user_id']] = (r['tags_flags'] || {}) }
 
-    # ← 置換: tags_cache を使う集計版
     monthly_rates, cumulative_rates = calc_rates(rows, tags_cache, month: this_m, since: CUM_SINCE)
     prev_month_rates = month_rates(rows, tags_cache, month: prev_m)
 
@@ -596,15 +588,17 @@ class LmeLineInflowsWorker
     end.flatten
 
     headers = [
-      '友達追加時刻', '流入元', 'line_user_id', '名前', 'LINE_ID', 'ブロック?',
+      '友達追加時刻', 'ブロック日時',            # 右隣にブロック日時
+      '流入元', 'line_user_id', '名前', 'LINE_ID', 'ブロック?',
       '動画①_ダイジェスト', 'プロアカ_動画①',
       '動画②_ダイジェスト', 'プロアカ_動画②',
       '動画③_ダイジェスト', 'プロアカ_動画③',
       '', 'プロアカ_動画④', '選択肢'
     ] + seminar_headers
+
     cols = headers.size
 
-    # ← 追加: 3〜5行目に%行を作成
+    # 3〜5行目のクリック率
     row3 = Array.new(cols, '')
     row4 = Array.new(cols, '')
     row5 = Array.new(cols, '')
@@ -612,12 +606,11 @@ class LmeLineInflowsWorker
     row4[0] = "前月%（#{prev_m}）"
     row5[0] = "累計%（#{Date.parse(CUM_SINCE).strftime('%Y/%-m')}〜）" rescue row5[0] = "累計%"
 
-    # v1〜v4 を I/K/M/O（=B起点 7/9/11/13）に配置
-    put_percentages!(row3, monthly_rates)
-    put_percentages!(row4, prev_month_rates)
-    put_percentages!(row5, cumulative_rates)
+    put_percentages_dynamic!(row3, monthly_rates, headers)
+    put_percentages_dynamic!(row4, prev_month_rates, headers)
+    put_percentages_dynamic!(row5, cumulative_rates, headers)
 
-    # ← 追加: %行を書き込み（B3〜B5）
+    # %行
     service.update_spreadsheet_value(
       spreadsheet_id, "#{sheet_name}!B3:#{a1_col(1 + headers.size)}3",
       Google::Apis::SheetsV4::ValueRange.new(values: [row3]),
@@ -634,7 +627,7 @@ class LmeLineInflowsWorker
       value_input_option: 'USER_ENTERED'
     )
 
-    # ヘッダーは従来通り B6 に
+    # ヘッダー
     header_range = "#{sheet_name}!B6:#{a1_col(1 + headers.size)}6"
     service.update_spreadsheet_value(
       spreadsheet_id, header_range,
@@ -642,21 +635,24 @@ class LmeLineInflowsWorker
       value_input_option: 'USER_ENTERED'
     )
 
-    # 友達追加の降順（最新が上）
+    # 並び順：友達追加時刻（なければブロック日時）で降順
     sorted = Array(rows).sort_by do |r|
-      t = (Time.zone.parse(r['followed_at'].to_s) rescue Time.parse(r['followed_at'].to_s) rescue nil)
+      t_follow = (Time.zone.parse(r['followed_at'].to_s) rescue Time.parse(r['followed_at'].to_s) rescue nil)
+      t_block  = (Time.zone.parse(r['blocked_at'].to_s)  rescue Time.parse(r['blocked_at'].to_s)  rescue nil)
+      t = t_follow || t_block
       [t ? t.to_i : 0, r['line_user_id'].to_i]
     end.reverse
 
     data_values = sorted.map do |r|
       t = (r['tags_flags'] || {})
-      landing = r['qr_code'].presence || r['landing_name'] # QR優先
+      landing = r['qr_code'].presence || r['landing_name']
 
       row = [
         to_jp_ymdhm(r['followed_at']),
+        to_jp_ymdhm(r['blocked_at']),    # 2列目：ブロック日時
         landing.to_s,
         r['line_user_id'],
-        hyperlink_line_user(r['line_user_id'], r['name']),
+        hyperlink_line_user(r['line_user_id'], r['name']),  # 名前はハイパーリンクで保持
         r['line_id'],
         r['is_blocked'].to_i,
         (t[:dv1] ? 'タグあり' : ''),
@@ -688,8 +684,7 @@ class LmeLineInflowsWorker
     end
   end
 
-
-  # ==== 集計（旧フォーマット: any列なし, v1〜v4のみ） =========================
+  # ==== Helpers: 集計 =======================================================
   def calc_rates(rows, tags_cache, month:, since:)
     month_rows = Array(rows).select { |r| month_key(r['date']) == month }
     cum_rows   = Array(rows).select { |r| r['date'].to_s >= since.to_s }
@@ -730,12 +725,18 @@ class LmeLineInflowsWorker
     Date.parse(ymd_str.to_s).strftime('%Y-%m') rescue nil
   end
 
-  # I/K/M/O に%を入れる（B基準0-indexで 7/9/11/13）
-  def put_percentages!(row_array, rates)
-    idx_map = { v1: 7, v2: 9, v3: 11, v4: 13 }
-    idx_map.each do |k, idx|
+  # （動的ヘッダーに合わせて）%を「プロアカ_動画①〜④」の列位置へ入れる
+  def put_percentages_dynamic!(row_array, rates, headers)
+    idx = {
+      v1: headers.index('プロアカ_動画①'),
+      v2: headers.index('プロアカ_動画②'),
+      v3: headers.index('プロアカ_動画③'),
+      v4: headers.index('プロアカ_動画④')
+    }
+    idx.each do |k, i|
+      next unless i
       v = rates[k]
-      row_array[idx] = v.nil? ? '' : "#{v}%"
+      row_array[i] = v.nil? ? '' : "#{v}%"
     end
   end
 
@@ -1056,6 +1057,61 @@ class LmeLineInflowsWorker
       return h[:value] || h['value'] if (h[:name] || h['name']).to_s == name.to_s
     end
     nil
+  end
+
+  # === ブロック情報のマージ（名前・blocked_at を維持/補完） ====================
+  def merge_block_info!(raw_rows, blocked_rows)
+    # 既存 uid -> 行
+    by_uid = {}
+    Array(raw_rows).each do |r|
+      uid = extract_line_user_id_from_link(r['link_my_page']).to_i
+      next if uid <= 0
+      by_uid[uid] ||= r
+    end
+
+    # uid -> 最新 blocked_at / 名前
+    latest_blocked_at = {}
+    names_map = {}
+
+    Array(blocked_rows).each do |br|
+      uid = (br['line_user_id'] || extract_line_user_id_from_link(br['link_my_page'])).to_i
+      next if uid <= 0
+
+      names_map[uid] = (br['name'] || br['view_name'] || names_map[uid] || '')
+
+      b = br['blocked_at'] || br['block_at'] || br['updated_at'] || br['created_at']
+      next if b.blank?
+      begin
+        cur = latest_blocked_at[uid]
+        latest_blocked_at[uid] = [cur, b].compact.max_by { |x| Time.parse(x) }
+      rescue
+        latest_blocked_at[uid] ||= b
+      end
+    end
+
+    # 既存行に反映／無ければ行を新規作成
+    latest_blocked_at.each do |uid, b|
+      if by_uid.key?(uid)
+        by_uid[uid]['is_blocked'] = 1
+        by_uid[uid]['blocked_at'] = b
+        if by_uid[uid]['name'].to_s.strip.empty? && names_map[uid].present?
+          by_uid[uid]['name'] = names_map[uid]
+        end
+      else
+        newr = {
+          'link_my_page' => "#{ORIGIN}/basic/friendlist/my_page/#{uid}",
+          'name'         => names_map[uid].to_s,
+          'followed_at'  => nil,
+          'landing_name' => '',
+          'is_blocked'   => 1,
+          'blocked_at'   => b
+        }
+        raw_rows << newr
+        by_uid[uid] = newr
+      end
+    end
+
+    raw_rows
   end
 
   private
