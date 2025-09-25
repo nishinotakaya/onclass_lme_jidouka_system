@@ -20,17 +20,30 @@ class LmeLineInflowsWorker
   sidekiq_options queue: 'lme_line_inflows', retry: 3
 
   GOOGLE_SCOPE = [Google::Apis::SheetsV4::AUTH_SPREADSHEETS].freeze
-  CUM_SINCE    = ENV['LME_CUM_SINCE'].presence || '2025-01-01'
-  ORIGIN       = 'https://step.lme.jp'
-  UA           = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
-  ACCEPT_LANG  = 'ja,en-US;q=0.9,en;q=0.8'
-  CH_UA        = %Q("Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140")
 
-  # =========================================================
-  # メイン
-  # =========================================================
+  # ==== タグ判定用定数 =======================================================
+  PROAKA_CATEGORY_ID = 5_180_568
+  CUM_SINCE          = ENV['LME_CUM_SINCE'].presence || '2025-01-01' # 累計の起点
+
+  PROAKA_TAGS = { v1: 1_394_734, v2: 1_394_736, v3: 1_394_737, v4: 1_394_738 }.freeze
+  PROAKA_DIGEST_NAMES = { dv1: '動画①_ダイジェスト', dv2: '動画②_ダイジェスト', dv3: '動画③_ダイジェスト' }.freeze
+  RICHMENU_SELECT_NAMES = [
+    '月収40万円のエンジニアになれる方法を知りたい',
+    'プログラミング無料体験したい',
+    '現役エンジニアに質問したい'
+  ].freeze
+
+  # ==== 通信基本情報 =========================================================
+  ORIGIN      = 'https://step.lme.jp'
+  UA          = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
+  ACCEPT_LANG = 'ja,en-US;q=0.9,en;q=0.8'
+  CH_UA       = %Q("Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140")
+
+  # ==== Entry point ==========================================================
   def perform(start_date = nil, end_date = nil)
-    # 1) ログイン → Cookie/XSRF 入手
+    Time.zone = 'Asia/Tokyo'
+
+    # 1) 自動ログイン → Cookie/XSRF 取得（※既存のセッション方針はそのまま）
     login_service = LmeLoginUserService.new(
       email:    ENV['GOOGLE_EMAIL'],
       password: ENV['GOOGLE_PASSWORD'],
@@ -38,179 +51,153 @@ class LmeLineInflowsWorker
     )
     login_result = login_service.fetch_friend_history
 
-    # === sanitize 済みだけ使う ===
-    cookie_header = login_result[:basic_cookie_header].to_s.strip
-    xsrf_cookie  = login_result[:basic_xsrf].to_s.strip
-    raise 'basic_cookie_header missing' if cookie_header.blank?
-    raise 'basic_xsrf missing'         if xsrf_cookie.blank?
+    cookie_header = login_result[:basic_cookie_header].presence || login_result[:cookie_str].to_s
+    xsrf_cookie  = login_result[:basic_xsrf].presence ||
+                   extract_cookie_from_pairs(login_result[:cookies], 'XSRF-TOKEN') ||
+                   extract_cookie(cookie_header, 'XSRF-TOKEN')
+    unless cookie_header.present? && xsrf_cookie.present?
+      Rails.logger.info('[Inflows] basic cookie/xsrf not found → ensure_basic_context! で育成')
+      cookie_header, xsrf_cookie = ensure_basic_context!(login_result[:cookies])
+    end
+    raise 'cookie_header missing' if cookie_header.blank?
+    raise 'xsrf_cookie missing'   if xsrf_cookie.blank?
+    xsrf_header = decode_xsrf(xsrf_cookie)
 
-    # 2) meta CSRF トークン取得（HTTP → 取れなければ Playwright DOM）
-    csrf_meta, meta_src = fetch_csrf_meta_with_cookies(cookie_header, [
-      '/basic/friendlist',
-      '/basic/overview',
-      '/basic',
-      '/admin/home',
-      '/'
-    ])
+    # 2) meta CSRF（x-csrf-token）を取得（HTTP → Playwright）
+    csrf_meta, meta_src = fetch_csrf_meta_with_cookies(cookie_header, ['/basic/friendlist', '/basic/overview', '/basic', '/admin/home', '/'])
     unless csrf_meta.present?
       Rails.logger.warn('[csrf-meta] HTTPで取得できず → Playwright で DOM から取得フォールバック')
-      csrf_meta, cookie_header, xsrf_cookie, meta_src =
+      csrf_meta, cookie2, xsrf2, src2 =
         playwright_fetch_meta_csrf!(login_result[:cookies], ['/basic/friendlist', '/basic/overview', '/basic'])
+      cookie_header = cookie2.presence || cookie_header
+      xsrf_header  = xsrf2.presence   || xsrf_header
+      meta_src     = src2 if src2
     end
-    if csrf_meta.present?
-      Rails.logger.debug("[csrf-meta] found at #{meta_src}: #{csrf_meta[0,8]}...(masked)")
-    else
-      Rails.logger.warn('[csrf-meta] not found. FORM は x-xsrf-token 併用のみで試行します')
-    end
+    Rails.logger.debug("[csrf-meta] #{csrf_meta.present? ? 'ok' : 'miss'} at #{meta_src}")
 
-    # 3) 期間・bot
-    start_on = (start_date.presence || default_start_on)
-    end_on   = (end_date.presence   || Time.zone.today.to_s)
-    start_cut = Date.parse(start_on) rescue Date.parse(default_start_on)
-    bot_id  = (ENV['LME_BOT_ID'].presence || '17106').to_s
-    Rails.logger.debug("start_on=#{start_on} end_on=#{end_on}")
+    # 3) 範囲/ボット
+    start_on  = (start_date.presence || default_start_on)
+    end_on    = (end_date.presence   || Time.zone.today.to_s)
+    start_cut = (Date.parse(start_on) rescue Date.today)
+    end_cut   = (Date.parse(end_on)   rescue Date.today)
+    bot_id    = (ENV['LME_BOT_ID'].presence || '17106').to_s
+    Rails.logger.info("[Inflows] range=#{start_on}..#{end_on}")
 
-    # 4) 前座（JSON）
-    Rails.logger.info('[Inflows] warmup: init-data-history-add-friend …')
-    begin
-      _ = curl_post_json(
+    # 4) warmup: /ajax/init-data-history-add-friend（form: data=...）
+    warmup_form = { data: { start: start_on, end: end_on }.to_json }
+    _ = with_loa_retry(cookie_header, xsrf_header) do
+      curl_post_form(
         path: '/ajax/init-data-history-add-friend',
-        json_body: { data: { start: start_on, end: end_on }.to_json }.to_json,
+        form: warmup_form,
         cookie: cookie_header,
-        xsrf: xsrf_cookie,
-        referer: "#{ORIGIN}/basic/friendlist/friend-history",
-        extra_headers: { 'x-server' => 'ovh' }
+        csrf_meta: nil,
+        xsrf_cookie: xsrf_header,
+        referer: "#{ORIGIN}/basic/friendlist/friend-history"
       )
-    rescue => e
-      Rails.logger.debug("[warmup:init-data] #{e.class}: #{e.message}")
     end
 
-    # 5) 本体（FORM）: /basic/friendlist/post-advance-filter-v2
-    Rails.logger.info('[Inflows] Fetching friendlist (post-advance-filter-v2)…')
+    # 5) 本体: /basic/friendlist/post-advance-filter-v2（フォーム+ページネーション）
     raw_rows = []
-    begin
-      page_no = 1
-      loop do
-        form = {
-          item_search: '[]',
-          item_search_or: '[]',
-          scenario_stop_id: '',
-          scenario_id_running: '',
-          scenario_unfinish_id: '',
-          orderBy: 0,
-          sort_followed_at_increase: '',
-          sort_last_time_increase: '',
-          keyword: '',
-          rich_menu_id: '',
-          page: page_no,
-          followed_to: end_on,
-          followed_from: start_on,
-          connect_db_replicate: 'false',
-          line_user_id_deleted: '',
-          is_cross: 'false'
-        }
-
-        res_body = curl_post_form(
+    page_no = 1
+    loop do
+      form = {
+        item_search: '[]', item_search_or: '[]',
+        scenario_stop_id: '', scenario_id_running: '', scenario_unfinish_id: '',
+        orderBy: 0, sort_followed_at_increase: '', sort_last_time_increase: '',
+        keyword: '', rich_menu_id: '', page: page_no,
+        followed_to: end_on, followed_from: start_on,
+        connect_db_replicate: 'false', line_user_id_deleted: '',
+        is_cross: 'false'
+      }
+      res_body = with_loa_retry(cookie_header, xsrf_header) do
+        curl_post_form(
           path: '/basic/friendlist/post-advance-filter-v2',
           form: form,
           cookie: cookie_header,
           csrf_meta: csrf_meta,
-          xsrf_cookie: xsrf_cookie,
+          xsrf_cookie: xsrf_header,
           referer: "#{ORIGIN}/basic/friendlist"
         )
-
-        body = JSON.parse(res_body) rescue {}
-        data = body.dig('data', 'data') || []
-
-        # ====== ここで正規化 + 期間/ブロック条件の一次フィルタ ======
-        filtered = data.select do |row|
-          blocked  = row['is_blocked'].to_i == 1
-          followed = row['followed_at'].present? &&
-                     (Date.parse(row['followed_at']) rescue Date.new(1900,1,1)) >= start_cut &&
-                     (Date.parse(row['followed_at']) rescue Date.new(2999,1,1)) <= (Date.parse(end_on) rescue Date.today)
-          blocked || followed
-        end
-        filtered.each { |row| normalize_row!(row) }
-
-        Rails.logger.debug("[post-advance-filter-v2] page=#{page_no} data_count=#{data.size} filtered=#{filtered.size}")
-        raw_rows.concat(filtered)
-        break if data.empty? || body.dig('data', 'current_page') >= body.dig('data', 'last_page')
-        page_no += 1
-        sleep 0.15
       end
-    rescue => e
-      Rails.logger.debug("[post-advance-filter-v2] fetch error: #{e.class}: #{e.message}")
+
+      body = JSON.parse(res_body) rescue {}
+      data = Array(body.dig('data', 'data'))
+
+      break if data.empty?
+
+      # 「ブロック or 期間内フォロー」だけを採用（旧ロジック踏襲）
+      filtered = data.select do |row|
+        blocked  = row['is_blocked'].to_i == 1
+        followed = row['followed_at'].present? &&
+                   ((Date.parse(row['followed_at']) rescue Date.new(1900,1,1)) >= start_cut) &&
+                   ((Date.parse(row['followed_at']) rescue Date.new(2999,1,1)) <= end_cut)
+        blocked || followed
+      end
+      filtered.each { |row| normalize_row!(row) }
+
+      raw_rows.concat(filtered)
+
+      cur  = body.dig('data', 'current_page').to_i
+      last = body.dig('data', 'last_page').to_i
+      Rails.logger.debug("[v2] page=#{cur}/#{last} fetched=#{data.size} kept=#{filtered.size}")
+      break if last.zero? || cur >= last
+      page_no += 1
+      sleep 0.15
     end
 
-    # 6) ブロックは必ず残す + フォロー済みは開始日以降のみ残す（最終フィルタ）
-    rows = raw_rows.select do |r|
-      blocked  = r['is_blocked'].to_i == 1
-      followed = r['followed_at'].present? &&
-                 (Date.parse(r['followed_at']) rescue Date.new(1900,1,1)) >= start_cut
-      blocked || followed
-    end
-    # 同一ユーザー・同一followed_atでユニーク
-    rows.uniq! { |r| [r['line_user_id'], r['followed_at']] }
-    Rails.logger.debug("[rows-filter] raw_rows=#{raw_rows.size} → rows=#{rows.size}")
-    Rails.logger.debug("[rows-sample] #{rows.first.inspect}") if rows.present?
+    # 6) ユニーク化（user_id × followed_at）
+    rows = raw_rows.uniq { |r| [extract_line_user_id_from_link(r['link_my_page']).to_i, r['followed_at'].to_s] }
+    Rails.logger.info("[v2] total rows=#{rows.size}")
 
-    # 7) タグ取得用に chat-v3 周りの Cookie/Meta 安定化
+    # 7) chat-v3 を一度踏んでタグ取得のための Cookie/Meta を安定化
     if rows.present?
-      sample_uid = rows.first['line_user_id']
-      chat_cookie_header, chat_xsrf_cookie = playwright_bake_chat_cookies!(login_result[:cookies], sample_uid, bot_id)
-      cookie_header = (chat_cookie_header.presence || cookie_header)
-      xsrf_cookie   = (chat_xsrf_cookie.presence   || xsrf_cookie)
-
-      meta2, cookie_header2, xsrf2, src2 =
-        playwright_fetch_meta_csrf!(login_result[:cookies], "/basic/chat-v3?friend_id=#{sample_uid}")
-      csrf_meta     = (meta2.presence       || csrf_meta)
-      cookie_header = (cookie_header2.presence || cookie_header)
-      xsrf_cookie   = (xsrf2.presence          || xsrf_cookie)
-      Rails.logger.debug("[csrf-meta] chat-v3 DOM re-fetch: #{src2 || 'none'} #{csrf_meta.present? ? '(ok)' : '(miss)'}")
+      sample_uid = extract_line_user_id_from_link(rows.first['link_my_page'])
+      chat_cookie_header, chat_xsrf = playwright_bake_chat_cookies!(login_result[:cookies], sample_uid, bot_id)
+      cookie_header = chat_cookie_header.presence || cookie_header
+      xsrf_header  = chat_xsrf.presence          || xsrf_header
+      meta2, cookie2, xsrf2, _src2 = playwright_fetch_meta_csrf!(login_result[:cookies], "/basic/chat-v3?friend_id=#{sample_uid}")
+      csrf_meta     = meta2.presence  || csrf_meta
+      cookie_header = cookie2.presence || cookie_header
+      xsrf_header   = xsrf2.presence   || xsrf_header
     end
 
-    # 8) タグ取得（FORM）
-    Rails.logger.info("[Inflows] Fetching tags inline for #{rows.size} rows…")
+    # 8) タグ取得（/basic/chat/get-categories-tags → PROAKA_CATEGORY_ID で厳密判定）
     tags_cache = {}
     rows.each_with_index do |r, i|
-      uid = r['line_user_id']
+      uid = extract_line_user_id_from_link(r['link_my_page'])
       begin
-        form = { line_user_id: uid, is_all_tag: 0 }
-        res_body = curl_post_form(
-          path: '/basic/chat/get-categories-tags',
-          form: form,
-          cookie: cookie_header,
-          csrf_meta: csrf_meta,
-          xsrf_cookie: xsrf_cookie,
-          referer: "#{ORIGIN}/basic/chat-v3?friend_id=#{uid}"
-        )
-        flags = extract_tag_flags_from_payload(res_body) # ← :any も含む
-        if flags.present?
-          tags_cache[uid] = flags
-          r['tags_flags'] = flags
-        else
-          r['tags_flags'] ||= {}
+        form = { line_user_id: uid, is_all_tag: 0, botIdCurrent: bot_id }
+        res_body = with_loa_retry(cookie_header, xsrf_header) do
+          curl_post_form(
+            path: '/basic/chat/get-categories-tags',
+            form: form,
+            cookie: cookie_header,
+            csrf_meta: csrf_meta,
+            xsrf_cookie: xsrf_header,
+            referer: "#{ORIGIN}/basic/chat-v3?friend_id=#{uid}"
+          )
         end
+        flags = extract_tag_flags_from_payload(res_body) # ← PROAKA_CATEGORY_ID 判定
+        tags_cache[uid] = flags if flags.present?
+        r['tags_flags'] = flags
       rescue => e
-        Rails.logger.debug("[get-categories-tags] uid=#{uid} #{e.class}: #{e.message}")
+        Rails.logger.debug("[tags] uid=#{uid} #{e.class}: #{e.message}")
       end
       sleep 0.12
-      Rails.logger.debug("[tags-inline] #{i+1}/#{rows.size} uid=#{uid} #{tags_cache.key?(uid) ? 'OK' : 'skip'}") if (i % 200).zero?
+      Rails.logger.debug("[tags] #{i+1}/#{rows.size}") if (i % 200).zero?
     end
+    Rails.logger.info("[tags] completed users=#{tags_cache.size}")
 
-    Rails.logger.info("[Inflows] ✅ Integrated fetch completed: #{rows.size} rows, #{tags_cache.size} users tagged")
-
-    # 9) GSheets 反映
+    # 9) GSheets 反映（旧レイアウト：タグ有無列は入れない／%の列位置も旧配置）
     spreadsheet_id = ENV.fetch('ONCLASS_SPREADSHEET_ID')
     sheet_name     = ENV.fetch('LME_SHEET_NAME', 'Line流入者')
     anchor_name    = ENV.fetch('ONCLASS_SHEET_NAME', 'フロントコース受講生')
 
     service = build_sheets_service
     ensure_sheet_exists_adjacent!(service, spreadsheet_id, sheet_name, anchor_name)
-
     upload_to_gsheets!(
       service: service,
-      rows: rows,
+      rows: to_sheet_rows(rows),
       spreadsheet_id: spreadsheet_id,
       sheet_name: sheet_name,
       tags_cache: tags_cache,
@@ -229,20 +216,16 @@ class LmeLineInflowsWorker
   end
 
   # =========================================================
-  # POST: x-www-form-urlencoded（meta: x-csrf-token / cookie: x-xsrf-token）
+  # HTTP helpers
   # =========================================================
   def curl_post_form(path:, form:, cookie:, csrf_meta:, xsrf_cookie:, referer:)
-    conn = Faraday.new(url: ORIGIN) do |f|
-      f.request :url_encoded
-      f.adapter Faraday.default_adapter
-    end
+    conn = Faraday.new(url: ORIGIN) { |f| f.request :url_encoded; f.adapter Faraday.default_adapter }
     res = conn.post(path) do |req|
       req.headers['accept'] = '*/*'
       req.headers['accept-language'] = ACCEPT_LANG
       req.headers['content-type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
       req.headers['cookie'] = cookie.to_s
       req.headers['origin'] = ORIGIN
-      req.headers['priority'] = 'u=1, i'
       req.headers['referer'] = referer
       req.headers['sec-ch-ua'] = CH_UA
       req.headers['sec-ch-ua-mobile'] = '?0'
@@ -256,46 +239,337 @@ class LmeLineInflowsWorker
       req.headers['x-xsrf-token'] = xsrf_cookie.to_s if xsrf_cookie.present?
       req.body = URI.encode_www_form(form)
     end
+    raise Faraday::Error, "HTTP #{res.status}" if res.status >= 500
     res.body.to_s
   end
   private :curl_post_form
 
-  # =========================================================
-  # POST: application/json（JSON は x-xsrf-token のみで OK）
-  # =========================================================
-  def curl_post_json(path:, json_body:, cookie:, xsrf:, referer:, extra_headers: {})
-    conn = Faraday.new(url: ORIGIN) { |f| f.adapter Faraday.default_adapter }
-    res = conn.post(path) do |req|
-      req.headers['accept'] = 'application/json, text/plain, */*'
-      req.headers['accept-language'] = ACCEPT_LANG
-      req.headers['content-type'] = 'application/json;charset=UTF-8'
-      req.headers['cookie'] = cookie.to_s
-      req.headers['origin'] = ORIGIN
-      req.headers['priority'] = 'u=1, i'
-      req.headers['referer'] = referer
-      req.headers['sec-ch-ua'] = CH_UA
-      req.headers['sec-ch-ua-mobile'] = '?0'
-      req.headers['sec-ch-ua-platform'] = %Q("macOS")
-      req.headers['sec-fetch-dest'] = 'empty'
-      req.headers['sec-fetch-mode'] = 'cors'
-      req.headers['sec-fetch-site'] = 'same-origin'
-      req.headers['user-agent'] = UA
-      req.headers['x-xsrf-token'] = xsrf.to_s
-      extra_headers.each { |k, v| req.headers[k] = v }
-      req.body = json_body.to_s
+  # 404/419/401 時に LOA を踏み直して 1 回だけ再試行
+  def with_loa_retry(cookie_header, xsrf_header)
+    tries = 0
+    begin
+      tries += 1
+      body = yield
+      if body.is_a?(String) && body.size < 256 && body =~ /(csrf|419|expired)/i
+        raise Faraday::ClientError.new('419 CSRF mismatch')
+      end
+      body
+    rescue Faraday::ClientError => e
+      code = e.message[/\b(\d{3})\b/, 1].to_i
+      if tries == 1 && [404, 401, 419].include?(code) || tries == 1
+        Rails.logger.info("[LOA retry] #{code.zero? ? e.class : code} → ensure_basic_context! → retry")
+        new_cookie, new_xsrf = ensure_basic_context!(nil, fallback_cookie: cookie_header)
+        cookie_header.replace(new_cookie) if new_cookie.present?
+        xsrf_header.replace(new_xsrf)     if new_xsrf.present?
+        retry
+      end
+      raise
     end
-    res.body.to_s
   end
-  private :curl_post_json
+  private :with_loa_retry
 
   # =========================================================
-  # （1）まず Cookie 付き GET で meta CSRF を探す
+  # データ整形 / タグ判定
   # =========================================================
+  def to_sheet_rows(v2_rows)
+    v2_rows.map do |rec|
+      uid = extract_line_user_id_from_link(rec['link_my_page'])
+      {
+        'date'         => rec['followed_at'].to_s[0, 10],
+        'followed_at'  => rec['followed_at'],
+        'landing_name' => safe_landing_name(rec),
+        'name'         => rec['name'],
+        'line_user_id' => uid,
+        'line_id'      => nil, # v2では取得不可
+        'is_blocked'   => (rec['is_blocked'] || 0).to_i,
+        'tags_flags'   => rec['tags_flags'] || {}
+      }
+    end
+  end
+
+  # /basic/chat/get-categories-tags の JSON を厳密にパースしてフラグ化
+  def extract_tag_flags_from_payload(body)
+    json = JSON.parse(body) rescue {}
+    cats = json['data'] || json['result'] || []
+    proaka_flags_from_categories(cats)
+  rescue => e
+    Rails.logger.debug("[extract_tag_flags] #{e.class}: #{e.message}")
+    {}
+  end
+
+  def proaka_flags_from_categories(categories)
+    target = Array(categories).find { |c| (c['id'] || c[:id]).to_i == PROAKA_CATEGORY_ID }
+    return { v1: false, v2: false, v3: false, v4: false, dv1: false, dv2: false, dv3: false, select: nil } unless target
+
+    tag_list  = Array(target['tags'] || target[:tags])
+    tag_ids   = tag_list.map  { |t| (t['tag_id'] || t[:tag_id]).to_i }.to_set
+    tag_names = tag_list.map  { |t| (t['name']   || t[:name]).to_s }.to_set
+
+    selected = RICHMENU_SELECT_NAMES.find { |nm| tag_names.include?(nm) }
+
+    {
+      v1:  tag_ids.include?(PROAKA_TAGS[:v1]),
+      v2:  tag_ids.include?(PROAKA_TAGS[:v2]),
+      v3:  tag_ids.include?(PROAKA_TAGS[:v3]),
+      v4:  tag_ids.include?(PROAKA_TAGS[:v4]),
+      dv1: tag_names.include?(PROAKA_DIGEST_NAMES[:dv1]),
+      dv2: tag_names.include?(PROAKA_DIGEST_NAMES[:dv2]),
+      dv3: tag_names.include?(PROAKA_DIGEST_NAMES[:dv3]),
+      select: selected
+    }
+  end
+
+  # =========================================================
+  # Google Sheets
+  # =========================================================
+  def build_sheets_service
+    keyfile = ENV['GOOGLE_APPLICATION_CREDENTIALS']
+    raise 'ENV GOOGLE_APPLICATION_CREDENTIALS is not set.' if keyfile.blank?
+    raise "Service account key not found: #{keyfile}" unless File.exist?(keyfile)
+
+    json = JSON.parse(File.read(keyfile)) rescue nil
+    unless json && json['type'] == 'service_account' && json['private_key'] && json['client_email']
+      raise 'Invalid service account JSON: missing private_key/client_email/type=service_account'
+    end
+
+    auth = Google::Auth::ServiceAccountCredentials.make_creds(
+      json_key_io: File.open(keyfile),
+      scope: GOOGLE_SCOPE
+    )
+    auth.fetch_access_token!
+
+    service = Google::Apis::SheetsV4::SheetsService.new
+    service.client_options.application_name = 'LME Line Inflows Uploader'
+    service.authorization = auth
+    service
+  end
+
+  def ensure_sheet_exists_adjacent!(service, spreadsheet_id, new_sheet_name, after_sheet_name)
+    ss      = service.get_spreadsheet(spreadsheet_id)
+    sheets  = ss.sheets
+    target  = sheets.find { |s| s.properties&.title == new_sheet_name }
+    anchor  = ss.sheets.find { |s| s.properties&.title == after_sheet_name }
+
+    return ensure_sheet_exists!(service, spreadsheet_id, new_sheet_name) if anchor.nil?
+
+    desired_index = anchor.properties.index.to_i + 1
+
+    if target.nil?
+      add_req = Google::Apis::SheetsV4::AddSheetRequest.new(
+        properties: Google::Apis::SheetsV4::SheetProperties.new(
+          title: new_sheet_name, index: desired_index
+        )
+      )
+      batch = Google::Apis::SheetsV4::BatchUpdateSpreadsheetRequest.new(
+        requests: [Google::Apis::SheetsV4::Request.new(add_sheet: add_req)]
+      )
+      service.batch_update_spreadsheet(spreadsheet_id, batch)
+    else
+      cur = target.properties.index.to_i
+      if cur != desired_index
+        update_req = Google::Apis::SheetsV4::UpdateSheetPropertiesRequest.new(
+          properties: Google::Apis::SheetsV4::SheetProperties.new(
+            sheet_id: target.properties.sheet_id, index: desired_index
+          ),
+          fields: 'index'
+        )
+        batch = Google::Apis::SheetsV4::BatchUpdateSpreadsheetRequest.new(
+          requests: [Google::Apis::SheetsV4::Request.new(update_sheet_properties: update_req)]
+        )
+        service.batch_update_spreadsheet(spreadsheet_id, batch)
+      end
+    end
+  end
+
+  def ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
+    ss = service.get_spreadsheet(spreadsheet_id)
+    exists = ss.sheets.any? { |s| s.properties&.title == sheet_name }
+    return if exists
+
+    add_req = Google::Apis::SheetsV4::AddSheetRequest.new(
+      properties: Google::Apis::SheetsV4::SheetProperties.new(title: sheet_name)
+    )
+    batch = Google::Apis::SheetsV4::BatchUpdateSpreadsheetRequest.new(
+      requests: [Google::Apis::SheetsV4::Request.new(add_sheet: add_req)]
+    )
+    service.batch_update_spreadsheet(spreadsheet_id, batch)
+  end
+
+  # === クリア→統計→ヘッダー→データ（旧レイアウト互換） =========================
+  def upload_to_gsheets!(service:, rows:, spreadsheet_id:, sheet_name:, tags_cache:, end_on:)
+    clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
+    %w[B2 B3 B4 B5 B6 B7].each do |r|
+      service.clear_values(spreadsheet_id, "#{sheet_name}!#{r}:Z", clear_req)
+    end
+
+    meta_values = [['バッチ実行タイミング', jp_timestamp]]
+    service.update_spreadsheet_value(
+      spreadsheet_id, "#{sheet_name}!B2",
+      Google::Apis::SheetsV4::ValueRange.new(values: meta_values),
+      value_input_option: 'USER_ENTERED'
+    )
+
+    end_d  = (parse_date(end_on).to_date rescue Date.today)
+    this_m = end_d.strftime('%Y-%m')
+    prev_m = end_d.prev_month.strftime('%Y-%m')
+
+    monthly_rates, cumulative_rates = calc_rates(rows, tags_cache, month: this_m, since: CUM_SINCE)
+    prev_month_rates = month_rates(rows, tags_cache, month: prev_m)
+
+    headers = [
+      '友達追加時刻', '流入元', 'line_user_id', '名前', 'LINE_ID', 'ブロック?',
+      '動画①_ダイジェスト', 'プロアカ_動画①',
+      '動画②_ダイジェスト', 'プロアカ_動画②',
+      '動画③_ダイジェスト', 'プロアカ_動画③',
+      '', 'プロアカ_動画④', '選択肢'
+    ]
+    cols = headers.size
+
+    row3 = Array.new(cols, ''); row4 = Array.new(cols, ''); row5 = Array.new(cols, '')
+    row3[0] = "今月%（#{this_m}）"
+    row4[0] = "前月%（#{prev_m}）"
+    row5[0] = "累計%（#{Date.parse(CUM_SINCE).strftime('%Y/%-m')}〜）" rescue row5[0] = "累計%"
+
+    # 旧配置（I/K/M/O列に%）: B起点0-indexで 7/9/11/13
+    put_percentages_old_layout!(row3, monthly_rates)
+    put_percentages_old_layout!(row4, prev_month_rates)
+    put_percentages_old_layout!(row5, cumulative_rates)
+
+    header_range = "#{sheet_name}!B6:#{a1_col(1 + headers.size)}6"
+    service.update_spreadsheet_value(
+      spreadsheet_id, header_range,
+      Google::Apis::SheetsV4::ValueRange.new(values: [headers]),
+      value_input_option: 'USER_ENTERED'
+    )
+
+    sorted = Array(rows).sort_by { |r|
+      [ r['date'].to_s, (Time.zone.parse(r['followed_at'].to_s) rescue r['followed_at'].to_s) ]
+    }.reverse
+
+    data_values = sorted.map do |r|
+      t = (r['tags_flags'] || tags_cache[r['line_user_id']] || {})
+      [
+        to_jp_ymdhm(r['followed_at']),
+        r['landing_name'],
+        r['line_user_id'],
+        hyperlink_line_user(r['line_user_id'], r['name']),
+        r['line_id'],
+        r['is_blocked'].to_i,
+        (t[:dv1] ? 'タグあり' : ''),
+        (t[:v1]  ? 'タグあり' : ''),
+        (t[:dv2] ? 'タグあり' : ''),
+        (t[:v2]  ? 'タグあり' : ''),
+        (t[:dv3] ? 'タグあり' : ''),
+        (t[:v3]  ? 'タグあり' : ''),
+        '',
+        (t[:v4]  ? 'タグあり' : ''),
+        (t[:select] || '')
+      ]
+    end
+
+    if data_values.any?
+      service.update_spreadsheet_value(
+        spreadsheet_id, "#{sheet_name}!B7",
+        Google::Apis::SheetsV4::ValueRange.new(values: data_values),
+        value_input_option: 'USER_ENTERED'
+      )
+    end
+  end
+
+  # ==== 集計（旧フォーマット: any列なし, v1〜v4のみ） =========================
+  def calc_rates(rows, tags_cache, month:, since:)
+    month_rows = Array(rows).select { |r| month_key(r['date']) == month }
+    cum_rows   = Array(rows).select { |r| r['date'].to_s >= since.to_s }
+
+    monthly = {
+      v1: pct_for(month_rows, tags_cache, :v1),
+      v2: pct_for(month_rows, tags_cache, :v2),
+      v3: pct_for(month_rows, tags_cache, :v3),
+      v4: pct_for(month_rows, tags_cache, :v4)
+    }
+    cumulative = {
+      v1: pct_for(cum_rows, tags_cache, :v1),
+      v2: pct_for(cum_rows, tags_cache, :v2),
+      v3: pct_for(cum_rows, tags_cache, :v3),
+      v4: pct_for(cum_rows, tags_cache, :v4)
+    }
+    [monthly, cumulative]
+  end
+
+  def month_rates(rows, tags_cache, month:)
+    month_rows = Array(rows).select { |r| month_key(r['date']) == month }
+    {
+      v1: pct_for(month_rows, tags_cache, :v1),
+      v2: pct_for(month_rows, tags_cache, :v2),
+      v3: pct_for(month_rows, tags_cache, :v3),
+      v4: pct_for(month_rows, tags_cache, :v4)
+    }
+  end
+
+  def pct_for(rows, tags_cache, key)
+    denom = rows.size
+    return nil if denom.zero?
+    numer = rows.count do |r|
+      flags = (r['tags_flags'] || tags_cache[r['line_user_id']] || {})
+      !!flags[key]
+    end
+    ((numer.to_f / denom) * 100).round(1)
+  end
+
+  def month_key(ymd_str)
+    Date.parse(ymd_str.to_s).strftime('%Y-%m') rescue nil
+  end
+
+  # I/K/M/O に%を入れる（B基準0-indexで 7/9/11/13）
+  def put_percentages_old_layout!(row_array, rates)
+    idx_map = { v1: 7, v2: 9, v3: 11, v4: 13 }
+    idx_map.each do |k, idx|
+      v = rates[k]
+      row_array[idx] = v.nil? ? '' : "#{v}%"
+    end
+  end
+
+  # =========================================================
+  # Playwright / LOA 選択まわり
+  # =========================================================
+  def ensure_basic_context!(raw_cookies, fallback_cookie: nil)
+    cookie_header = nil
+    xsrf = nil
+
+    Playwright.create(playwright_cli_executable_path: 'npx playwright') do |pw|
+      browser = pw.chromium.launch(headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'])
+      context = browser.new_context
+      begin
+        if raw_cookies.present?
+          add_cookies_to_context!(context, raw_cookies)
+        elsif fallback_cookie.present?
+          pairs = fallback_cookie.split(';').map { |p| k, v = p.strip.split('=', 2); { name: k, value: v } }
+          add_cookies_to_context!(context, pairs)
+        end
+        page = context.new_page
+        page.goto("#{ORIGIN}/admin/home")
+        pw_wait_networkidle(page)
+        page.goto("#{ORIGIN}/basic/overview")
+        pw_wait_networkidle(page)
+
+        pl = ctx_cookies(context, 'step.lme.jp')
+        cookie_header = pl.map { |c| "#{(c['name']||c[:name])}=#{(c['value']||c[:value])}" }.join('; ')
+        xsrf_row = pl.find { |c| (c['name'] || c[:name]) == 'XSRF-TOKEN' }
+        xsrf_raw = xsrf_row && (xsrf_row['value'] || xsrf_row[:value])
+        xsrf = xsrf_raw && CGI.unescape(xsrf_raw.to_s)
+      ensure
+        context&.close rescue nil
+        browser&.close rescue nil
+      end
+    end
+    [cookie_header, xsrf]
+  rescue => e
+    Rails.logger.warn("[ensure_basic_context!] #{e.class}: #{e.message}")
+    [fallback_cookie, extract_cookie(fallback_cookie, 'XSRF-TOKEN')]
+  end
+
   def fetch_csrf_meta_with_cookies(cookie_header, paths = '/')
-    try_paths = Array(paths).compact_blank
-    try_paths = ['/'] if try_paths.empty?
-
-    try_paths.each do |p|
+    Array(paths).compact_blank.each do |p|
       html, final_url = get_with_cookies(cookie_header, p)
       token = extract_meta_csrf(html)
       return [token, final_url] if token.present?
@@ -306,32 +580,20 @@ class LmeLineInflowsWorker
 
   def get_with_cookies(cookie_header, path)
     url = URI.join(ORIGIN, path).to_s
-    5.times do
-      res = Faraday.new(url: ORIGIN) { |f| f.adapter Faraday.default_adapter }.get(path) do |req|
-        req.headers['accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-        req.headers['accept-language'] = ACCEPT_LANG
-        req.headers['cookie'] = cookie_header.to_s
-        req.headers['user-agent'] = UA
-        req.headers['sec-ch-ua'] = CH_UA
-        req.headers['sec-ch-ua-mobile'] = '?0'
-        req.headers['sec-ch-ua-platform'] = %Q("macOS")
-        req.headers['upgrade-insecure-requests']= '1'
-        req.headers['cache-control'] = 'no-cache'
-        req.headers['pragma'] = 'no-cache'
-        req.headers['referer'] = ORIGIN
-      end
-      case res.status
-      when 301, 302, 303, 307, 308
-        loc = res.headers['location'].to_s
-        return [res.body.to_s, url] if loc.blank?
-        path = URI.join(ORIGIN, loc).request_uri
-        url  = URI.join(ORIGIN, loc).to_s
-        next
-      else
-        return [res.body.to_s, url]
-      end
+    res = Faraday.new(url: ORIGIN) { |f| f.adapter Faraday.default_adapter }.get(path) do |req|
+      req.headers['accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      req.headers['accept-language'] = ACCEPT_LANG
+      req.headers['cookie'] = cookie_header.to_s
+      req.headers['user-agent'] = UA
+      req.headers['sec-ch-ua'] = CH_UA
+      req.headers['sec-ch-ua-mobile'] = '?0'
+      req.headers['sec-ch-ua-platform'] = %Q("macOS")
+      req.headers['upgrade-insecure-requests']= '1'
+      req.headers['cache-control'] = 'no-cache'
+      req.headers['pragma'] = 'no-cache'
+      req.headers['referer'] = ORIGIN
     end
-    ['', url]
+    [res.body.to_s, url]
   rescue => e
     Rails.logger.debug("[csrf-meta GET] #{e.class}: #{e.message}")
     ['', url]
@@ -340,17 +602,11 @@ class LmeLineInflowsWorker
 
   def extract_meta_csrf(html)
     return nil if html.blank?
-    token = html[/<meta[^>]+name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i, 1]
-    return token if token.present?
-    token = html[/csrfToken["']?\s*[:=]\s*["']([^"']+)["']/i, 1]
-    return token if token.present?
-    nil
+    html[/<meta[^>]+name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i, 1] ||
+      html[/csrfToken["']?\s*[:=]\s*["']([^"']+)["']/i, 1]
   end
   private :extract_meta_csrf
 
-  # =========================================================
-  # （2）Playwright で DOM から meta CSRF 取得（保険）
-  # =========================================================
   def playwright_fetch_meta_csrf!(raw_cookies, paths)
     csrf_meta    = nil
     cookie_header = nil
@@ -405,374 +661,7 @@ class LmeLineInflowsWorker
   private :playwright_fetch_meta_csrf!
 
   # =========================================================
-  # タグ抽出（:any を追加 / 右端の「選択肢」も拾う）
-  # =========================================================
-  def extract_tag_flags_from_payload(body)
-    json = JSON.parse(body) rescue {}
-    strings = deep_collect_strings(json)
-    return {} if strings.empty?
-
-    # 「選択肢」っぽい文言
-    select_label = strings.find { |s| s.include?('選択肢') } || strings.find { |s| s =~ /選択/ }
-
-    # プロアカ/ダイジェスト系の既存検出
-    patterns = {
-      dv1: [/動画.?①.*ダイジェスト/i, /ダイジェスト.*1/i, /Digest.*1/i],
-      v1:  [/プロアカ.?動画.?①/i, /動画.?①.*(本編|視聴|購入|フル)/i],
-      dv2: [/動画.?②.*ダイジェスト/i, /ダイジェスト.*2/i, /Digest.*2/i],
-      v2:  [/プロアカ.?動画.?②/i, /動画.?②.*(本編|視聴|購入|フル)/i],
-      dv3: [/動画.?③.*ダイジェスト/i, /ダイジェスト.*3/i, /Digest.*3/i],
-      v3:  [/プロアカ.?動画.?③/i, /動画.?③.*(本編|視聴|購入|フル)/i],
-      v4:  [/プロアカ.?動画.?④/i, /動画.?④/i]
-    }
-
-    names = extract_probable_tag_names(json)
-    pool  = (names + strings).uniq
-
-    flags = {}
-    patterns.each { |k, regs| flags[k] = regs.any? { |re| pool.any? { |s| s =~ re } } }
-
-    # 1つでもタグが付いているか（:any）
-    any_tag = false
-    if json['data'].is_a?(Array)
-      any_tag = json['data'].any? { |cat| cat.is_a?(Hash) && cat['tags'].is_a?(Array) && cat['tags'].any? }
-    end
-    flags[:any]    = any_tag
-    flags[:select] = select_label
-    flags
-  rescue => e
-    Rails.logger.debug("[extract_tag_flags] #{e.class}: #{e.message}")
-    {}
-  end
-
-  def extract_probable_tag_names(obj)
-    keys = %w[name tag_name category_name title label text value]
-    out = []
-    walk = lambda do |v|
-      case v
-      when Hash
-        v.each do |k, vv|
-          out << vv.to_s if keys.include?(k.to_s) && vv.is_a?(String)
-          walk.call(vv)
-        end
-      when Array
-        v.each { |e| walk.call(e) }
-      end
-    end
-    walk.call(obj)
-    out.compact.map(&:to_s)
-  end
-
-  def deep_collect_strings(obj)
-    out = []
-    walk = lambda do |v|
-      case v
-      when String
-        out << v
-      when Hash
-        v.each_value { |vv| walk.call(vv) }
-      when Array
-        v.each { |e| walk.call(e) }
-      end
-    end
-    walk.call(obj)
-    out.compact.map(&:to_s)
-  end
-
-  # =========================================================
-  # Google Sheets
-  # =========================================================
-  def build_sheets_service
-    keyfile = ENV['GOOGLE_APPLICATION_CREDENTIALS']
-    raise 'ENV GOOGLE_APPLICATIONS_CREDENTIALS is not set.' if keyfile.blank?
-    raise "Service account key not found: #{keyfile}" unless File.exist?(keyfile)
-
-    json = JSON.parse(File.read(keyfile)) rescue nil
-    unless json && json['type'] == 'service_account' && json['private_key'] && json['client_email']
-      raise 'Invalid service account JSON: missing private_key/client_email/type=service_account'
-    end
-
-    auth = Google::Auth::ServiceAccountCredentials.make_creds(
-      json_key_io: File.open(keyfile),
-      scope: GOOGLE_SCOPE
-    )
-    auth.fetch_access_token!
-
-    service = Google::Apis::SheetsV4::SheetsService.new
-    service.client_options.application_name = 'LME Line Inflows Uploader'
-    service.authorization = auth
-    service
-  end
-
-  def ensure_sheet_exists_adjacent!(service, spreadsheet_id, new_sheet_name, after_sheet_name)
-    ss = service.get_spreadsheet(spreadsheet_id)
-    sheets = ss.sheets
-    target = sheets.find { |s| s.properties&.title == new_sheet_name }
-    anchor = sheets.find { |s| s.properties&.title == after_sheet_name }
-
-    if anchor.nil?
-      return ensure_sheet_exists!(service, spreadsheet_id, new_sheet_name)
-    end
-
-    desired_index = anchor.properties.index.to_i + 1
-
-    if target.nil?
-      add_req = Google::Apis::SheetsV4::AddSheetRequest.new(
-        properties: Google::Apis::SheetsV4::SheetProperties.new(
-          title: new_sheet_name, index: desired_index
-        )
-      )
-      batch = Google::Apis::SheetsV4::BatchUpdateSpreadsheetRequest.new(
-        requests: [Google::Apis::SheetsV4::Request.new(add_sheet: add_req)]
-      )
-      service.batch_update_spreadsheet(spreadsheet_id, batch)
-    else
-      cur = target.properties.index.to_i
-      if cur != desired_index
-        update_req = Google::Apis::SheetsV4::UpdateSheetPropertiesRequest.new(
-          properties: Google::Apis::SheetsV4::SheetProperties.new(
-            sheet_id: target.properties.sheet_id, index: desired_index
-          ),
-          fields: 'index'
-        )
-        batch = Google::Apis::SheetsV4::BatchUpdateSpreadsheetRequest.new(
-          requests: [Google::Apis::SheetsV4::Request.new(update_sheet_properties: update_req)]
-        )
-        service.batch_update_spreadsheet(spreadsheet_id, batch)
-      end
-    end
-  end
-
-  def ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
-    ss = service.get_spreadsheet(spreadsheet_id)
-    exists = ss.sheets.any? { |s| s.properties&.title == sheet_name }
-    return if exists
-
-    add_req = Google::Apis::SheetsV4::AddSheetRequest.new(
-      properties: Google::Apis::SheetsV4::SheetProperties.new(title: sheet_name)
-    )
-    batch = Google::Apis::SheetsV4::BatchUpdateSpreadsheetRequest.new(
-      requests: [Google::Apis::SheetsV4::Request.new(add_sheet: add_req)]
-    )
-    service.batch_update_spreadsheet(spreadsheet_id, batch)
-  end
-
-  def upload_to_gsheets!(service:, rows:, spreadsheet_id:, sheet_name:, tags_cache:, end_on:)
-    # 先にクリア
-    clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
-    %w[B2 B3 B4 B5 B6 B7].each do |r|
-      service.clear_values(spreadsheet_id, "#{sheet_name}!#{r}:Z", clear_req)
-    end
-
-    # 実行時刻
-    meta_values = [['バッチ実行タイミング', jp_timestamp]]
-    service.update_spreadsheet_value(
-      spreadsheet_id, "#{sheet_name}!B2",
-      Google::Apis::SheetsV4::ValueRange.new(values: meta_values),
-      value_input_option: 'USER_ENTERED'
-    )
-
-    end_d = (parse_date(end_on).to_date rescue Date.today)
-    this_m = end_d.strftime('%Y-%m')
-    prev_m = end_d.prev_month.strftime('%Y-%m')
-
-    monthly_rates, cumulative_rates = calc_rates(rows, tags_cache, month: this_m, since: CUM_SINCE)
-    prev_month_rates = month_rates(rows, tags_cache, month: prev_m)
-
-    # 見出し
-    headers = [
-      '友達追加時刻', '流入元', 'line_user_id', '名前', 'LINE_ID', 'ブロック?',
-      'タグ有無',                    # ← 新規列（「タグあり」/空）
-      '動画①_ダイジェスト', 'プロアカ_動画①',
-      '動画②_ダイジェスト', 'プロアカ_動画②',
-      '動画③_ダイジェスト', 'プロアカ_動画③',
-      '', 'プロアカ_動画④', '選択肢'
-    ]
-    cols = headers.size
-
-    # %テージ行（今月／前月／累計）
-    row3 = Array.new(cols, ''); row4 = Array.new(cols, ''); row5 = Array.new(cols, '')
-    row3[0] = "今月%（#{this_m}）"
-    row4[0] = "前月%（#{prev_m}）"
-    row5[0] = "累計%（#{Date.parse(CUM_SINCE).strftime('%Y/%-m')}〜）" rescue row5[0] = "累計%"
-
-    # 位置マッピング（headersのインデックスに合わせる）
-    idx_map = { any: 6, v1: 8, v2: 10, v3: 12, v4: 14 }
-
-    put_percentages!(row3, monthly_rates, idx_map)
-    put_percentages!(row4, prev_month_rates, idx_map)
-    put_percentages!(row5, cumulative_rates, idx_map)
-
-    # ヘッダ書き込み
-    header_range = "#{sheet_name}!B6:#{a1_col(1 + headers.size)}6"
-    service.update_spreadsheet_value(
-      spreadsheet_id, header_range,
-      Google::Apis::SheetsV4::ValueRange.new(values: [headers]),
-      value_input_option: 'USER_ENTERED'
-    )
-
-    # データ本体
-    sorted = Array(rows).sort_by { |r|
-      [ r['date'].to_s, (Time.zone.parse(r['followed_at'].to_s) rescue r['followed_at'].to_s) ]
-    }.reverse
-
-    data_values = sorted.map do |r|
-      t = (r['tags_flags'] || tags_cache[r['line_user_id']] || {}) # 空でも {} を返す
-      [
-        to_jp_ymdhm(r['followed_at']),
-        safe_landing_name(r),                     # 流入元（堅牢化）
-        r['line_user_id'],
-        hyperlink_line_user(r['line_user_id'], r['name']),  # ← 名前=詳細URL
-        r['line_id'],
-        r['is_blocked'].to_i,                    # ブロック?
-        (t[:any] ? 'タグあり' : ''),              # タグ有無（新）
-        (t[:dv1] ? 'タグあり' : ''),
-        (t[:v1]  ? 'タグあり' : ''),
-        (t[:dv2] ? 'タグあり' : ''),
-        (t[:v2]  ? 'タグあり' : ''),
-        (t[:dv3] ? 'タグあり' : ''),
-        (t[:v3]  ? 'タグあり' : ''),
-        '',
-        (t[:v4]  ? 'タグあり' : ''),
-        (t[:select] || '')
-      ]
-    end
-
-    if data_values.any?
-      service.update_spreadsheet_value(
-        spreadsheet_id, "#{sheet_name}!B7",
-        Google::Apis::SheetsV4::ValueRange.new(values: data_values),
-        value_input_option: 'USER_ENTERED'
-      )
-    end
-  end
-
-  # === 集計ヘルパ ===============================================
-  def calc_rates(rows, tags_cache, month:, since:)
-    month_rows = Array(rows).select { |r| month_key(r['date']) == month }
-    cum_rows   = Array(rows).select { |r| r['date'].to_s >= since.to_s }
-
-    monthly = {
-      any: pct_for(month_rows, tags_cache, :any),
-      v1:  pct_for(month_rows, tags_cache, :v1),
-      v2:  pct_for(month_rows, tags_cache, :v2),
-      v3:  pct_for(month_rows, tags_cache, :v3),
-      v4:  pct_for(month_rows, tags_cache, :v4)
-    }
-    cumulative = {
-      any: pct_for(cum_rows, tags_cache, :any),
-      v1:  pct_for(cum_rows, tags_cache, :v1),
-      v2:  pct_for(cum_rows, tags_cache, :v2),
-      v3:  pct_for(cum_rows, tags_cache, :v3),
-      v4:  pct_for(cum_rows, tags_cache, :v4)
-    }
-    [monthly, cumulative]
-  end
-
-  def pct_for(rows, tags_cache, key)
-    denom = rows.size
-    return nil if denom.zero?
-    numer = rows.count do |r|
-      flags = (r['tags_flags'] || tags_cache[r['line_user_id']] || {})
-      case key
-      when :any
-        flags.any? { |k, v| k != :select && v } # 何か1つでも真（選択肢ラベルは除外）
-      else
-        !!flags[key]
-      end
-    end
-    ((numer.to_f / denom) * 100).round(1)
-  end
-
-  def month_key(ymd_str)
-    Date.parse(ymd_str.to_s).strftime('%Y-%m') rescue nil
-  end
-
-  def put_percentages!(row_array, rates, idx_map)
-    idx_map.each do |k, idx|
-      v = rates[k]
-      row_array[idx] = v.nil? ? '' : "#{v}%"
-    end
-  end
-
-  def hyperlink_line_user(id, name)
-    return name.to_s if id.to_s.strip.empty?
-    label = name.to_s.gsub('"', '""')
-    url   = "#{ORIGIN}/basic/friendlist/my_page/#{id}"
-    %Q(=HYPERLINK("#{url}","#{label}"))
-  end
-
-  def jp_timestamp
-    Time.now.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日 %H時%M分')
-  end
-
-  def parse_date(str)
-    Time.zone.parse(str.to_s) || Time.parse(str.to_s)
-  end
-
-  def to_jp_ymdhm(str)
-    return '' if str.blank?
-    t = (Time.zone.parse(str.to_s) rescue Time.parse(str.to_s) rescue nil)
-    return '' unless t
-    t.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日 %H時%M分')
-  end
-
-  def a1_col(n)
-    s = String.new
-    while n && n > 0
-      n, r = (n - 1).divmod(26)
-      s.prepend((65 + r).chr)
-    end
-    s
-  end
-
-  private
-
-  # ====== 行正規化（landing_name/date の穴埋め） ======
-  def normalize_row!(row)
-    row['landing_name'] ||= begin
-      cands = [
-        row['landing_name'],
-        row['landing'],
-        row['landing_source'],
-        row['from'],
-        (row.dig('landing', 'name') rescue nil),
-        (row.dig('utm', 'source')   rescue nil)
-      ].compact_blank
-      cands.first.to_s
-    end
-    row['date'] ||= row['followed_at'].to_s[0,10] # 集計用キー
-    row
-  end
-
-  # ====== シート出力時の安全な流入元取得 ======
-  def safe_landing_name(row)
-    row['landing_name'].presence ||
-      row['landing'].presence ||
-      row['landing_source'].presence ||
-      row['from'].presence ||
-      (row.dig('landing', 'name') rescue nil).presence ||
-      (row.dig('utm', 'source')   rescue nil).presence ||
-      ''
-  end
-
-  def default_start_on
-    CUM_SINCE
-  end
-
-  def month_rates(rows, tags_cache, month:)
-    month_rows = Array(rows).select { |r| month_key(r['date']) == month }
-    {
-      any: pct_for(month_rows, tags_cache, :any),
-      v1:  pct_for(month_rows, tags_cache, :v1),
-      v2:  pct_for(month_rows, tags_cache, :v2),
-      v3:  pct_for(month_rows, tags_cache, :v3),
-      v4:  pct_for(month_rows, tags_cache, :v4)
-    }
-  end
-
-  # =========================================================
-  # Playwright ユーティリティ
+  # Playwright utils
   # =========================================================
   def add_cookies_to_context!(context, raw_cookies, default_domain: 'step.lme.jp')
     normalized = Array(raw_cookies).map do |c|
@@ -855,15 +744,11 @@ class LmeLineInflowsWorker
         add_cookies_to_context!(context, raw_cookies)
         page = context.new_page
         pw_add_init_script(page, 'window.open = (url, target) => { location.href = url; }')
-
         page.goto("#{ORIGIN}/basic/chat-v3?friend_id=#{sample_uid}")
         pw_wait_for_url(page, %r{/basic/chat-v3}, 15_000)
         pw_wait_networkidle(page)
 
         pl_cookies = ctx_cookies(context, 'step.lme.jp')
-        names = pl_cookies.map { |c| (c['name'] || c[:name]).to_s }
-        Rails.logger.debug("[PW] cookie names(chat): #{names.join(', ')}")
-
         cookie_header = pl_cookies.map { |c|
           "#{(c['name']||c[:name])}=#{(c['value']||c[:value])}"
         }.join('; ')
@@ -880,9 +765,98 @@ class LmeLineInflowsWorker
   end
   private :playwright_bake_chat_cookies!
 
-  # 短いログ用
-  def safe_head(s, n = 200)
-    str = s.to_s
-    str.bytesize > n ? str.byteslice(0, n) + '...(trunc)' : str
+  # =========================================================
+  # 小物ユーティリティ
+  # =========================================================
+  def normalize_row!(row)
+    row['landing_name'] ||= begin
+      cands = [
+        row['landing_name'],
+        row['landing'],
+        row['landing_source'],
+        row['from'],
+        (row.dig('landing', 'name') rescue nil),
+        (row.dig('utm', 'source')   rescue nil)
+      ].compact_blank
+      cands.first.to_s
+    end
+    row['date'] ||= row['followed_at'].to_s[0,10]
+    row
+  end
+
+  def safe_landing_name(row)
+    row['landing_name'].presence ||
+      row['landing'].presence ||
+      row['landing_source'].presence ||
+      row['from'].presence ||
+      (row.dig('landing', 'name') rescue nil).presence ||
+      (row.dig('utm', 'source')   rescue nil).presence ||
+      ''
+  end
+
+  def extract_line_user_id_from_link(path)
+    path.to_s.split('/').last.to_i
+  end
+
+  def hyperlink_line_user(id, name)
+    return name.to_s if id.to_s.strip.empty?
+    label = name.to_s.gsub('"', '""')
+    url   = "#{ORIGIN}/basic/friendlist/my_page/#{id}"
+    %Q(=HYPERLINK("#{url}","#{label}"))
+  end
+
+  def jp_timestamp
+    Time.now.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日 %H時%M分')
+  end
+
+  def parse_date(str)
+    Time.zone.parse(str.to_s) || Time.parse(str.to_s)
+  end
+
+  def to_jp_ymdhm(str)
+    return '' if str.blank?
+    t = (Time.zone.parse(str.to_s) rescue Time.parse(str.to_s) rescue nil)
+    return '' unless t
+    t.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日 %H時%M分')
+  end
+
+  def a1_col(n)
+    s = String.new
+    while n && n > 0
+      n, r = (n - 1).divmod(26)
+      s.prepend((65 + r).chr)
+    end
+    s
+  end
+
+  def extract_cookie(cookie_str, key)
+    return nil if cookie_str.blank?
+    cookie_str.split(';').map(&:strip).each do |pair|
+      k, v = pair.split('=', 2)
+      return v if k == key
+    end
+    nil
+  end
+
+  def decode_xsrf(v)
+    s = v.to_s
+    s.include?('%') ? CGI.unescape(s) : s
+  end
+
+  def extract_cookie_from_pairs(pairs, name)
+    Array(pairs).each do |c|
+      h = c.respond_to?(:to_h) ? c.to_h : c
+      return h[:value] || h['value'] if (h[:name] || h['name']).to_s == name.to_s
+    end
+    nil
+  end
+
+  private
+
+  def default_start_on
+    raw = ENV['LME_DEFAULT_START_DATE'].presence || '2025-01-01'
+    Date.parse(raw).strftime('%F')
+  rescue
+    '2024-01-01'
   end
 end
