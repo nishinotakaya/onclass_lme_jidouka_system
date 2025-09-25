@@ -148,9 +148,47 @@ class LmeLineInflowsWorker
     Rails.logger.info("[blocked-api] fetched=#{blocked_rows.size}")
     raw_rows = merge_block_info!(raw_rows, blocked_rows)
 
-    # 6) ユニーク化（user_id × followed_at）
-    rows = raw_rows.uniq { |r| [extract_line_user_id_from_link(r['link_my_page']).to_i, r['followed_at'].to_s] }
-    Rails.logger.info("[v2] total rows=#{rows.size}")
+    # 6) UID単位でマージ（友達追加時刻を優先保持／blocked_atは最新に）
+    merged_by_uid = {}
+    Array(raw_rows).each do |r|
+      uid = extract_line_user_id_from_link(r['link_my_page']).to_i
+      next if uid <= 0
+      cur = merged_by_uid[uid]
+      if cur.nil?
+        merged_by_uid[uid] = r.dup
+      else
+        # followed_at: 非nil優先、両方ありは新しい方
+        fa = cur['followed_at']
+        fb = r['followed_at']
+        cur['followed_at'] =
+          begin
+            if fa.present? && fb.present?
+              (Time.parse(fa) >= Time.parse(fb)) ? fa : fb
+            else
+              fa.presence || fb.presence
+            end
+          rescue
+            fa.presence || fb.presence
+          end
+
+        # blocked_at はより新しい方
+        ba = cur['blocked_at']
+        bb = r['blocked_at']
+        cur['blocked_at'] =
+          begin
+            [ba, bb].compact.max_by { |x| Time.parse(x) }
+          rescue
+            ba.presence || bb.presence
+          end
+
+        cur['is_blocked'] = [cur['is_blocked'].to_i, r['is_blocked'].to_i].max
+        cur['name']         = cur['name'].presence         || r['name'].presence         || cur['view_name'].presence || r['view_name'].presence
+        cur['landing_name'] = cur['landing_name'].presence || r['landing_name'].presence
+        cur['link_my_page'] = cur['link_my_page'].presence || r['link_my_page'].presence
+      end
+    end
+    rows = merged_by_uid.values
+    Rails.logger.info("[v2] merged rows=#{rows.size}")
 
     # 7) chat-v3 を一度踏んで Cookie/Meta 安定化
     if rows.present?
@@ -164,7 +202,7 @@ class LmeLineInflowsWorker
       xsrf_header   = xsrf2.presence   || xsrf_header
     end
 
-    # 8) タグ取得（プロアカ/セミナーの両方） + 流入qr_code取得
+    # 8) タグ取得 + （ブロック者のみ）my_page API で time_follow / qr_code を取得
     seminar_dates_set = Set.new
     rows.each_with_index do |r, i|
       uid = extract_line_user_id_from_link(r['link_my_page'])
@@ -185,14 +223,17 @@ class LmeLineInflowsWorker
         r['tags_flags']  = proaka_flags
         r['seminar_map'] = seminar_map || {}
 
-        # 動的列のために、見つかった日付キーを収集
+        # 見つかった日付キーを収集
         r['seminar_map'].keys.each { |ymd| seminar_dates_set << ymd }
 
-        # 流入経路：qr_code を取得
-        qr_code = fetch_user_qr_code(cookie_header, xsrf_header, uid)
-        r['qr_code'] = qr_code if qr_code.present?
+        # === my_page API を叩く ===
+        info = fetch_user_basic_info(cookie_header, xsrf_header, uid) # {qr_code:, time_follow:}
+        r['qr_code'] = info[:qr_code] if info[:qr_code].present?
+        if r['followed_at'].blank? && info[:time_follow].present?
+          r['followed_at'] = info[:time_follow]
+        end
       rescue => e
-        Rails.logger.debug("[tags/qr] uid=#{uid} #{e.class}: #{e.message}")
+        Rails.logger.debug("[tags/basic] uid=#{uid} #{e.class}: #{e.message}")
       end
       sleep 0.12
       Rails.logger.debug("[tags] #{i+1}/#{rows.size}") if (i % 200).zero?
@@ -380,11 +421,10 @@ class LmeLineInflowsWorker
       {
         'date'         => rec['followed_at'].to_s[0, 10],
         'followed_at'  => rec['followed_at'],
-        'blocked_at'   => rec['blocked_at'],  # ← 追加：ブロック日時を保持
+        'blocked_at'   => rec['blocked_at'],
         'landing_name' => safe_landing_name(rec),
         'name'         => rec['name'],
         'line_user_id' => uid,
-        'line_id'      => nil, # v2では取得不可
         'is_blocked'   => (rec['is_blocked'] || 0).to_i,
         'tags_flags'   => rec['tags_flags'] || {},
         'seminar_map'  => rec['seminar_map'] || {},
@@ -455,13 +495,17 @@ class LmeLineInflowsWorker
     result
   end
 
-  def fetch_user_qr_code(cookie_header, xsrf_header, uid)
+  # === ブロック者のみ使う: my_page API から time_follow / qr_code を取得 ===
+  def fetch_user_basic_info(cookie_header, xsrf_header, uid)
     path = "/ajax/get_data_my_page?page=1&type=common&user_id=#{uid}"
     json = curl_get_json(path: path, cookie: cookie_header, referer: "#{ORIGIN}/basic/friendlist/my_page/#{uid}")
-    find_value_by_key(json, 'qr_code')
+    {
+      qr_code:     find_value_by_key(json, 'qr_code'),
+      time_follow: find_value_by_key(json, 'time_follow')
+    }.with_indifferent_access
   rescue => e
-    Rails.logger.debug("[qr_code] uid=#{uid} #{e.class}: #{e.message}")
-    nil
+    Rails.logger.debug("[basic_info] uid=#{uid} #{e.class}: #{e.message}")
+    {}.with_indifferent_access
   end
 
   def find_value_by_key(obj, key)
@@ -588,8 +632,8 @@ class LmeLineInflowsWorker
     end.flatten
 
     headers = [
-      '友達追加時刻', 'ブロック日時',            # 右隣にブロック日時
-      '流入元', 'line_user_id', '名前', 'LINE_ID', 'ブロック?',
+      '友達追加時刻', 'ブロック日時',
+      '流入元', 'line_user_id', '名前', 'ブロック?',
       '動画①_ダイジェスト', 'プロアカ_動画①',
       '動画②_ダイジェスト', 'プロアカ_動画②',
       '動画③_ダイジェスト', 'プロアカ_動画③',
@@ -635,25 +679,24 @@ class LmeLineInflowsWorker
       value_input_option: 'USER_ENTERED'
     )
 
-    # 並び順：友達追加時刻（なければブロック日時）で降順
+    # 並び順：友達追加時刻のみで降順（nil は最後）
     sorted = Array(rows).sort_by do |r|
       t_follow = (Time.zone.parse(r['followed_at'].to_s) rescue Time.parse(r['followed_at'].to_s) rescue nil)
-      t_block  = (Time.zone.parse(r['blocked_at'].to_s)  rescue Time.parse(r['blocked_at'].to_s)  rescue nil)
-      t = t_follow || t_block
-      [t ? t.to_i : 0, r['line_user_id'].to_i]
+      [t_follow ? t_follow.to_i : 0, r['line_user_id'].to_i]
     end.reverse
 
     data_values = sorted.map do |r|
       t = (r['tags_flags'] || {})
-      landing = r['qr_code'].presence || r['landing_name']
+
+      # === ここを修正：空欄同等の qr_code に流入元を上書きされないようガード ===
+      landing = pick_landing_value(r)
 
       row = [
         to_jp_ymdhm(r['followed_at']),
         to_jp_ymdhm(r['blocked_at']),    # 2列目：ブロック日時
         landing.to_s,
         r['line_user_id'],
-        hyperlink_line_user(r['line_user_id'], r['name']),  # 名前はハイパーリンクで保持
-        r['line_id'],
+        hyperlink_line_user(r['line_user_id'], r['name']),
         r['is_blocked'].to_i,
         (t[:dv1] ? 'タグあり' : ''),
         (t[:v1]  ? 'タグあり' : ''),
@@ -1101,7 +1144,7 @@ class LmeLineInflowsWorker
         newr = {
           'link_my_page' => "#{ORIGIN}/basic/friendlist/my_page/#{uid}",
           'name'         => names_map[uid].to_s,
-          'followed_at'  => nil,
+          'followed_at'  => nil,   # ← 後でブロック者に対して time_follow を入れる
           'landing_name' => '',
           'is_blocked'   => 1,
           'blocked_at'   => b
@@ -1112,6 +1155,22 @@ class LmeLineInflowsWorker
     end
 
     raw_rows
+  end
+
+  # ==== 空欄同等判定 & 流入元の最終決定（landing_name優先） ====================
+  def blankish?(v)
+    s = v.to_s.strip
+    s.empty? || %w[- ー — null NULL Null 未設定].include?(s)
+  end
+
+  def pick_landing_value(row)
+    ln = row['landing_name']
+    return ln unless blankish?(ln)
+
+    # qr_code は（ブロック者で取得できた場合のみ）フォールバックに使う
+    qr = row['qr_code']
+    return nil if blankish?(qr)
+    qr
   end
 
   private
