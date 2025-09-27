@@ -1,12 +1,9 @@
 libnss3
 libxss1
-libasound2t64
+libasound2
 libatk-bridge2.0-0
 libnspr4
 libxshmfence1
 fonts-liberation
 xdg-utils
 libvulkan1
-# 予防で入れておくと安定することが多い依存
-libgbm1
-libu2f-udev
