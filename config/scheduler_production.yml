@@ -1,21 +1,21 @@
-# config/scheduler_development.yml
-onclass_mentions_every:
-  class: "Onclass::MentionsWorker"
-  cron: "0,30 7-23 * * *"   # 7-23時の間で30分おきに実行
-  queue: onclass_comunity_Mentions
-  tz: "Asia/Tokyo"
-  description: "コミュニティメンション機能通知(7-23時の間で30分おきに実行)"
+# # config/scheduler_production.yml
+# onclass_mentions_every:
+#   class: "Onclass::MentionsWorker"
+#   cron: "0,30 7-23 * * *"
+#   queue: onclass_comunity_Mentions
+#   tz: "Asia/Tokyo"
+#   description: "コミュニティメンション機能通知(7-23時の間で30分おきに実行)"
 
-onclass_pdca_every:
-  class: "Onclass::PdcaStudentsWorker"
-  cron: "0 7-23/2 * * *"   # 07,09,11,13,15,17,19,21,23
-  queue: onclass_comunity_pdca_students
-  tz: "Asia/Tokyo"
-  description: "コミュニティ機能毎日のPDCA通知(7~23時に2時間おきに実行)"
+# onclass_pdca_every:
+#   class: "Onclass::PdcaStudentsWorker"
+#   cron: "0 7-23/2 * * *"   # 07,09,11,13,15,17,19,21,23
+#   queue: onclass_comunity_pdca_students
+#   tz: "Asia/Tokyo"
+#   description: "コミュニティ機能毎日のPDCA通知(7~23時に2時間おきに実行)"
 
 onclass_students_front:
   class: "Onclass::StudentsDataWorker"
-  cron: "0 */2 * * *"      # 2時間毎など
+  cron: "0 */2 * * *"
   queue: onclass_students_data
   args:
     - "oYTO4UDI6MGb"
@@ -35,14 +35,13 @@ onclass_students_backend:
 
 lme_line_inflows_daily:
   class: "Lme::LineInflowsWorker"
-  cron: "0 7-23/2 * * *"   # 07,09,11,13,15,17,19,21,23
+  cron: "0 7-23/2 * * *"
   queue: lme_line_inflows
   args:
     - "2023-01-01"
   tz: "Asia/Tokyo"
-  description: "LME LINE流入数集計(7~23時に2時間おきに実行)"
+  description: "LME LINE流入数集計(7~23時に2時間おき)"
 
-# ★ 追加（ダッシュボード集計）
 lme_line_counts_every:
   class: "Lme::LineCountsWorker"
   cron: "5 7-23/2 * * *"   # 流入集計の5分後に実行
