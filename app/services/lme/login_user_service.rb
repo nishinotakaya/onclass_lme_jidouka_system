@@ -34,7 +34,6 @@ module Lme
       }
       JS
 
-
     def initialize(email:, password:, api_key:)
       @email    = email
       @password = password
@@ -110,6 +109,7 @@ module Lme
       rescue => e
         log :error, "error: #{e.class} #{e.message}"
         e.backtrace&.first(8)&.each { |l| log :error, "  at #{l}" }
+        dump_page(driver)
         dump_page(driver) if DUMP_ON_ERROR rescue nil
         driver.quit rescue nil
         raise

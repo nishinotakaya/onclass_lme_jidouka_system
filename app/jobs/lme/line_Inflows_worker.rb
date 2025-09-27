@@ -44,120 +44,43 @@ module Lme
     def perform(start_date = nil, end_date = nil)
       Time.zone = 'Asia/Tokyo'
 
-      # --- 追加：サービス初期化 ---
-      cookie_service = Lme::CookieContext.new(
-        origin: ORIGIN, ua: UA, accept_lang: ACCEPT_LANG, ch_ua: CH_UA, logger: Rails.logger
-      )
-      http = Lme::HttpClient.new(
-        origin: ORIGIN, ua: UA, accept_lang: ACCEPT_LANG, ch_ua: CH_UA,
-        cookie_service: cookie_service, logger: Rails.logger
-      )
+      # ---- Context 準備（ログイン→CSRF） --------------------------------------
+      bot_id = (ENV['LME_BOT_ID'].presence || '17106').to_s
+      ctx = Lme::ApiContext.new(origin: ORIGIN, ua: UA, accept_lang: ACCEPT_LANG, ch_ua: CH_UA, logger: Rails.logger, bot_id: bot_id)
+      ctx.login_with_google!(email: ENV['GOOGLE_EMAIL'], password: ENV['GOOGLE_PASSWORD'], api_key: ENV['API2CAPTCHA_KEY'])
+         .ensure_csrf_meta!
 
-      # 1) 自動ログイン
-      login_service = Lme::LoginUserService.new(
-        email:    ENV['GOOGLE_EMAIL'],
-        password: ENV['GOOGLE_PASSWORD'],
-        api_key:  ENV['API2CAPTCHA_KEY']
-      )
-      login_result = login_service.fetch_friend_history
-
-      cookie_header = login_result[:basic_cookie_header].presence || login_result[:cookie_str].to_s
-      xsrf_cookie  = login_result[:basic_xsrf].presence ||
-                    cookie_service.extract_cookie_from_pairs(login_result[:cookies], 'XSRF-TOKEN') ||
-                    cookie_service.extract_cookie(cookie_header, 'XSRF-TOKEN')
-      unless cookie_header.present? && xsrf_cookie.present?
-        Rails.logger.info('[Inflows] basic cookie/xsrf not found → ensure_basic_context! で育成')
-        cookie_header, xsrf_cookie = cookie_service.ensure_basic_context!(login_result[:cookies])
-      end
-      raise 'cookie_header missing' if cookie_header.blank?
-      raise 'xsrf_cookie missing'   if xsrf_cookie.blank?
-      xsrf_header = cookie_service.decode_xsrf(xsrf_cookie)
-
-      # 2) meta CSRF
-      csrf_meta, meta_src = cookie_service.fetch_csrf_meta_with_cookies(cookie_header, ['/basic/friendlist', '/basic/overview', '/basic', '/admin/home', '/'])
-      unless csrf_meta.present?
-        Rails.logger.warn('[csrf-meta] HTTPで取得できず → Playwright で DOM から取得フォールバック')
-        csrf_meta, cookie2, xsrf2, src2 =
-          cookie_service.playwright_fetch_meta_csrf!(login_result[:cookies], ['/basic/friendlist', '/basic/overview', '/basic'])
-        cookie_header = cookie2.presence || cookie_header
-        xsrf_header  = xsrf2.presence   || xsrf_header
-        meta_src     = src2 if src2
-      end
-      Rails.logger.debug("[csrf-meta] #{csrf_meta.present? ? 'ok' : 'miss'} at #{meta_src}")
-
-      # 3) 範囲/ボット
+      # ---- 期間 ---------------------------------------------------------------
       start_on  = (start_date.presence || default_start_on)
       end_on    = (end_date.presence   || Time.zone.today.to_s)
       start_cut = (Date.parse(start_on) rescue Date.today)
       end_cut   = (Date.parse(end_on)   rescue Date.today)
-      bot_id    = (ENV['LME_BOT_ID'].presence || '17106').to_s
       Rails.logger.info("[Inflows] range=#{start_on}..#{end_on}")
 
-      # 4) warmup
-      warmup_form = { data: { start: start_on, end: end_on }.to_json }
-      _ = http.with_loa_retry(cookie_header, xsrf_header) do
-        http.post_form(
-          path: '/ajax/init-data-history-add-friend',
-          form: warmup_form,
-          cookie: cookie_header,
-          csrf_meta: nil,
-          xsrf_cookie: xsrf_header,
-          referer: "#{ORIGIN}/basic/friendlist/friend-history"
-        )
-      end
+      # ---- ウォームアップ -----------------------------------------------------
+      Lme::InitHistoryService.new(ctx: ctx).warmup!(start_on: start_on, end_on: end_on)
 
-      # 5) 通常の友だち一覧（期間フィルタ）
+      # ---- 友だち一覧（ページング） -------------------------------------------
+      v2_rows = Lme::FriendlistService.new(ctx: ctx).fetch_between(start_on: start_on, end_on: end_on)
+
+      # filter（blocked or followed in range） + normalize
       raw_rows = []
-      page_no = 1
-      loop do
-        form = {
-          item_search: '[]', item_search_or: '[]',
-          scenario_stop_id: '', scenario_id_running: '', scenario_unfinish_id: '',
-          orderBy: 0, sort_followed_at_increase: '', sort_last_time_increase: '',
-          keyword: '', rich_menu_id: '', page: page_no,
-          followed_to: end_on, followed_from: start_on,
-          connect_db_replicate: 'false', line_user_id_deleted: '',
-          is_cross: 'false'
-        }
-        res_body = http.with_loa_retry(cookie_header, xsrf_header) do
-          http.post_form(
-            path: '/basic/friendlist/post-advance-filter-v2',
-            form: form,
-            cookie: cookie_header,
-            csrf_meta: csrf_meta,
-            xsrf_cookie: xsrf_header,
-            referer: "#{ORIGIN}/basic/friendlist"
-          )
-        end
-
-        body = JSON.parse(res_body) rescue {}
-        data = Array(body.dig('data', 'data'))
-        break if data.empty?
-
-        filtered = data.select do |row|
-          blocked  = row['is_blocked'].to_i == 1
-          followed = row['followed_at'].present? &&
-                    ((Date.parse(row['followed_at']) rescue Date.new(1900,1,1)) >= start_cut) &&
-                    ((Date.parse(row['followed_at']) rescue Date.new(2999,1,1)) <= end_cut)
-          blocked || followed
-        end
-        filtered.each { |row| normalize_row!(row) }
-        raw_rows.concat(filtered)
-
-        cur  = body.dig('data', 'current_page').to_i
-        last = body.dig('data', 'last_page').to_i
-        Rails.logger.debug("[v2] page=#{cur}/#{last} fetched=#{data.size} kept=#{filtered.size}")
-        break if last.zero? || cur >= last
-        page_no += 1
-        sleep 0.15
+      v2_rows.each do |row|
+        blocked  = row['is_blocked'].to_i == 1
+        followed = row['followed_at'].present? &&
+                   ((Date.parse(row['followed_at']) rescue Date.new(1900,1,1)) >= start_cut) &&
+                   ((Date.parse(row['followed_at']) rescue Date.new(2999,1,1)) <= end_cut)
+        next unless (blocked || followed)
+        normalize_row!(row)
+        raw_rows << row
       end
 
-      # 5.5) ブロック専用API補完
-      blocked_rows = fetch_block_list(cookie_header, xsrf_header, csrf_meta, start_on, end_on, http: http)
+      # ---- ブロック専用API ----------------------------------------------------
+      blocked_rows = Lme::BlockListService.new(ctx: ctx).fetch(start_on: start_on, end_on: end_on)
       Rails.logger.info("[blocked-api] fetched=#{blocked_rows.size}")
       raw_rows = merge_block_info!(raw_rows, blocked_rows)
 
-      # 6) UID単位でマージ（followed_at優先/blocked_atは最新）
+      # ---- UIDマージ ----------------------------------------------------------
       merged_by_uid = {}
       Array(raw_rows).each do |r|
         uid = extract_line_user_id_from_link(r['link_my_page']).to_i
@@ -195,46 +118,29 @@ module Lme
       rows = merged_by_uid.values
       Rails.logger.info("[v2] merged rows=#{rows.size}")
 
-      # 7) chat-v3 を一度踏んで Cookie/Meta 安定化
+      # ---- chat-v3 を踏んで安定化（任意） --------------------------------------
       if rows.present?
         sample_uid = extract_line_user_id_from_link(rows.first['link_my_page'])
-        chat_cookie_header, chat_xsrf = cookie_service.playwright_bake_chat_cookies!(login_result[:cookies], sample_uid, bot_id)
-        cookie_header = chat_cookie_header.presence || cookie_header
-        xsrf_header  = chat_xsrf.presence          || xsrf_header
-        meta2, cookie2, xsrf2, _src2 = cookie_service.playwright_fetch_meta_csrf!(login_result[:cookies], "/basic/chat-v3?friend_id=#{sample_uid}")
-        csrf_meta     = meta2.presence  || csrf_meta
-        cookie_header = cookie2.presence || cookie_header
-        xsrf_header   = xsrf2.presence   || xsrf_header
+        ctx.bake_chat_context_for!(sample_uid)
       end
 
-      # 8) タグ取得 + （ブロック者のみ）my_page API で time_follow / qr_code
+      # ---- タグ/セミナー & my_page 補完 ---------------------------------------
+      tags_svc   = Lme::ChatTagsService.new(ctx: ctx)
+      mypage_svc = Lme::MyPageService.new(ctx: ctx)
+
       seminar_dates_set = Set.new
       rows.each_with_index do |r, i|
         uid = extract_line_user_id_from_link(r['link_my_page'])
-        begin
-          form = { line_user_id: uid, is_all_tag: 0, botIdCurrent: bot_id }
-          res_body = http.with_oa_retry(cookie_header, xsrf_header) {} # (ダミー防止用ではなく、後述の本番呼び出しで使用)
-        rescue NoMethodError
-          # 上の1行は不要だったので削除（誤追加防止）。実処理のみ実行：
-        end
 
-        res_body = http.with_loa_retry(cookie_header, xsrf_header) do
-          http.post_form(
-            path: '/basic/chat/get-categories-tags',
-            form: form,
-            cookie: cookie_header,
-            csrf_meta: csrf_meta,
-            xsrf_cookie: xsrf_header,
-            referer: "#{ORIGIN}/basic/chat-v3?friend_id=#{uid}"
-          )
-        end
+        # tags
+        res_body = tags_svc.fetch_for(line_user_id: uid)
         proaka_flags, seminar_map = extract_proaka_and_seminar_from_payload(res_body)
         r['tags_flags']  = proaka_flags
         r['seminar_map'] = seminar_map || {}
         r['seminar_map'].keys.each { |ymd| seminar_dates_set << ymd }
 
-        # my_page API
-        info = fetch_user_basic_info(cookie_header, xsrf_header, uid, http: http)
+        # my_page
+        info = fetch_user_basic_info_via_service(mypage_svc, uid)
         r['qr_code'] = info[:qr_code] if info[:qr_code].present?
         if r['followed_at'].blank? && info[:time_follow].present?
           r['followed_at'] = info[:time_follow]
@@ -245,7 +151,7 @@ module Lme
       end
       Rails.logger.info("[tags] seminar dates unique=#{seminar_dates_set.size}")
 
-      # 9) GSheets 反映（元のまま）
+      # ---- GSheets 反映 -------------------------------------------------------
       spreadsheet_id = ENV.fetch('ONCLASS_SPREADSHEET_ID')
       sheet_name     = ENV.fetch('LME_SHEET_NAME', 'Line流入者')
       anchor_name    = ENV.fetch('ONCLASS_SHEET_NAME', 'フロントコース受講生')
@@ -262,8 +168,12 @@ module Lme
       )
 
       Rails.logger.info("[LmeLineInflowsWorker] wrote #{rows.size} rows to #{sheet_name}")
-      { count: rows.size, sheet: sheet_name, range: [start_on, end_on] }
+      result = { count: rows.size, sheet: sheet_name, range: [start_on, end_on] }
 
+      # 集計ワーカー実行（従来どおり）
+      Lme::LineCountsWorker.new.perform
+
+      result
     rescue Faraday::Error => e
       Rails.logger.error("[LmeLineInflowsWorker] HTTP error: #{e.class} #{e.message}")
       raise
@@ -272,77 +182,20 @@ module Lme
       raise
     end
 
-    # =========================================================
-    # ブロック専用 API 取得（http を引数でもらう以外はそのまま）
-    # =========================================================
-    def extract_categories_list(json)
-      return [] unless json.is_a?(Hash)
-      cand = json['data'] || json['result'] || json
-      cand = cand['data'] if cand.is_a?(Hash) && cand.key?('data') && cand['data'].is_a?(Array)
-      cand = cand['categories'] if cand.is_a?(Hash) && cand.key?('categories')
-      cand.is_a?(Array) ? cand : []
-    end
-
-    def fetch_block_list(cookie_header, xsrf_header, csrf_meta, start_on, end_on, http:)
-      all = []
-      page_no = 1
-      start_jp = Date.parse(start_on).strftime('%Y/%-m/%-d') rescue start_on.to_s
-      end_jp   = Date.parse(end_on).strftime('%Y/%-m/%-d')   rescue end_on.to_s
-
-      loop do
-        form = { page: page_no, start_date: start_jp, end_date: end_jp }
-        res_body = http.with_loa_retry(cookie_header, xsrf_header) do
-          http.post_form(
-            path: '/basic/friendlist/get-friend-user-block',
-            form: form,
-            cookie: cookie_header,
-            csrf_meta: csrf_meta,
-            xsrf_cookie: xsrf_header,
-            referer: "#{ORIGIN}/basic/friendlist/user-block"
-          )
-        end
-
-        payload = JSON.parse(res_body) rescue {}
-        container   = payload['data'] || payload['result'] || payload
-        list_source = if container.is_a?(Hash)
-                        container['data'] || container['list'] || container['items'] || container['rows'] || []
-                      else
-                        container
-                      end
-        data = Array(list_source)
-        break if data.empty?
-
-        data.each do |row|
-          next unless row.is_a?(Hash)
-          r = row.dup
-          r['is_blocked'] = 1
-
-          uid = (r['line_user_id'] || r['user_id']).to_i
-          if uid <= 0
-            uid = extract_line_user_id_from_link(r['link_my_page']).to_i rescue 0
-          end
-          r['link_my_page'] ||= "#{ORIGIN}/basic/friendlist/my_page/#{uid}" if uid.positive?
-
-          r['blocked_at'] ||= (r['blocked_at'] || r['block_at'] || r['updated_at'] || r['created_at'])
-          normalize_row!(r)
-          all << r
-        end
-
-        cur  = container.is_a?(Hash) ? container['current_page'].to_i : 0
-        last = container.is_a?(Hash) ? container['last_page'].to_i    : 0
-        page_no += 1
-        break if last.nonzero? && cur >= last
-        sleep 0.15
-      end
-
-      all
+    # === MyPage（サービス経由） -------------------------------------------------
+    def fetch_user_basic_info_via_service(mypage_svc, uid)
+      json = mypage_svc.fetch_common(line_user_id: uid)
+      {
+        qr_code:     find_value_by_key(json, 'qr_code'),
+        time_follow: find_value_by_key(json, 'time_follow')
+      }.with_indifferent_access
     rescue => e
-      Rails.logger.debug("[blocked-api] #{e.class}: #{e.message}")
-      []
+      Rails.logger.debug("[basic_info] uid=#{uid} #{e.class}: #{e.message}")
+      {}.with_indifferent_access
     end
 
     # =========================================================
-    # データ整形 / タグ判定 / セミナー & QR（HTTP依存箇所だけ差し替え）
+    # データ整形 / タグ判定 / セミナー
     # =========================================================
     def to_sheet_rows(v2_rows)
       v2_rows.map do |rec|
@@ -418,18 +271,6 @@ module Lme
       result
     end
 
-    def fetch_user_basic_info(cookie_header, _xsrf_header, uid, http:)
-      path = "/ajax/get_data_my_page?page=1&type=common&user_id=#{uid}"
-      json = http.get_json(path: path, cookie: cookie_header, referer: "#{ORIGIN}/basic/friendlist/my_page/#{uid}")
-      {
-        qr_code:     find_value_by_key(json, 'qr_code'),
-        time_follow: find_value_by_key(json, 'time_follow')
-      }.with_indifferent_access
-    rescue => e
-      Rails.logger.debug("[basic_info] uid=#{uid} #{e.class}: #{e.message}")
-      {}.with_indifferent_access
-    end
-
     def find_value_by_key(obj, key)
       return nil if obj.nil?
       return obj[key] if obj.is_a?(Hash) && obj.key?(key)
@@ -448,7 +289,7 @@ module Lme
     end
 
     # =========================================================
-    # Google Sheets（元のまま）
+    # Google Sheets
     # =========================================================
     def build_sheets_service
       keyfile = ENV['GOOGLE_APPLICATION_CREDENTIALS']
@@ -637,7 +478,7 @@ module Lme
       end
     end
 
-    # ==== Helpers: 集計（元のまま） ============================================
+    # ==== Helpers: 集計 ========================================================
     def calc_rates(rows, tags_cache, month:, since:)
       month_rows = Array(rows).select { |r| month_key(r['date']) == month }
       cum_rows   = Array(rows).select { |r| r['date'].to_s >= since.to_s }
@@ -693,7 +534,7 @@ module Lme
     end
 
     # =========================================================
-    # 小物ユーティリティ（元のまま）
+    # 小物ユーティリティ
     # =========================================================
     def normalize_row!(row)
       row['landing_name'] ||= begin
@@ -812,7 +653,7 @@ module Lme
           newr = {
             'link_my_page' => "#{ORIGIN}/basic/friendlist/my_page/#{uid}",
             'name'         => names_map[uid].to_s,
-            'followed_at'  => nil,   # ← 後でブロック者に対して time_follow を入れる
+            'followed_at'  => nil,
             'landing_name' => '',
             'is_blocked'   => 1,
             'blocked_at'   => b
@@ -823,22 +664,6 @@ module Lme
       end
 
       raw_rows
-    end
-
-    # ==== 空欄同等判定 & 流入元の最終決定（landing_name優先） ====================
-    def blankish?(v)
-      s = v.to_s.strip
-      s.empty? || %w[- ー — null NULL Null 未設定].include?(s)
-    end
-
-    def pick_landing_value(row)
-      ln = row['landing_name']
-      return ln unless blankish?(ln)
-
-      # qr_code は（ブロック者で取得できた場合のみ）フォールバックに使う
-      qr = row['qr_code']
-      return nil if blankish?(qr)
-      qr
     end
 
     private
