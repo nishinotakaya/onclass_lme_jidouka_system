@@ -96,12 +96,12 @@ class LmeLineCountsWorker
       '動画4'             => index_for(header_map, ['プロアカ_動画④', 'プロアカ_動画4', '動画④', '動画4'])
     }
 
-    # --- 3) 対象年の行だけ抽出 -----------------------------------------------
+    # --- 3) 5月以降のデータのみ抽出 -----------------------------------------------
     rows_target_year = []
     values.each do |row|
       fa = safe_at(row, idx_follow)
       t  = parse_followed_at(fa)
-      next unless t && t.year == target_year
+      next unless t && t.year == target_year && t.month >= 5
       rows_target_year << row
     end
 
@@ -188,6 +188,59 @@ class LmeLineCountsWorker
     write_tag_monthlies!(service, spreadsheet_id, dashboard_sheet_name, tag_monthlies)
     write_video4_counts!(service, spreadsheet_id, dashboard_sheet_name, video4_counts)
     write_referrer_counts!(service, spreadsheet_id, dashboard_sheet_name, referrer_counts)
+    # --- 10) 関数の設定 ----------------------------------------------------
+    write_functions!(service, spreadsheet_id, dashboard_sheet_name)
+  end
+
+  # ==== 関数の書き込み =======================================================
+  def write_functions!(service, spreadsheet_id, dashboard_sheet_name)
+    # G列6行目
+    service.update_spreadsheet_value(
+      spreadsheet_id,
+      a1(dashboard_sheet_name, 'G6'),
+      Google::Apis::SheetsV4::ValueRange.new(values: [['=G5/D5']]),
+      value_input_option: 'USER_ENTERED'
+    )
+
+    # I列6行目
+    service.update_spreadsheet_value(
+      spreadsheet_id,
+      a1(dashboard_sheet_name, 'I6'),
+      Google::Apis::SheetsV4::ValueRange.new(values: [['=I5/D5']]),
+      value_input_option: 'USER_ENTERED'
+    )
+
+    # K列6行目
+    service.update_spreadsheet_value(
+      spreadsheet_id,
+      a1(dashboard_sheet_name, 'K6'),
+      Google::Apis::SheetsV4::ValueRange.new(values: [['=K5/I5']]),
+      value_input_option: 'USER_ENTERED'
+    )
+
+    # M列6行目
+    service.update_spreadsheet_value(
+      spreadsheet_id,
+      a1(dashboard_sheet_name, 'M6'),
+      Google::Apis::SheetsV4::ValueRange.new(values: [['=M5/K5']]),
+      value_input_option: 'USER_ENTERED'
+    )
+
+    # O列6行目
+    service.update_spreadsheet_value(
+      spreadsheet_id,
+      a1(dashboard_sheet_name, 'O6'),
+      Google::Apis::SheetsV4::ValueRange.new(values: [['=O5/M5']]),
+      value_input_option: 'USER_ENTERED'
+    )
+
+    # Q列6行目
+    service.update_spreadsheet_value(
+      spreadsheet_id,
+      a1(dashboard_sheet_name, 'Q6'),
+      Google::Apis::SheetsV4::ValueRange.new(values: [['=Q5/D5']]),
+      value_input_option: 'USER_ENTERED'
+    )
   end
 
   # ==== Sheets 認証 ==========================================================
@@ -213,7 +266,7 @@ class LmeLineCountsWorker
     service
   end
 
-  # ==== シート探索 / 存在保証 ================================================
+   # ==== シート探索 / 存在保証 ================================================
   def resolve_source_sheet_title(service, spreadsheet_id)
     prefer = 'Line流入者'
     ss = service.get_spreadsheet(spreadsheet_id)
