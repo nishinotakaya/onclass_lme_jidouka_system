@@ -54,7 +54,7 @@ module Lme
       )
 
       # 1) 自動ログイン
-      login_service = LmeLoginUserService.new(
+      login_service = Lme::LoginUserService.new(
         email:    ENV['GOOGLE_EMAIL'],
         password: ENV['GOOGLE_PASSWORD'],
         api_key:  ENV['API2CAPTCHA_KEY']

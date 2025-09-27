@@ -102,6 +102,6 @@ class OnclassPdcaStudentsWorker
       #{text}
     MSG
 
-    LineNotifier.push(body)
+    Lme::LineNotifier.push(body)
   end
 end

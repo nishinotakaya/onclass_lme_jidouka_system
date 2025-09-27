@@ -86,6 +86,6 @@ class OnclassMentionsWorker
       #{text}
     MSG
 
-    LineNotifier.push(body)
+    Lme::LineNotifier.push(body)
   end
 end
