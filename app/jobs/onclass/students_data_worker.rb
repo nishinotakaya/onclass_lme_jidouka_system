@@ -152,23 +152,30 @@ module Onclass
       combined_rows.sort_by! { |r| (Date.parse(r['course_join_date'].to_s) rescue Date.new(1900,1,1)) }
       combined_rows.reverse!
 
-      # 7) ローカル書き出し
       timestamp = Time.zone.now.strftime('%Y%m%d_%H%M%S')
       dir       = Rails.root.join('tmp')
       FileUtils.mkdir_p(dir)
       course_tag = course_id
 
-      status_files = {}
+      status_files   = {}
+      created_paths  = []  # ← 追加: 作成ファイルをトラック
+
       grouped_rows.each do |motivation, rows|
         fname = dir.join("onclass_#{course_tag}_#{timestamp}_#{motivation}.csv")
         write_csv(fname, rows)
         status_files[motivation] = fname.to_s
+        created_paths << fname.to_s            # ← 追記
       end
 
-      combined_csv_path  = dir.join("onclass_#{course_tag}_#{timestamp}_combined.csv")
+      combined_csv_path   = dir.join("onclass_#{course_tag}_#{timestamp}_combined.csv")
       write_csv(combined_csv_path, combined_rows)
-      combined_xlsx_path = maybe_write_xlsx(dir, course_tag, timestamp, combined_rows)
+      created_paths << combined_csv_path.to_s   # ← 追記
+
+      combined_xlsx_path  = maybe_write_xlsx(dir, course_tag, timestamp, combined_rows)
+      created_paths << combined_xlsx_path if combined_xlsx_path.present?  # ← 追記
+
       export_api_csv_path = export_official_csv(conn, base_headers, combined_rows, dir, course_tag, timestamp)
+      created_paths << export_api_csv_path if export_api_csv_path.present? # ← 追記
 
       result = {
         combined_csv: combined_csv_path.to_s,
@@ -177,7 +184,6 @@ module Onclass
         official_export_csv: export_api_csv_path
       }
 
-      # 8) スプレッドシート
       upload_to_gsheets!(
         rows: combined_rows,
         spreadsheet_id: ENV.fetch('ONCLASS_SPREADSHEET_ID'),
@@ -186,8 +192,15 @@ module Onclass
         kato_maps:      kato_maps
       )
 
+      # ★ここで削除（デフォルトON。無効化は ONCLASS_CLEAN_TMP=0）
+      if ENV.fetch('ONCLASS_CLEAN_TMP', '1') == '1'
+        cleanup_tmp_files!(created_paths)
+        Rails.logger.info("[Onclass::StudentsDataWorker] cleaned up #{created_paths.compact.size} tmp files.")
+      end
+
       Rails.logger.info("[Onclass::StudentsDataWorker] done: #{result.inspect}")
       result
+
     rescue Faraday::Error => e
       Rails.logger.error("[Onclass::StudentsDataWorker] HTTP error: #{e.class} #{e.message}")
       raise
@@ -828,6 +841,19 @@ module Onclass
       by_name  = name_map[normalize_name(row['name'])] || {}
       merge_channel_counts(by_id, by_name)
     end
+
+    # tmpのファイル削除
+    def safe_unlink(path)
+      return unless path.present?
+      File.delete(path) if File.file?(path)
+    rescue => e
+      Rails.logger.warn("[Onclass::StudentsDataWorker] tmp cleanup failed for #{path}: #{e.class} #{e.message}")
+    end
+
+    def cleanup_tmp_files!(paths)
+      Array(paths).compact.each { |p| safe_unlink(p) }
+    end
+
   end
 end
 
