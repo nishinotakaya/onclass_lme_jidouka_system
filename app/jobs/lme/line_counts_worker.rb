@@ -109,10 +109,10 @@ module Lme
         write_tag_monthlies!(service, spreadsheet_id, dashboard_sheet_name, default_tag_monthlies, year_offset)
         write_video4_counts!(service, spreadsheet_id, dashboard_sheet_name, Array.new(12, 0), year_offset)
         write_referrer_counts!(service, spreadsheet_id, dashboard_sheet_name, Hash.new { |h,k| h[k]=Array.new(12,0) }, year_offset)
-        write_ref_total_row_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset) # ← D25〜36 合計式
+        write_ref_total_row_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
         write_monthly_percentage_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
         write_referrer_rate_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
-        write_qsu_row5_zero!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
+        write_row6_summary_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
         write_labels!(service, spreadsheet_id, dashboard_sheet_name)
         return
       end
@@ -130,10 +130,10 @@ module Lme
         write_tag_monthlies!(service, spreadsheet_id, dashboard_sheet_name, default_tag_monthlies, year_offset)
         write_video4_counts!(service, spreadsheet_id, dashboard_sheet_name, Array.new(12, 0), year_offset)
         write_referrer_counts!(service, spreadsheet_id, dashboard_sheet_name, Hash.new { |h,k| h[k]=Array.new(12,0) }, year_offset)
-        write_ref_total_row_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset) # ← 追加
+        write_ref_total_row_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
         write_monthly_percentage_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
         write_referrer_rate_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
-        write_qsu_row5_zero!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
+        write_row6_summary_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
         write_labels!(service, spreadsheet_id, dashboard_sheet_name)
         return
       end
@@ -260,10 +260,8 @@ module Lme
       write_monthly_percentage_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
       write_referrer_rate_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
 
-      # Q/S/U の 5行目は 0
-      write_qsu_row5_zero!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
-
-      # ※ E10〜E21 には何も入れません（本コードでは一切書き込んでいません）
+      # 6行目（サマリ率）を一括で設定
+      write_row6_summary_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
     end
 
     # ==== ラベル書き込み（4行目） ===============================================
@@ -284,7 +282,7 @@ module Lme
     end
 
     # ==== 総数・月別・タグ総数/率 ===============================================
-    def write_dashboard!(service, spreadsheet_id, sheet, year_offset, total_friends, monthly, tag_totals, tag_rates)
+    def write_dashboard!(service, spreadsheet_id, sheet, year_offset, total_friends, monthly, _tag_totals, _tag_rates)
       total_row = TOTAL_ROW + year_offset
       month_from = MONTH_START + year_offset
       month_to   = MONTH_END + year_offset
@@ -304,8 +302,6 @@ module Lme
         Google::Apis::SheetsV4::ValueRange.new(values: (0..11).map { |i| [monthly[i].to_i] }),
         value_input_option: 'USER_ENTERED'
       )
-
-      # （5・6行目の総数/率は本要件では扱わないためここでは未更新）
     end
 
     # ==== タグ別 月別件数 書き込み（F/H/J/L/N の 10〜21 行） ====================
@@ -417,6 +413,45 @@ module Lme
       )
     end
 
+    # ==== 6行目サマリ率（共通メソッド）=========================================
+    # 例:
+    #   K6 = K5/I5
+    #   M6 = M5/K5
+    #   O6 = O5/M5
+    #   Q6 = IFERROR(Q5/O5,0)
+    #
+    # ※将来追加する場合は SPECS に 1 行追加するだけ
+    def write_row6_summary_formulas!(service, spreadsheet_id, sheet, year_offset)
+      row5 = TOTAL_ROW + year_offset
+      row6 = row5 + 1
+
+      specs = [
+        { dest: 'K', num: 'K', den: 'I', iferror: false },
+        { dest: 'M', num: 'M', den: 'K', iferror: false },
+        { dest: 'O', num: 'O', den: 'M', iferror: false },
+        { dest: 'Q', num: 'Q', den: 'O', iferror: true  }
+        # 例: 追加したい場合 → { dest: 'S', num: 'S', den: 'Q', iferror: true }
+      ]
+
+      updates = specs.map do |sp|
+        formula = sp[:iferror] ? "=IFERROR(#{sp[:num]}#{row5}/#{sp[:den]}#{row5},0)" :
+                                 "=#{sp[:num]}#{row5}/#{sp[:den]}#{row5}"
+        Google::Apis::SheetsV4::ValueRange.new(
+          range: a1(sheet, "#{sp[:dest]}#{row6}"),
+          values: [[formula]]
+        )
+      end
+
+      return if updates.empty?
+      service.batch_update_values(
+        spreadsheet_id,
+        Google::Apis::SheetsV4::BatchUpdateValuesRequest.new(
+          value_input_option: 'USER_ENTERED',
+          data: updates
+        )
+      )
+    end
+
     # ==== 流入経路の率（25〜36行）: F/H/J/L/N/P/R に IFERROR(左隣 / $D, 0) =======
     def write_referrer_rate_formulas!(service, spreadsheet_id, sheet, year_offset)
       row_from = REF_ROW_START + year_offset
@@ -434,24 +469,6 @@ module Lme
       end
 
       return if updates.empty?
-      service.batch_update_values(
-        spreadsheet_id,
-        Google::Apis::SheetsV4::BatchUpdateValuesRequest.new(
-          value_input_option: 'USER_ENTERED',
-          data: updates
-        )
-      )
-    end
-
-    # ==== Q/S/U の 5行目は 0 に固定 ============================================
-    def write_qsu_row5_zero!(service, spreadsheet_id, sheet, year_offset)
-      row = TOTAL_ROW + year_offset
-      updates = %w[Q S U].map do |col|
-        Google::Apis::SheetsV4::ValueRange.new(
-          range: a1(sheet, "#{col}#{row}"),
-          values: [[0]]
-        )
-      end
       service.batch_update_values(
         spreadsheet_id,
         Google::Apis::SheetsV4::BatchUpdateValuesRequest.new(
