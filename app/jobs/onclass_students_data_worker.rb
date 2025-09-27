@@ -65,10 +65,24 @@ class OnclassStudentsDataWorker
       rescue Faraday::Error => e
         if motivation == 'normal'
           body = (e.respond_to?(:response) ? e.response&.dig(:body) : nil)
-          Rails.logger.warn("[OnclassStudentsDataWorker] motivation=normal failed (#{e.class} #{e.message}) body=#{body.inspect}. fallback to client-side filtering")
+          Rails.logger.warn("[OnclassStudentsDataWorker] motivation=normal failed (#{e.class} #{e.message}) body=#{body.inspect}. fallback to client-side diff grouping")
+
+          # 全件を取得
           all = fetch_users_all_pages(conn, base_headers, course_id)
-          rows = all.select { |r| normalize_motivation(r['motivation']) == 'normal' }
-          rows.each { |r| r['status'] = jp_label } # “停滞気味” に統一
+
+          # すでに取得済み4区分のID集合を作成
+          obtained_ids = grouped_rows.values.flatten.map { |r| r['id'] }.compact.to_set
+
+          # 既取得4区分を除いた残りを normal とみなす
+          rows = all.reject { |r| obtained_ids.include?(r['id']) }
+
+          # ラベルとmotivationを正規化して付与
+          rows.each do |r|
+            r['status']     = jp_label        # "停滞気味"
+            r['motivation'] = 'normal'
+          end
+
+          Rails.logger.info("[OnclassStudentsDataWorker] fallback(normal): all=#{all.size} obtained=#{obtained_ids.size} normal=#{rows.size}")
         else
           raise
         end
@@ -411,16 +425,17 @@ class OnclassStudentsDataWorker
   def upload_to_gsheets!(rows:, spreadsheet_id:, sheet_name:, nishino_maps:, kato_maps:)
     service = build_sheets_service
     ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
-
     clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
-    # 本体は O 列まで（最後は「加藤メンション」）、右マトリクスは P 列以降
-    service.clear_values(spreadsheet_id, "#{sheet_name}!B2:O2", clear_req)
-    service.clear_values(spreadsheet_id, "#{sheet_name}!B3:O",  clear_req)
-    service.clear_values(spreadsheet_id, "#{sheet_name}!P2:ZZ", clear_req)
+    # 本体は P 列まで（N列は「PDCA更新日時」で不触）、右マトリクスは Q 列以降
+    service.clear_values(spreadsheet_id, "#{sheet_name}!B2:P2", clear_req)      # メタ行
+    service.clear_values(spreadsheet_id, "#{sheet_name}!B3:P3", clear_req)      # 見出し行のみクリア
+    service.clear_values(spreadsheet_id, "#{sheet_name}!B4:M", clear_req)       # 左ブロック（Nは触らない）
+    service.clear_values(spreadsheet_id, "#{sheet_name}!O4:P", clear_req)       # 右ブロック（メンション2列）
+    service.clear_values(spreadsheet_id, "#{sheet_name}!Q2:ZZ", clear_req)      # 右側マトリクス
 
     # B2（メタ）
-    meta_row   = ['バッチ実行タイミング', jp_timestamp] + Array.new(12, '')
-    meta_range = "#{sheet_name}!B2:O2"
+    meta_row   = ['バッチ実行タイミング', jp_timestamp] + Array.new(13, '')
+    meta_range = "#{sheet_name}!B2:P2"
     service.update_spreadsheet_value(
       spreadsheet_id,
       meta_range,
@@ -428,13 +443,13 @@ class OnclassStudentsDataWorker
       value_input_option: 'USER_ENTERED'
     )
 
-    # 見出し（B3:O3）
+    # 見出し（B3:P3）
     headers = %w[
       名前 Line メールアドレス ステータス ステータス_B
       現在進行カテゴリ/完了予定日 現在進行ブロック 受講日 受講期限日 ログイン率 最新ログイン日 PDCA
-      西野メンション 加藤メンション
+      PDCA更新日時 西野メンション 加藤メンション
     ]
-    header_range = "#{sheet_name}!B3:O3"
+    header_range = "#{sheet_name}!B3:P3"
     service.update_spreadsheet_value(
       spreadsheet_id,
       header_range,
@@ -442,7 +457,7 @@ class OnclassStudentsDataWorker
       value_input_option: 'USER_ENTERED'
     )
 
-    # 見出し除外 + 受講期限日がある人は除外
+    # データ本体（B4〜）
     sanitized_rows = rows.reject do |r|
       id    = r['id'].to_s.strip
       name  = r['name'].to_s.strip
@@ -450,7 +465,8 @@ class OnclassStudentsDataWorker
       id.casecmp('id').zero? || name == '名前' || email == 'メールアドレス'
     end
 
-    data_values = sanitized_rows.map do |r|
+    # 左ブロック（B〜M）：PDCAまでを書き込む（Nは空欄専用につきスキップ）
+    left_block_values = sanitized_rows.map do |r|
       g_val_name     = r['current_category'].to_s
       g_val_date     = to_jp_ymd(r['current_category_scheduled_at'])
       g_val_combined = g_val_name
@@ -468,26 +484,41 @@ class OnclassStudentsDataWorker
         to_jp_ymd(r['extension_study_date']) || '',
         (r['course_login_rate'].nil? ? '' : r['course_login_rate'].to_s),
         to_jp_ymdhm(r['latest_login_at'])    || '',
-        hyperlink_pdca(r['pdca_url'], r['name']),
+        hyperlink_pdca(r['pdca_url'], r['name'])
+      ]
+    end
+
+    if left_block_values.any?
+      service.update_spreadsheet_value(
+        spreadsheet_id,
+        "#{sheet_name}!B4",
+        Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!B4", values: left_block_values),
+        value_input_option: 'USER_ENTERED'
+      )
+    end
+
+    # 右ブロック（O〜P）：メンション2列のみを書き込む（Nは書かない）
+    right_block_values = sanitized_rows.map do |r|
+      [
         mention_cell(channel_counts_for(nishino_maps, r)),
         mention_cell(channel_counts_for(kato_maps, r))
       ]
     end
 
-    if data_values.any?
+    if right_block_values.any?
       service.update_spreadsheet_value(
         spreadsheet_id,
-        "#{sheet_name}!B4",
-        Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!B4", values: data_values),
+        "#{sheet_name}!O4",
+        Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!O4", values: right_block_values),
         value_input_option: 'USER_ENTERED'
       )
     end
 
-    # 「カリキュラム完了予定日」マトリクス（P列〜）
+    # 「カリキュラム完了予定日」マトリクス（Q列〜）
     service.update_spreadsheet_value(
       spreadsheet_id,
-      "#{sheet_name}!P2",
-      Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!P2", values: [['カリキュラム完了予定日']]),
+      "#{sheet_name}!Q2",
+      Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!Q2", values: [['カリキュラム完了予定日']]),
       value_input_option: 'USER_ENTERED'
     )
 
@@ -504,8 +535,8 @@ class OnclassStudentsDataWorker
     if category_order.any?
       service.update_spreadsheet_value(
         spreadsheet_id,
-        "#{sheet_name}!P3",
-        Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!P3", values: [category_order]),
+        "#{sheet_name}!Q3",
+        Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!Q3", values: [category_order]),
         value_input_option: 'USER_ENTERED'
       )
 
@@ -517,18 +548,16 @@ class OnclassStudentsDataWorker
       if schedule_matrix.any?
         service.update_spreadsheet_value(
           spreadsheet_id,
-          "#{sheet_name}!P4",
-          Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!P4", values: schedule_matrix),
+          "#{sheet_name}!Q4",
+          Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!Q4", values: schedule_matrix),
           value_input_option: 'USER_ENTERED'
         )
       end
     end
 
-    # 条件付き書式は必要時に一度だけ呼ぶ
-    # apply_mention_highlight_rule!(service, spreadsheet_id, sheet_name)
-
-    Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{sanitized_rows.size} rows with extension date, mentions and schedules (O列まで + P列〜).")
+    Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{sanitized_rows.size} rows with extension date, mentions and schedules (P列まで + Q列〜).")
   end
+
 
   # ---------- 表示ヘルパ ----------
   def jp_timestamp
@@ -770,14 +799,14 @@ class OnclassStudentsDataWorker
 
     grid_range = Google::Apis::SheetsV4::GridRange.new(
       sheet_id: sid,
-      start_row_index: 3,
-      start_column_index: 1,
-      end_column_index: 15
+      start_row_index: 3,   # 4行目〜
+      start_column_index: 1, # B列（0始まり）
+      end_column_index: 16   # P列の次（exclusive）→ B..P を対象
     )
 
     cond = Google::Apis::SheetsV4::BooleanCondition.new(
       type: 'CUSTOM_FORMULA',
-      values: [Google::Apis::SheetsV4::ConditionValue.new(user_entered_value: '=COUNTA($N4:$O4)>0')]
+      values: [Google::Apis::SheetsV4::ConditionValue.new(user_entered_value: '=COUNTA($O4:$P4)>0')]
     )
 
     format = Google::Apis::SheetsV4::CellFormat.new(
@@ -795,6 +824,7 @@ class OnclassStudentsDataWorker
     )
     service.batch_update_spreadsheet(spreadsheet_id, batch)
   end
+
 
   # ---------- メンション集計 ----------
   def merge_channel_counts(a, b)
