@@ -12,8 +12,8 @@ class LmeLoginUserService
   LOG_PREFIX    = "[LmeLoginUserService]".freeze
   DUMP_ON_ERROR = ENV["LME_LOGIN_DUMP"] == "1"
 
-  BASIC_TARGET_PATH = "/basic/overview".freeze   # 目標
-  BASIC_FALLBACK    = "/basic/friendlist".freeze # 入口として安定
+  BASIC_TARGET_PATH = "/basic/overview".freeze
+  BASIC_FALLBACK    = "/basic/friendlist".freeze
   RECAPTCHA_MAX_SOLVES = (ENV["RECAPTCHA_MAX_SOLVES"] || "1").to_i
 
   NAV_CLICK_JS = <<~JS
