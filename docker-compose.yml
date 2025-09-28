@@ -97,6 +97,7 @@ services:
   sidekiq:
     build:
       context: .
+      dockerfile: Dockerfile
     user: "0:0"
     command: bash -c "bundle exec sidekiq"
     init: true
