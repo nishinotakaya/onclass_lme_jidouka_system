@@ -4,6 +4,6 @@
   "engines": { "node": "18.x" },
   "dependencies": { "playwright": "1.55.0" },
   "scripts": {
-    "heroku-postbuild": "PLAYWRIGHT_BROWSERS_PATH=/app/.cache/ms-playwright npx playwright install chromium chromium-headless-shell"
+    "heroku-postbuild": "npx playwright install chromium"
   }
 }
