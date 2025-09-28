@@ -1,6 +1,6 @@
 source "https://rubygems.org"
 
-ruby "3.0.3"
+ruby "3.2.3"
 
 gem 'google-apis-sheets_v4'
 gem 'googleauth'
