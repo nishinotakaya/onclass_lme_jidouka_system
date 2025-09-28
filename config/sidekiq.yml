@@ -1,9 +1,9 @@
 # config/sidekiq.yml
 :concurrency: 10
 :queues:
-  - [onclass_comunity_Mentions, 10]
-  - [onclass_comunity_pdca_students, 8]
-  - [onclass_students_data, 5]
-  - [lme_line_inflows, 3]
-  - [lme_line_counts, 2]
+  - [onclass_comunity_Mentions, 1]
+  - [onclass_comunity_pdca_students, 1]
+  - [onclass_students_data, 1]
+  - [lme_line_inflows, 1]
+  - [lme_line_counts, 1]
   - [default, 1]
