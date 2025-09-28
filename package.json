@@ -1,9 +1,31 @@
 {
   "name": "onclass-lme-jidouka-app",
   "private": true,
-  "engines": { "node": "18.x" },
-  "dependencies": { "playwright": "1.55.0" },
+  "engines": {
+    "node": "18.x"
+  },
+  "dependencies": {
+    "playwright": "^1.55.0"
+  },
   "scripts": {
     "heroku-postbuild": "npx playwright install chromium"
-  }
+  },
+  "version": "1.0.0",
+  "description": "1.クローンコマンド",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib",
+    "test": "test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nishinotakaya/onclass_lme_jidouka_system.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/nishinotakaya/onclass_lme_jidouka_system/issues"
+  },
+  "homepage": "https://github.com/nishinotakaya/onclass_lme_jidouka_system#readme"
 }
