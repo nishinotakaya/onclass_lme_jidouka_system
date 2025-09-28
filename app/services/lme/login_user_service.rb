@@ -140,7 +140,6 @@ module Lme
       final_cookies       = nil
       raw_cookie_header   = nil
 
-      # CLI 解決（Heroku でもローカルでも動作）
       cli =
         if File.exist?("/app/node_modules/.bin/playwright")
           "/app/node_modules/.bin/playwright"
@@ -148,43 +147,31 @@ module Lme
           ENV["PLAYWRIGHT_CLI"].to_s.strip.empty? ? "npx playwright" : ENV["PLAYWRIGHT_CLI"]
         end
 
+      # ★ Heroku だけ：ブラウザが無ければ今ここで落とす（ローカルは何もしない）
+      ensure_playwright_browsers!
+
       Playwright.create(playwright_cli_executable_path: cli) do |pw|
         log :info, "Playwright 起動（cookie引き継ぎ）"
 
         common_args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
         launch_opts = { headless: true, args: common_args }
 
-        # ★ローカルは従来通り / Heroku は channel=chrome(既定) or chromium
-        browser =
-          if heroku?
-            ch = (ENV["PW_LAUNCH_CHANNEL"].to_s.strip.empty? ? "chrome" : ENV["PW_LAUNCH_CHANNEL"].strip)
-            begin
-              log :info, "Trying Playwright channel=#{ch} on Heroku"
-              pw.chromium.launch(**launch_opts.merge(channel: ch))
-            rescue => e
-              log :warn, "channel=#{ch} 起動失敗: #{e.class} #{e.message} → デフォルトにフォールバック"
-              pw.chromium.launch(**launch_opts)
-            end
-          else
-            pw.chromium.launch(**launch_opts)
-          end
+        # ★ channel 指定はやめてデフォルト（ms-playwright の chromium）を使う
+        browser = pw.chromium.launch(**launch_opts)
 
         context = browser.new_context
         begin
-          # Selenium cookie を PW に移植
+          # （以下は従来どおり）
           normalized = normalize_cookies_for_pw(login_result[:cookies])
           context.add_cookies(normalized) rescue context.add_cookies(cookies: normalized)
 
           page = context.new_page
-
-          # admin → LOA 確定
           admin_url = "https://step.lme.jp/admin/home"
           safe_goto(page, admin_url, desc: "admin/home", tries: 2)
           page.wait_for_load_state(state: "domcontentloaded") rescue nil
           log :debug, "PW: admin url=#{page.url}"
           choose_loa_if_needed(page, loa_label)
 
-          # /basic へ “クリック遷移”
           bot_id = ENV["LME_BOT_ID"].to_s.strip
           href_friend = build_basic_url(BASIC_FALLBACK, bot_id: bot_id, ts: now_ms)
           page.evaluate(NAV_CLICK_JS, arg: href_friend)
@@ -196,25 +183,19 @@ module Lme
             page.wait_for_load_state(state: "networkidle") rescue nil
             sleep 0.5
           end
-
-          # ダメ押し（新規タブ）
           unless pw_reached_basic?(page, timeout_ms: 8_000)
             href_over = build_basic_url(BASIC_TARGET_PATH, bot_id: bot_id, ts: now_ms)
             newp = open_in_new_tab(context, href_over + "&_tab=1&_r=#{now_ms}", desc: "overview(new tab)")
             page = newp if newp && pw_reached_basic?(newp, timeout_ms: 8_000)
           end
-
-          # ここで /basic にいなければ中止（admin の Cookie を返さない）
           raise "basicエリアに入れませんでした (url=#{page.url})" unless pw_reached_basic?(page, timeout_ms: 2_000)
 
-          # 見栄えとして overview を1回だけ（任意）
           begin
             over = build_basic_url(BASIC_TARGET_PATH, bot_id: bot_id, ts: now_ms)
             safe_goto(page, over, desc: "overview(final)", tries: 1)
           rescue; end
           basic_url = page.url.to_s
 
-          # Cookie/XSRF 確定
           pl_cookies = context.cookies || []
           final_cookies     = pl_cookies
           raw_cookie_header = pl_cookies.map { |c| "#{(c["name"] || c[:name])}=#{(c["value"] || c[:value])}" }.join("; ")
@@ -236,15 +217,31 @@ module Lme
         basic_cookie_header: basic_cookie_header,
         basic_xsrf: basic_xsrf,
         cookies: final_cookies,
-        basic_url: basic_url,               # 必ず /basic/* で返す
+        basic_url: basic_url,
         raw_cookie_header: raw_cookie_header,
       }
-
       unless valid_basic_session?(result[:basic_cookie_header], result[:basic_xsrf])
         log :error, "basic cookie/xsrf 判定NG（#{result[:basic_url]}）"
         raise "basicへの到達またはCookie/XSRFの確定に失敗しました"
       end
       result
+    end
+
+    # 追加：Heroku だけで必要に応じて Playwright のブラウザを入れる
+    def ensure_playwright_browsers!
+      return unless heroku?
+      base = ENV["PLAYWRIGHT_BROWSERS_PATH"].to_s.strip
+      base = "/app/.cache/ms-playwright" if base.empty?
+      headless = Dir["#{base}/chromium_headless_shell-*/chrome-linux/headless_shell"].first
+      chrome   = Dir["#{base}/chromium-*/chrome-linux/chrome"].first
+      if headless && File.exist?(headless) && chrome && File.exist?(chrome)
+        log :info, "Playwright browsers already present at #{base}"
+        return
+      end
+      log :info, "Playwright browsers missing → installing (this may take a bit)"
+      # npx が無ければ node buildpack ミスだが、その場合は例外をそのまま上げる
+      ok = system("npx playwright install chromium")
+      raise "failed to install playwright chromium" unless ok
     end
 
     # =========================
