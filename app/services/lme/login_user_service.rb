@@ -32,7 +32,7 @@ module Lme
           try { window.location.assign(target); } catch(_){}
         }
       }
-      JS
+    JS
 
     def initialize(email:, password:, api_key:)
       @email    = email
@@ -44,16 +44,17 @@ module Lme
     # 1) ログイン (Selenium)
     # =========================
     def login!
-      # ここに置き換え（login! 冒頭の service / options 周りだけ）
-      service = if (ENV["CHROMEDRIVER_PATH"].to_s.strip.empty?)
-        Selenium::WebDriver::Chrome::Service.new
-      else
-        Selenium::WebDriver::Chrome::Service.new(path: ENV["CHROMEDRIVER_PATH"])
-      end
+      # 開発環境のままの初期化（Selenium Manager または CHROMEDRIVER_PATH）
+      service =
+        if ENV["CHROMEDRIVER_PATH"].to_s.strip.empty?
+          Selenium::WebDriver::Service.chrome
+        else
+          Selenium::WebDriver::Service.chrome(path: ENV["CHROMEDRIVER_PATH"])
+        end
 
       options = Selenium::WebDriver::Chrome::Options.new
 
-      # 旧buildpack互換の環境変数があればそれを使い、無ければ PATH 上の chrome を使う
+      # 旧buildpack互換のバイナリ検出（開発も本番も可）
       bin = [ENV["GOOGLE_CHROME_SHIM"], ENV["CHROME_BIN"], ENV["GOOGLE_CHROME_BIN"]]
               .compact.map(&:to_s).map(&:strip)
               .find { |v| !v.empty? && File.exist?(v) }
@@ -87,9 +88,9 @@ module Lme
 
         # 入力
         email_el = driver.find_elements(id: "email_login").first ||
-                  driver.find_elements(css: "input[name='email']").first
+                   driver.find_elements(css: "input[name='email']").first
         pass_el  = driver.find_elements(id: "password_login").first ||
-                  driver.find_elements(css: "input[name='password']").first
+                   driver.find_elements(css: "input[name='password']").first
         raise "ログインフォーム要素が見つかりません" unless email_el && pass_el
         email_el.send_keys(@email)
         pass_el.send_keys(@password)
@@ -140,7 +141,10 @@ module Lme
       final_cookies       = nil
       raw_cookie_header   = nil
 
-      Playwright.create(playwright_cli_executable_path: "npx playwright") do |pw|
+      # ★開発は“絶対に”既存通り。Heroku の時だけ CLI を解決して指定。
+      cli = heroku? ? (ENV["PLAYWRIGHT_CLI"].presence || "npx playwright") : "npx playwright"
+
+      Playwright.create(playwright_cli_executable_path: cli) do |pw|
         log :info, "Playwright 起動（cookie引き継ぎ）"
         browser = pw.chromium.launch(headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"])
         context = browser.new_context
@@ -188,14 +192,14 @@ module Lme
           rescue; end
           basic_url = page.url.to_s
 
-          # Cookie/XSRF 確定
+          # Cookie/XSRF 碾定
           pl_cookies = context.cookies || []
           final_cookies     = pl_cookies
           raw_cookie_header = pl_cookies.map { |c| "#{(c["name"] || c[:name])}=#{(c["value"] || c[:value])}" }.join("; ")
           basic_cookie_header = sanitize_cookie_header(raw_cookie_header)
 
           xsrf_cookie = pl_cookies.find { |c| (c["name"] || c[:name]) == "XSRF-TOKEN" }
-          xsrf_raw    = xsrf_cookie && (xsrf_cookie["value"] || xsrf_cookie[:value])
+          xsrf_raw    = xsrf_cookie && (cval = (xsrf_cookie["value"] || xsrf_cookie[:value]))
           basic_xsrf  = xsrf_raw && CGI.unescape(xsrf_raw.to_s)
           basic_xsrf  = dom_csrf_token(page) if basic_xsrf.to_s.empty?
           log :debug, "[cookies sanitized] #{basic_cookie_header || '(none)'}"
@@ -372,7 +376,7 @@ module Lme
       end
     end
 
-    # 内部ヘルパ
+    # ===== reCAPTCHA & Selenium ヘルパ =====
     private
 
     def obtain_recaptcha_token_with_retries(sitekey, url, tries: RECAPTCHA_MAX_SOLVES)
@@ -399,7 +403,6 @@ module Lme
       raise last_err || "2Captcha could not solve after #{tries} tries"
     end
 
-
     def solve_recaptcha(sitekey, url)
       uri = URI("http://2captcha.com/in.php")
       res = Net::HTTP.post_form(uri, {
@@ -425,8 +428,6 @@ module Lme
       end
     end
 
-    # ---- ここから下は Selenium 用の小ヘルパ ----
-
     def already_logged_in?(driver)
       return false if looks_like_login_page?(driver)
       driver.navigate.to "https://step.lme.jp/admin/home"
@@ -442,7 +443,7 @@ module Lme
       t = driver.title.to_s
       u = driver.current_url.to_s
       has_form = driver.find_elements(id: "email_login").any? ||
-                driver.find_elements(css: "input[name='email']").any?
+                 driver.find_elements(css: "input[name='email']").any?
       is_login_title = t.include?("ログイン") || t.downcase.include?("login")
       is_login_url   = u.end_with?("/") || u.include?("/login")
       has_form || is_login_title || is_login_url
@@ -520,7 +521,6 @@ module Lme
       log :warn, "dump failed: #{e.class} #{e.message}"
     end
 
-    # URLに依存せず Cookie+XSRF があればOK（adminのまま返さないよう /basic 到達を別で厳守）
     def valid_basic_session?(cookie_header, xsrf)
       return false if cookie_header.to_s.empty? || xsrf.to_s.empty?
       cookie_header.include?("laravel_session=") && cookie_header.include?("XSRF-TOKEN=")
@@ -540,6 +540,11 @@ module Lme
       else
         $stdout.puts "#{LOG_PREFIX} #{level.upcase}: #{msg}"
       end
+    end
+
+    # ===== 実行環境検出 =====
+    def heroku?
+      ENV["DYNO"].to_s != "" || ENV["HEROKU"].to_s == "1"
     end
   end
 end
