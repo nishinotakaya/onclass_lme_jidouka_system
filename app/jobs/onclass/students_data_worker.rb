@@ -9,20 +9,22 @@ require 'faraday'
 module Onclass
   class StudentsDataWorker
     include Sidekiq::Worker
-     sidekiq_options(
-        queue: 'onclass_students_data',
-        retry: 3,
 
-        lock: :until_executed,       # 実行開始でロック解除するなら :until_and_while_executing でもOK
-        on_conflict: :reject,        # 競合時は捨てる（ログに残したければ :log）
-        lock_args_method: :lock_args,
-        lock_ttl: 30.minutes         # ロックの保険(適宜)
-      )
+    sidekiq_options(
+      queue: 'onclass_students_data',
+      retry: 3,
+      lock: :until_executed,
+      on_conflict: :reject,
+      lock_args_method: :lock_args,
+      lock_ttl: 30.minutes
+    )
+
     require 'google/apis/sheets_v4'
     require 'googleauth'
 
     DEFAULT_LEARNING_COURSE_ID = 'oYTO4UDI6MGb' # フロント
 
+    # 表示順。最後に :unknown を補助的に扱う
     STATUS_ORDER = [
       ['very_good', '素晴らしい'],
       ['good',      '順調'],
@@ -31,15 +33,16 @@ module Onclass
       ['normal',    '停滞気味']
     ].freeze
 
-    TARGET_COLUMNS = %w[name email last_sign_in_at course_name course_start_at course_progress].freeze
-
     API_TO_JP_MOTIVATION = {
       'very_good' => '素晴らしい',
       'good'      => '順調',
       'very_bad'  => '離脱',
       'bad'       => '停滞中',
-      'normal'    => '停滞気味'
+      'normal'    => '停滞気味',
+      'unknown'   => '不明'
     }.freeze
+
+    TARGET_COLUMNS = %w[name email last_sign_in_at course_name course_start_at course_progress].freeze
 
     # ================ Entry =================
     def perform(course_id = nil, sheet_name = nil)
@@ -62,43 +65,25 @@ module Onclass
         f.adapter  Faraday.default_adapter
       end
 
-      # 3) 一覧取得（normalが500のときは全件→クライアント側フィルタへフォールバック）
-      grouped_rows = {}
-      STATUS_ORDER.each do |motivation, jp_label|
-        rows = []
-        begin
-          rows = fetch_users_by_motivation(conn, base_headers, motivation, jp_label, course_id)
-        rescue Faraday::Error => e
-          if motivation == 'normal'
-            body = (e.respond_to?(:response) ? e.response&.dig(:body) : nil)
-            Rails.logger.warn("[Onclass::StudentsDataWorker] motivation=normal failed (#{e.class} #{e.message}) body=#{body.inspect}. fallback to client-side diff grouping")
+      # 3) 一覧（※ motivation フィルタ無し。normal が壊れているため全件→後で分類）
+      all_rows = fetch_users_all_pages(conn, base_headers, course_id)
+      Rails.logger.info("[Onclass::StudentsDataWorker] list fetched total=#{all_rows.size} (unfiltered)")
 
-            all = fetch_users_all_pages(conn, base_headers, course_id)
-            obtained_ids = grouped_rows.values.flatten.map { |r| r['id'] }.compact.to_set
-            rows = all.reject { |r| obtained_ids.include?(r['id']) }
-            rows.each { |r| r['status'] = jp_label; r['motivation'] = 'normal' }
+      # 4) まず最低限の行データを作る（最新ログインも拾う）
+      rows = all_rows.map { |u| build_user_row(conn, base_headers, u, jp_label: nil) }
+      student_ids = rows.map { |r| r['id'] }.compact.uniq
 
-            Rails.logger.info("[Onclass::StudentsDataWorker] fallback(normal): all=#{all.size} obtained=#{obtained_ids.size} normal=#{rows.size}")
-          else
-            raise
-          end
-        end
-
-        grouped_rows[motivation] = rows
-        Rails.logger.info("[Onclass::StudentsDataWorker] fetched #{rows.size} users for #{motivation}(#{jp_label}) course=#{course_id}")
-      end
-
-      combined_rows = STATUS_ORDER.flat_map { |motivation, _| grouped_rows[motivation] }
-      student_ids   = combined_rows.map { |r| r['id'] }.compact.uniq
-
-      # 4) 詳細・基本・受講期限日
+      # 5) 詳細/基本/期限を取得しつつ motivation を補完
       details_by_id = {}
+      extension_by_id = {}
+      basic_by_id = {}
+
       student_ids.each do |sid|
-        details_by_id[sid] = fetch_user_learning_course(conn, base_headers, sid, course_id)
+        details_by_id[sid]   = fetch_user_learning_course(conn, base_headers, sid, course_id) rescue {}
+        extension_by_id[sid] = fetch_extension_study_date(conn, base_headers, sid, course_id) rescue nil
         sleep 0.05
       end
 
-      basic_by_id = {}
       student_ids.each do |sid|
         begin
           basic_by_id[sid] = fetch_user_basic(conn, base_headers, sid)
@@ -108,13 +93,7 @@ module Onclass
         end
       end
 
-      extension_by_id = {}
-      student_ids.each do |sid|
-        extension_by_id[sid] = fetch_extension_study_date(conn, base_headers, sid, course_id)
-        sleep 0.03
-      end
-
-      # 5) 未読メンション（アカウント別ログイン）
+      # 6) 未読メンション（アカウント別ログイン）
       accounts      = JSON.parse(ENV['ONLINE_CLASS_CREDENTIALS'] || '[]') rescue []
       nishino_cred  = accounts[0] || {}
       kato_cred     = accounts[1] || {}
@@ -129,8 +108,8 @@ module Onclass
       nishino_maps = nishino_headers ? fetch_unread_mentions_map(conn, nishino_headers) : { id: {}, name: {} }
       kato_maps    = kato_headers    ? fetch_unread_mentions_map(conn, kato_headers)    : { id: {}, name: {} }
 
-      # 6) 付加情報
-      combined_rows.each do |r|
+      # 7) 付加情報 & motivation 補完
+      rows.each do |r|
         d = details_by_id[r['id']] || {}
         r['current_category']               = current_category_name(d) || ''
         r['current_block']                  = current_block_name(d) || ''
@@ -140,6 +119,19 @@ module Onclass
         r['current_category_started_at']    = (current_category_object(d) || {})['started_at']
         r['categories_schedule']            = categories_schedule_map(d)
         r['extension_study_date']           = extension_by_id[r['id']]
+
+        # motivation が空なら詳細から補完（候補キーを広く探す）
+        if r['motivation'].to_s.strip.empty?
+          md = normalize_motivation(
+            d['motivation'] ||
+            d.dig('learning_course', 'motivation') ||
+            d.dig('course', 'motivation')
+          )
+          if API_TO_JP_MOTIVATION.key?(md)
+            r['motivation'] = md
+            r['status']     = API_TO_JP_MOTIVATION[md]
+          end
+        end
 
         b = basic_by_id[r['id']] || {}
         free = b['free_text']
@@ -156,33 +148,43 @@ module Onclass
           (kato_maps[:name][key_name]&.values&.sum || 0)
       end
 
-      combined_rows.sort_by! { |r| (Date.parse(r['course_join_date'].to_s) rescue Date.new(1900,1,1)) }
-      combined_rows.reverse!
+      # ソート（受講日降順）
+      rows.sort_by! { |r| (Date.parse(r['course_join_date'].to_s) rescue Date.new(1900,1,1)) }
+      rows.reverse!
+
+      # 8) クライアント側でグルーピング（normal は API を叩かない）
+      grouped_rows = group_by_motivation(rows)
+
+      STATUS_ORDER.each do |motivation, jp|
+        Rails.logger.info("[Onclass::StudentsDataWorker] grouped #{motivation}(#{jp}) => #{grouped_rows[motivation]&.size.to_i}")
+      end
+      Rails.logger.info("[Onclass::StudentsDataWorker] grouped unknown => #{grouped_rows['unknown']&.size.to_i}")
 
       timestamp = Time.zone.now.strftime('%Y%m%d_%H%M%S')
       dir       = Rails.root.join('tmp')
       FileUtils.mkdir_p(dir)
       course_tag = course_id
 
-      status_files   = {}
-      created_paths  = []  # ← 追加: 作成ファイルをトラック
+      status_files  = {}
+      created_paths = []
 
-      grouped_rows.each do |motivation, rows|
+      (STATUS_ORDER.map(&:first) + ['unknown']).each do |motivation|
+        rows_for_m = grouped_rows[motivation] || []
         fname = dir.join("onclass_#{course_tag}_#{timestamp}_#{motivation}.csv")
-        write_csv(fname, rows)
+        write_csv(fname, rows_for_m)
         status_files[motivation] = fname.to_s
-        created_paths << fname.to_s            # ← 追記
+        created_paths << fname.to_s
       end
 
-      combined_csv_path   = dir.join("onclass_#{course_tag}_#{timestamp}_combined.csv")
-      write_csv(combined_csv_path, combined_rows)
-      created_paths << combined_csv_path.to_s   # ← 追記
+      combined_csv_path  = dir.join("onclass_#{course_tag}_#{timestamp}_combined.csv")
+      write_csv(combined_csv_path, rows)
+      created_paths << combined_csv_path.to_s
 
-      combined_xlsx_path  = maybe_write_xlsx(dir, course_tag, timestamp, combined_rows)
-      created_paths << combined_xlsx_path if combined_xlsx_path.present?  # ← 追記
+      combined_xlsx_path = maybe_write_xlsx(dir, course_tag, timestamp, rows)
+      created_paths << combined_xlsx_path if combined_xlsx_path.present?
 
-      export_api_csv_path = export_official_csv(conn, base_headers, combined_rows, dir, course_tag, timestamp)
-      created_paths << export_api_csv_path if export_api_csv_path.present? # ← 追記
+      export_api_csv_path = export_official_csv(conn, base_headers, rows, dir, course_tag, timestamp)
+      created_paths << export_api_csv_path if export_api_csv_path.present?
 
       result = {
         combined_csv: combined_csv_path.to_s,
@@ -192,14 +194,14 @@ module Onclass
       }
 
       upload_to_gsheets!(
-        rows: combined_rows,
+        rows: rows,
         spreadsheet_id: ENV.fetch('ONCLASS_SPREADSHEET_ID'),
         sheet_name:     sheet_name,
         nishino_maps:   nishino_maps,
         kato_maps:      kato_maps
       )
 
-      # ★ここで削除（デフォルトON。無効化は ONCLASS_CLEAN_TMP=0）
+      # tmp削除（デフォルトON）
       if ENV.fetch('ONCLASS_CLEAN_TMP', '1') == '1'
         cleanup_tmp_files!(created_paths)
         Rails.logger.info("[Onclass::StudentsDataWorker] cleaned up #{created_paths.compact.size} tmp files.")
@@ -216,11 +218,9 @@ module Onclass
       raise
     end
 
-    # ====== 以下（プライベート/ヘルパ）はそのまま ======
     # ================ Private =================
     private
 
-    # ---------- 共通 ----------
     def normalize_motivation(v)
       (v || '').to_s.strip.downcase
     end
@@ -252,6 +252,7 @@ module Onclass
 
     # ---------- 一覧 ----------
     def build_user_row(conn, headers, u, jp_label: nil)
+      # ここでは motivation を可能なら拾い、後段で詳細からも補完
       m = normalize_motivation(u['motivation'] || u.dig('learning_course', 'motivation') || u['status'])
       {
         'id'              => u['id'] || u['user_id'] || u['uid'],
@@ -267,41 +268,7 @@ module Onclass
       }
     end
 
-    def fetch_users_by_motivation(conn, headers, motivation, jp_label, learning_course_id)
-      page = 1
-      rows = []
-      loop do
-        params = {
-          page: page,
-          learning_course_id: learning_course_id,
-          name_or_email: '',
-          admission_day_from: '',
-          admission_day_to: '',
-          free_text: '',
-          category_id: '',
-          category_status: 'all',
-          account_group_id: ''
-        }
-        params[:motivation] = motivation unless motivation.nil?
-
-        resp = safe_get(conn, '/v1/enterprise_manager/users', params, headers)
-        json = JSON.parse(resp.body) rescue {}
-        list = json.is_a?(Array) ? json : (json['users'] || json['data'] || json['records'] || [])
-
-        list.each do |u|
-          rows << build_user_row(conn, headers, u, jp_label: jp_label)
-        end
-
-        total_pages  = (json['total_pages'] || json.dig('meta', 'total_pages')).to_i
-        current_page = (json['current_page'] || json.dig('meta', 'current_page') || page).to_i
-        next_link    = json['next_page'] || json.dig('links', 'next')
-        break if list.empty? || (total_pages > 0 && current_page >= total_pages) || (!next_link.nil? && next_link == false)
-        page += 1
-      end
-      rows
-    end
-
-    # motivationフィルタなし全件ページング（フォールバック用）
+    # motivationフィルタなし全件ページング
     def fetch_users_all_pages(conn, headers, learning_course_id)
       page = 1
       rows = []
@@ -321,7 +288,7 @@ module Onclass
         json = JSON.parse(resp.body) rescue {}
         list = json.is_a?(Array) ? json : (json['users'] || json['data'] || json['records'] || [])
 
-        list.each { |u| rows << build_user_row(conn, headers, u) }
+        rows.concat(list)
 
         total_pages  = (json['total_pages'] || json.dig('meta', 'total_pages')).to_i
         current_page = (json['current_page'] || json.dig('meta', 'current_page') || page).to_i
@@ -433,11 +400,11 @@ module Onclass
       ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
       clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
       # 本体は P 列まで（N列は「PDCA更新日時」で不触）、右マトリクスは Q 列以降
-      service.clear_values(spreadsheet_id, "#{sheet_name}!B2:P2", clear_req)      # メタ行
-      service.clear_values(spreadsheet_id, "#{sheet_name}!B3:P3", clear_req)      # 見出し行のみクリア
-      service.clear_values(spreadsheet_id, "#{sheet_name}!B4:M", clear_req)       # 左ブロック（Nは触らない）
-      service.clear_values(spreadsheet_id, "#{sheet_name}!O4:P", clear_req)       # 右ブロック（メンション2列）
-      service.clear_values(spreadsheet_id, "#{sheet_name}!Q2:ZZ", clear_req)      # 右側マトリクス
+      service.clear_values(spreadsheet_id, "#{sheet_name}!B2:P2", clear_req)
+      service.clear_values(spreadsheet_id, "#{sheet_name}!B3:P3", clear_req)
+      service.clear_values(spreadsheet_id, "#{sheet_name}!B4:M", clear_req)
+      service.clear_values(spreadsheet_id, "#{sheet_name}!O4:P", clear_req)
+      service.clear_values(spreadsheet_id, "#{sheet_name}!Q2:ZZ", clear_req)
 
       # B2（メタ）
       meta_row   = ['バッチ実行タイミング', jp_timestamp] + Array.new(13, '')
@@ -471,7 +438,7 @@ module Onclass
         id.casecmp('id').zero? || name == '名前' || email == 'メールアドレス'
       end
 
-      # 左ブロック（B〜M）：PDCAまでを書き込む（Nは空欄専用につきスキップ）
+      # 左ブロック（B〜M）：N はスキップ
       left_block_values = sanitized_rows.map do |r|
         g_val_name     = r['current_category'].to_s
         g_val_date     = to_jp_ymd(r['current_category_scheduled_at'])
@@ -503,7 +470,7 @@ module Onclass
         )
       end
 
-      # 右ブロック（O〜P）：メンション2列のみを書き込む（Nは書かない）
+      # 右ブロック（O〜P）
       right_block_values = sanitized_rows.map do |r|
         [
           mention_cell(channel_counts_for(nishino_maps, r)),
@@ -561,9 +528,8 @@ module Onclass
         end
       end
 
-      Rails.logger.info("[OnclassStudentsDataWorker] uploaded #{sanitized_rows.size} rows with extension date, mentions and schedules (P列まで + Q列〜).")
+      Rails.logger.info("[Onclass::StudentsDataWorker] uploaded #{sanitized_rows.size} rows with extension date, mentions and schedules (P列まで + Q列〜).")
     end
-
 
     # ---------- 表示ヘルパ ----------
     def jp_timestamp
@@ -618,7 +584,7 @@ module Onclass
       first = list.is_a?(Array) ? list.first : nil
       first && first['created_at']
     rescue Faraday::Error => e
-      Rails.logger.warn("[OnclassStudentsDataWorker] fetch_latest_login_at error for #{user_id}: #{e.class} #{e.message}")
+      Rails.logger.warn("[Onclass::StudentsDataWorker] fetch_latest_login_at error for #{user_id}: #{e.class} #{e.message}")
       nil
     end
 
@@ -627,7 +593,7 @@ module Onclass
       json = JSON.parse(resp.body) rescue {}
       json['data'] || json
     rescue Faraday::Error => e
-      Rails.logger.warn("[OnclassStudentsDataWorker] fetch_user_basic error for #{student_id}: #{e.class} #{e.message}")
+      Rails.logger.warn("[Onclass::StudentsDataWorker] fetch_user_basic error for #{student_id}: #{e.class} #{e.message}")
       {}
     end
 
@@ -642,7 +608,7 @@ module Onclass
       item  = Array(list).find { |c| (c['id'] || c[:id]).to_s == learning_course_id.to_s }
       item && (item['extension_study_date'] || item[:extension_study_date])
     rescue Faraday::Error => e
-      Rails.logger.warn("[OnclassStudentsDataWorker] fetch_extension_study_date error for #{user_id}: #{e.class} #{e.message}")
+      Rails.logger.warn("[Onclass::StudentsDataWorker] fetch_extension_study_date error for #{user_id}: #{e.class} #{e.message}")
       nil
     end
 
@@ -653,8 +619,8 @@ module Onclass
       json = JSON.parse(resp.body) rescue {}
       list = Array(json['data'] || json['records'] || json)
 
-      by_id   = Hash.new { |h,k| h[k] = Hash.new(0) }   # { sender_id => { channel => count } }
-      by_name = Hash.new { |h,k| h[k] = Hash.new(0) }   # { norm_name => { channel => count } }
+      by_id   = Hash.new { |h,k| h[k] = Hash.new(0) }
+      by_name = Hash.new { |h,k| h[k] = Hash.new(0) }
 
       list.each do |m|
         next unless m.is_a?(Hash) && m['is_read'] == false
@@ -698,7 +664,6 @@ module Onclass
       (now_jst - t) >= 4.days
     end
 
-    # 「現在進行カテゴリが終わるのに2週間以上」判定
     def slow_category_progress?(row)
       cat = row['current_category'].to_s
       return false if cat.empty? || cat == '人工インターン' || cat == '全て完了'
@@ -786,51 +751,11 @@ module Onclass
 
     def normalize_name(str)
       base = str.to_s
-      base = base.gsub(/（.*?）|\(.*?\)/, '') # 括弧内除去（全角/半角）
+      base = base.gsub(/（.*?）|\(.*?\)/, '') # 括弧内除去
       base = base.tr('　', ' ')              # 全角空白→半角
       base = base.gsub(/\s+/, '')            # 空白全削除
       base
     end
-
-    # ---------- Sheets装飾 ----------
-    def sheet_id_for(service, spreadsheet_id, sheet_name)
-      ss = service.get_spreadsheet(spreadsheet_id)
-      sheet = ss.sheets.find { |s| s.properties&.title == sheet_name }
-      sheet&.properties&.sheet_id
-    end
-
-    def apply_mention_highlight_rule!(service, spreadsheet_id, sheet_name)
-      sid = sheet_id_for(service, spreadsheet_id, sheet_name)
-      return unless sid
-
-      grid_range = Google::Apis::SheetsV4::GridRange.new(
-        sheet_id: sid,
-        start_row_index: 3,   # 4行目〜
-        start_column_index: 1, # B列（0始まり）
-        end_column_index: 16   # P列の次（exclusive）→ B..P を対象
-      )
-
-      cond = Google::Apis::SheetsV4::BooleanCondition.new(
-        type: 'CUSTOM_FORMULA',
-        values: [Google::Apis::SheetsV4::ConditionValue.new(user_entered_value: '=COUNTA($O4:$P4)>0')]
-      )
-
-      format = Google::Apis::SheetsV4::CellFormat.new(
-        background_color: Google::Apis::SheetsV4::Color.new(red: 1.0, green: 0.9, blue: 0.6)
-      )
-
-      rule = Google::Apis::SheetsV4::ConditionalFormatRule.new(
-        ranges: [grid_range],
-        boolean_rule: Google::Apis::SheetsV4::BooleanRule.new(condition: cond, format: format)
-      )
-
-      add_req = Google::Apis::SheetsV4::AddConditionalFormatRuleRequest.new(index: 0, rule: rule)
-      batch = Google::Apis::SheetsV4::BatchUpdateSpreadsheetRequest.new(
-        requests: [Google::Apis::SheetsV4::Request.new(add_conditional_format_rule: add_req)]
-      )
-      service.batch_update_spreadsheet(spreadsheet_id, batch)
-    end
-
 
     # ---------- メンション集計 ----------
     def merge_channel_counts(a, b)
@@ -847,6 +772,18 @@ module Onclass
       by_id    = id_map[row['id']] || {}
       by_name  = name_map[normalize_name(row['name'])] || {}
       merge_channel_counts(by_id, by_name)
+    end
+
+    # ---------- グルーピング ----------
+    def group_by_motivation(rows)
+      hash = Hash.new { |h,k| h[k] = [] }
+      rows.each do |r|
+        m = normalize_motivation(r['motivation'])
+        m = 'unknown' unless API_TO_JP_MOTIVATION.key?(m)
+        r['status'] ||= API_TO_JP_MOTIVATION[m] || ''
+        hash[m] << r
+      end
+      hash
     end
 
     # tmpのファイル削除
@@ -867,4 +804,3 @@ module Onclass
     end
   end
 end
-
