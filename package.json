@@ -4,6 +4,6 @@
   "engines": { "node": "18.x" },
   "dependencies": { "playwright": "1.55.0" },
   "scripts": {
-    "heroku-postbuild": "npx playwright install chromium && npx playwright install-deps chromium"
+    "heroku-postbuild": "npx playwright install chromium"
   }
 }
