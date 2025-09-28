@@ -44,7 +44,6 @@ module Lme
     # 1) ログイン (Selenium)
     # =========================
     def login!
-      # 開発環境のままの初期化（Selenium Manager または CHROMEDRIVER_PATH）
       service =
         if ENV["CHROMEDRIVER_PATH"].to_s.strip.empty?
           Selenium::WebDriver::Service.chrome
@@ -115,7 +114,7 @@ module Lme
         log :debug, "一次判定=#{ok_once} title=#{safe(driver.title)} url=#{driver.current_url}"
         confirm_login_or_raise!(driver)
 
-        ensure_basic_session(driver) # /basic/friendlist まで一旦寄せる
+        ensure_basic_session(driver)
         cookies = driver.manage.all_cookies
         log_cookies_brief!(cookies)
         { cookies: cookies, driver: driver }
@@ -141,12 +140,35 @@ module Lme
       final_cookies       = nil
       raw_cookie_header   = nil
 
-      # ★開発は“絶対に”既存通り。Heroku の時だけ CLI を解決して指定。
-      cli = heroku? ? (ENV["PLAYWRIGHT_CLI"].presence || "npx playwright") : "npx playwright"
+      # CLI 解決（Heroku でもローカルでも動作）
+      cli =
+        if File.exist?("/app/node_modules/.bin/playwright")
+          "/app/node_modules/.bin/playwright"
+        else
+          ENV["PLAYWRIGHT_CLI"].to_s.strip.empty? ? "npx playwright" : ENV["PLAYWRIGHT_CLI"]
+        end
 
       Playwright.create(playwright_cli_executable_path: cli) do |pw|
         log :info, "Playwright 起動（cookie引き継ぎ）"
-        browser = pw.chromium.launch(headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"])
+
+        common_args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+        launch_opts = { headless: true, args: common_args }
+
+        # ★ローカルは従来通り / Heroku は channel=chrome(既定) or chromium
+        browser =
+          if heroku?
+            ch = (ENV["PW_LAUNCH_CHANNEL"].to_s.strip.empty? ? "chrome" : ENV["PW_LAUNCH_CHANNEL"].strip)
+            begin
+              log :info, "Trying Playwright channel=#{ch} on Heroku"
+              pw.chromium.launch(**launch_opts.merge(channel: ch))
+            rescue => e
+              log :warn, "channel=#{ch} 起動失敗: #{e.class} #{e.message} → デフォルトにフォールバック"
+              pw.chromium.launch(**launch_opts)
+            end
+          else
+            pw.chromium.launch(**launch_opts)
+          end
+
         context = browser.new_context
         begin
           # Selenium cookie を PW に移植
@@ -192,14 +214,14 @@ module Lme
           rescue; end
           basic_url = page.url.to_s
 
-          # Cookie/XSRF 碾定
+          # Cookie/XSRF 確定
           pl_cookies = context.cookies || []
           final_cookies     = pl_cookies
           raw_cookie_header = pl_cookies.map { |c| "#{(c["name"] || c[:name])}=#{(c["value"] || c[:value])}" }.join("; ")
           basic_cookie_header = sanitize_cookie_header(raw_cookie_header)
 
           xsrf_cookie = pl_cookies.find { |c| (c["name"] || c[:name]) == "XSRF-TOKEN" }
-          xsrf_raw    = xsrf_cookie && (cval = (xsrf_cookie["value"] || xsrf_cookie[:value]))
+          xsrf_raw    = xsrf_cookie && (xsrf_cookie["value"] || xsrf_cookie[:value])
           basic_xsrf  = xsrf_raw && CGI.unescape(xsrf_raw.to_s)
           basic_xsrf  = dom_csrf_token(page) if basic_xsrf.to_s.empty?
           log :debug, "[cookies sanitized] #{basic_cookie_header || '(none)'}"
@@ -230,14 +252,12 @@ module Lme
     # =========================
 
     def choose_loa_if_needed(page, loa_label)
-      # ラベルが出なければ確定済み
       begin
         page.wait_for_selector("text=#{loa_label}", timeout: 8_000)
       rescue Playwright::TimeoutError
         return
       end
 
-      # まずは素直に text= クリック
       begin
         el = page.locator("text=#{loa_label}")
         if el.count > 0
@@ -248,7 +268,6 @@ module Lme
         end
       rescue; end
 
-      # JS総当り：クリック可能な祖先を最大4段たどって click
       begin
         page.evaluate(<<~JS, arg: loa_label)
           (label) => {
@@ -287,7 +306,6 @@ module Lme
       begin
         page.wait_for_url(%r{/basic/(overview|friendlist|chat-v3)}, timeout: timeout_ms)
       rescue Playwright::TimeoutError
-        # URLが変わらなくても本文で判定
       end
       url_ok  = page.url.to_s.include?("/basic/")
       text_ok = begin
@@ -308,7 +326,6 @@ module Lme
         rescue => e
           log :debug, "goto失敗(#{desc} try=#{i + 1}/#{tries}): #{e.class} #{e.message}"
         end
-        # assign フォールバック
         begin
           page.evaluate("u => { try { window.location.assign(u) } catch(e) {} }", arg: url)
           page.wait_for_url(%r{^https://}, timeout: 10_000) rescue nil
