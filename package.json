@@ -5,11 +5,9 @@
     "node": "18.x"
   },
   "dependencies": {
-    "playwright": "^1.55.0"
+    "playwright": "1.55.0"
   },
-  "scripts": {
-    "heroku-postbuild": "npx playwright install chromium"
-  },
+  "scripts": {},
   "version": "1.0.0",
   "description": "1.クローンコマンド",
   "main": "index.js",
