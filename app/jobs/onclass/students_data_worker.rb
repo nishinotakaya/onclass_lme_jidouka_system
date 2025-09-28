@@ -9,8 +9,15 @@ require 'faraday'
 module Onclass
   class StudentsDataWorker
     include Sidekiq::Worker
-    sidekiq_options queue: 'onclass_students_data', retry: 3
+     sidekiq_options(
+        queue: 'onclass_students_data',
+        retry: 3,
 
+        lock: :until_executed,       # 実行開始でロック解除するなら :until_and_while_executing でもOK
+        on_conflict: :reject,        # 競合時は捨てる（ログに残したければ :log）
+        lock_args_method: :lock_args,
+        lock_ttl: 30.minutes         # ロックの保険(適宜)
+      )
     require 'google/apis/sheets_v4'
     require 'googleauth'
 
@@ -854,6 +861,10 @@ module Onclass
       Array(paths).compact.each { |p| safe_unlink(p) }
     end
 
+    def self.lock_args(args)
+      course_id, sheet_name = args
+      [course_id.to_s, sheet_name.to_s]
+    end
   end
 end
 
