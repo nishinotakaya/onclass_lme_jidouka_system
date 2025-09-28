@@ -44,9 +44,21 @@ module Lme
     # 1) ログイン (Selenium)
     # =========================
     def login!
-      service = Selenium::WebDriver::Chrome::Service.new(path: "/usr/bin/chromedriver")
+      # ここに置き換え（login! 冒頭の service / options 周りだけ）
+      service = if (ENV["CHROMEDRIVER_PATH"].to_s.strip.empty?)
+        Selenium::WebDriver::Chrome::Service.new
+      else
+        Selenium::WebDriver::Chrome::Service.new(path: ENV["CHROMEDRIVER_PATH"])
+      end
+
       options = Selenium::WebDriver::Chrome::Options.new
-      options.binary = "/usr/bin/chromium"
+
+      # 旧buildpack互換の環境変数があればそれを使い、無ければ PATH 上の chrome を使う
+      bin = [ENV["GOOGLE_CHROME_SHIM"], ENV["CHROME_BIN"], ENV["GOOGLE_CHROME_BIN"]]
+              .compact.map(&:to_s).map(&:strip)
+              .find { |v| !v.empty? && File.exist?(v) }
+      options.binary = bin if bin
+
       options.add_argument("--no-sandbox")
       options.add_argument("--disable-dev-shm-usage")
       options.add_argument("--disable-gpu")
