@@ -1,0 +1,21 @@
+# 大きいローカル資材
+*.deb
+*.dmg
+*.zip
+*.png
+*.jpeg
+*.jpg
+
+# テストや開発用
+node_modules/
+tmp/
+log/
+test/
+spec/
+coverage/
+storage/
+vendor/cache/
+
+# その他キャッシュ
+.bundle/
+.cache/
