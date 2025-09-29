@@ -1,6 +1,4 @@
 # frozen_string_literal: true
-
-
 require 'json'
 require 'cgi'
 require 'uri'
@@ -12,13 +10,12 @@ require 'google/apis/sheets_v4'
 require 'googleauth'
 require 'selenium-webdriver'
 require 'net/http'
-require 'selenium/devtools'  # 必要なら
-# Playwright は削除
+require 'selenium/devtools'
 
 module Lme
   class LineInflowsWorker
     include Sidekiq::Worker
-    sidekiq_options queue: 'lme_line_inflows', retry: 3
+    sidekiq_options queue: 'lme_line_inflows', retry: 3, lock: :until_executed
 
     GOOGLE_SCOPE = [Google::Apis::SheetsV4::AUTH_SPREADSHEETS].freeze
 
@@ -39,29 +36,29 @@ module Lme
     ACCEPT_LANG = 'ja,en-US;q=0.9,en;q=0.8'
     CH_UA       = %Q("Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140")
 
-    def perform(start_date = nil, end_date = nil)
+    def perform(start_date=nil, end_date=nil)
       Time.zone = 'Asia/Tokyo'
 
-      # ---- Context 準備（ログイン→CSRF） --------------------------------------
+      # ---- Context（ログイン→CSRF）
       bot_id = (ENV['LME_BOT_ID'].presence || '17106').to_s
       ctx = Lme::ApiContext.new(origin: ORIGIN, ua: UA, accept_lang: ACCEPT_LANG, ch_ua: CH_UA, logger: Rails.logger, bot_id: bot_id)
       ctx.login_with_google!(email: ENV['GOOGLE_EMAIL'], password: ENV['GOOGLE_PASSWORD'], api_key: ENV['API2CAPTCHA_KEY'])
          .ensure_csrf_meta!
 
-      # ---- 期間 ---------------------------------------------------------------
+      # ---- 期間
       start_on  = (start_date.presence || default_start_on)
       end_on    = (end_date.presence   || Time.zone.today.to_s)
       start_cut = (Date.parse(start_on) rescue Date.today)
       end_cut   = (Date.parse(end_on)   rescue Date.today)
       Rails.logger.info("[Inflows] range=#{start_on}..#{end_on}")
 
-      # ---- ウォームアップ -----------------------------------------------------
+      # ---- ウォームアップ
       Lme::InitHistoryService.new(ctx: ctx).warmup!(start_on: start_on, end_on: end_on)
 
-      # ---- 友だち一覧（ページング） -------------------------------------------
+      # ---- 友だち一覧（v2）
       v2_rows = Lme::FriendlistService.new(ctx: ctx).fetch_between(start_on: start_on, end_on: end_on)
 
-      # filter（blocked or followed in range） + normalize
+      # filter & normalize
       raw_rows = []
       v2_rows.each do |row|
         blocked  = row['is_blocked'].to_i == 1
@@ -72,12 +69,11 @@ module Lme
         normalize_row!(row)
         raw_rows << row
       end
-      # ---- ブロック専用API ----------------------------------------------------
+      # ---- ブロック専用API
       blocked_rows = Lme::BlockListService.new(ctx: ctx).fetch(start_on: start_on, end_on: end_on)
       Rails.logger.info("[blocked-api] fetched=#{blocked_rows.size}")
       raw_rows = merge_block_info!(raw_rows, blocked_rows)
-
-      # ---- UIDマージ ----------------------------------------------------------
+      # ---- UIDマージ
       merged_by_uid = {}
       Array(raw_rows).each do |r|
         uid = extract_line_user_id_from_link(r['link_my_page']).to_i
@@ -115,12 +111,13 @@ module Lme
       rows = merged_by_uid.values
       Rails.logger.info("[v2] merged rows=#{rows.size}")
 
-      # ---- chat-v3 を踏んで安定化（任意） --------------------------------------
+      # ---- chat-v3 を踏んで安定化（任意）
       if rows.present?
         sample_uid = extract_line_user_id_from_link(rows.first['link_my_page'])
         ctx.bake_chat_context_for!(sample_uid)
       end
-      # ---- タグ/セミナー & my_page 補完 ---------------------------------------
+
+      # ---- タグ/セミナー & my_page 補完
       tags_svc   = Lme::ChatTagsService.new(ctx: ctx)
       mypage_svc = Lme::MyPageService.new(ctx: ctx)
 
@@ -137,17 +134,26 @@ module Lme
 
         # my_page
         info = fetch_user_basic_info_via_service(mypage_svc, uid)
-        r['qr_code'] = info[:qr_code] if info[:qr_code].present?
-        if r['followed_at'].blank? && info[:time_follow].present?
-          r['followed_at'] = info[:time_follow]
+        q = info[:qr_code].to_s.strip
+        r['qr_code'] = q unless blankish?(q)
+
+        # followed_at が空なら my_page の time_follow で補完（"-"は空扱い）
+        tf = info[:time_follow].to_s.strip
+        if r['followed_at'].blank? && !blankish?(tf)
+          r['followed_at'] = tf
         end
 
+        # 流入元：landing_name が空のときだけ my_page 推定値で補完（"-"は空扱い）
+        inf = info[:inflow].to_s.strip
+        if blankish?(r['landing_name']) && !blankish?(inf)
+          r['landing_name'] = inf
+        end
         sleep 0.12
         Rails.logger.debug("[tags] #{i+1}/#{rows.size}") if (i % 200).zero?
       end
       Rails.logger.info("[tags] seminar dates unique=#{seminar_dates_set.size}")
 
-      # ---- GSheets 反映 -------------------------------------------------------
+      # ---- GSheets 反映
       spreadsheet_id = ENV.fetch('ONCLASS_SPREADSHEET_ID')
       sheet_name     = ENV.fetch('LME_SHEET_NAME', 'Line流入者')
       anchor_name    = ENV.fetch('ONCLASS_SHEET_NAME', 'フロントコース受講生')
@@ -164,12 +170,8 @@ module Lme
       )
 
       Rails.logger.info("[LmeLineInflowsWorker] wrote #{rows.size} rows to #{sheet_name}")
-      result = { count: rows.size, sheet: sheet_name, range: [start_on, end_on] }
-
-      # 集計ワーカー実行（従来どおり）
       Lme::LineCountsWorker.new.perform
-
-      result
+      { count: rows.size, sheet: sheet_name, range: [start_on, end_on] }
     rescue Faraday::Error => e
       Rails.logger.error("[LmeLineInflowsWorker] HTTP error: #{e.class} #{e.message}")
       raise
@@ -178,29 +180,44 @@ module Lme
       raise
     end
 
-    # === MyPage（サービス経由） -------------------------------------------------
-    def fetch_user_basic_info_via_service(mypage_svc, uid)
-      json = mypage_svc.fetch_common(line_user_id: uid)
-      {
-        qr_code:     find_value_by_key(json, 'qr_code'),
-        time_follow: find_value_by_key(json, 'time_follow')
-      }.with_indifferent_access
+    # === MyPage（サービス経由）
+
+    def extract_proaka_and_seminar_from_payload(payload)
+      categories =
+        case payload
+        when String
+          j = JSON.parse(payload) rescue nil
+          if j.is_a?(Hash)
+            j['data'] || j['result'] || j['items'] || j['list'] || []
+          elsif j.is_a?(Array)
+            j
+          else
+            []
+          end
+        when Hash
+          payload['data'] || payload['result'] || payload['items'] || payload['list'] || []
+        when Array
+          payload
+        else
+          []
+        end
+
+      proaka  = proaka_flags_from_categories(categories)
+      seminar = seminar_map_from_categories(categories)
+      [proaka, seminar]
     rescue => e
-      Rails.logger.debug("[basic_info] uid=#{uid} #{e.class}: #{e.message}")
-      {}.with_indifferent_access
+      Rails.logger.debug("[extract_tags] #{e.class}: #{e.message}")
+      [{ v1: false, v2: false, v3: false, v4: false, dv1: false, dv2: false, dv3: false, select: nil }, {}]
     end
 
-    # =========================================================
-    # データ整形 / タグ判定 / セミナー
-    # =========================================================
     def to_sheet_rows(v2_rows)
       v2_rows.map do |rec|
         uid = extract_line_user_id_from_link(rec['link_my_page'])
         {
-          'date'         => rec['followed_at'].to_s[0, 10],
+          'date'         => rec['followed_at'].to_s[0,10],
           'followed_at'  => rec['followed_at'],
           'blocked_at'   => rec['blocked_at'],
-          'landing_name' => safe_landing_name(rec),
+          'landing_name' => safe_landing_name(rec),  # 候補補完済み
           'name'         => rec['name'],
           'line_user_id' => uid,
           'is_blocked'   => (rec['is_blocked'] || 0).to_i,
@@ -211,10 +228,27 @@ module Lme
       end
     end
 
-    def extract_proaka_and_seminar_from_payload(body)
-      json = JSON.parse(body) rescue {}
-      categories = json['data'] || json['result'] || []
-      proaka = proaka_flags_from_categories(categories)
+    def extract_proaka_and_seminar_from_payload(payload)
+      categories =
+        case payload
+        when String
+          j = JSON.parse(payload) rescue nil
+          if j.is_a?(Hash)
+            j['data'] || j['result'] || j['items'] || j['list'] || []
+          elsif j.is_a?(Array)
+            j
+          else
+            []
+          end
+        when Hash
+          payload['data'] || payload['result'] || payload['items'] || payload['list'] || []
+        when Array
+          payload
+        else
+          []
+        end
+
+      proaka  = proaka_flags_from_categories(categories)
       seminar = seminar_map_from_categories(categories)
       [proaka, seminar]
     rescue => e
@@ -663,6 +697,23 @@ module Lme
     end
 
     private
+
+    # === MyPage（サービス経由） -------------------------------------------------
+    def fetch_user_basic_info_via_service(mypage_svc, uid)
+      json = mypage_svc.fetch_common(line_user_id: uid)
+      # 念のため文字列が来ても吸収
+      json = (JSON.parse(json) rescue {}) if json.is_a?(String)
+
+      {
+        qr_code:     find_value_by_key(json, 'qr_code'),
+        time_follow: find_value_by_key(json, 'time_follow'),
+        inflow:      mypage_svc.extract_inflow(json)
+      }.with_indifferent_access
+    rescue => e
+      Rails.logger.debug("[basic_info] uid=#{uid} #{e.class}: #{e.message}")
+      {}.with_indifferent_access
+    end
+
 
     def default_start_on
       raw = ENV['LME_DEFAULT_START_DATE'].presence || '2023-01-01'
