@@ -3,7 +3,6 @@
 require "selenium-webdriver"
 require "net/http"
 require "json"
-require "playwright"
 require "time"
 require "cgi"
 require "tmpdir"
@@ -15,26 +14,9 @@ module Lme
     LOG_PREFIX    = "[LmeLoginUserService]".freeze
     DUMP_ON_ERROR = ENV["LME_LOGIN_DUMP"] == "1"
 
-    BASIC_TARGET_PATH = "/basic/overview".freeze
-    BASIC_FALLBACK    = "/basic/friendlist".freeze
+    BASIC_TARGET_PATH    = "/basic/overview".freeze
+    BASIC_FALLBACK       = "/basic/friendlist".freeze
     RECAPTCHA_MAX_SOLVES = (ENV["RECAPTCHA_MAX_SOLVES"] || "1").to_i
-
-    NAV_CLICK_JS = <<~JS
-      (target) => {
-        try {
-          const a = document.createElement('a');
-        a.href = target;
-        a.rel  = 'noopener';
-        a.style.display = 'none';
-        document.body.appendChild(a);
-        const ev = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-        a.dispatchEvent(ev);
-        setTimeout(() => { try { a.remove(); } catch(_){} }, 1000);
-        } catch(e) {
-          try { window.location.assign(target); } catch(_){}
-        }
-      }
-    JS
 
     def initialize(email:, password:, api_key:)
       @email    = email
@@ -46,6 +28,7 @@ module Lme
     # 1) ログイン (Selenium)
     # =========================
     def login!
+      # ChromeDriver: Selenium Manager か CHROMEDRIVER_PATH を使用
       service =
         if ENV["CHROMEDRIVER_PATH"].to_s.strip.empty?
           Selenium::WebDriver::Service.chrome
@@ -55,31 +38,42 @@ module Lme
 
       options = Selenium::WebDriver::Chrome::Options.new
 
-      bin = [ENV["GOOGLE_CHROME_SHIM"], ENV["CHROME_BIN"], ENV["GOOGLE_CHROME_BIN"]]
-              .compact.map(&:to_s).map(&:strip)
-              .find { |v| !v.empty? && File.exist?(v) }
-      options.binary = bin if bin
+      # CFT/旧buildpack 互換の Chrome バイナリを探索
+      chrome_bin = [ENV["GOOGLE_CHROME_SHIM"], ENV["CHROME_BIN"], ENV["GOOGLE_CHROME_BIN"]]
+                    .compact.map!(&:to_s).map!(&:strip)
+                    .find { |v| !v.empty? && File.exist?(v) }
+      options.binary = chrome_bin if chrome_bin
 
+      # 安定起動フラグ
       options.add_argument("--no-sandbox")
       options.add_argument("--disable-dev-shm-usage")
       options.add_argument("--disable-gpu")
       options.add_argument("--headless=new")
-      tmpdir = Dir.mktmpdir("chrome_")
-      options.add_argument("--user-data-dir=#{tmpdir}")
+      options.add_argument("--disable-features=IsolateOrigins,site-per-process")
+      options.add_argument("--window-size=1200,900")
+
+      # セッション分離用プロファイル
+      @tmp_profile_dir = Dir.mktmpdir("chrome_")
+      options.add_argument("--user-data-dir=#{@tmp_profile_dir}")
       options.add_argument("--profile-directory=Default")
 
       driver = Selenium::WebDriver.for(:chrome, service: service, options: options)
-      driver.manage.timeouts.implicit_wait = 2
-      wait   = Selenium::WebDriver::Wait.new(timeout: 30)
+
+      # タイムアウト（緩め）
+      begin
+        driver.manage.timeouts.implicit_wait = 2
+        driver.manage.timeouts.page_load = 60
+        driver.manage.timeouts.script_timeout = 30
+      rescue; end
 
       begin
         log :info, "open / (トップ) へ遷移します"
-        driver.navigate.to "https://step.lme.jp/"
+        safe_selenium_goto(driver, "#{base_url}/", tries: 3)
         wait_for_ready_state(driver)
         log :debug, "初回: title=#{safe(driver.title)}, url=#{driver.current_url}"
 
         if already_logged_in?(driver)
-          log :info, "既にログイン済みの兆候 → /basic/friendlist"
+          log :info, "既にログイン済みの兆候 → #{BASIC_FALLBACK}"
           ensure_basic_session(driver)
           cookies = driver.manage.all_cookies
           log_cookies_brief!(cookies)
@@ -92,6 +86,7 @@ module Lme
         pass_el  = driver.find_elements(id: "password_login").first ||
                    driver.find_elements(css: "input[name='password']").first
         raise "ログインフォーム要素が見つかりません" unless email_el && pass_el
+
         email_el.send_keys(@email)
         pass_el.send_keys(@password)
 
@@ -105,17 +100,16 @@ module Lme
         end
 
         # 送信
-        btn = wait.until { driver.find_element(css: "button[type=submit]") }
-        wait.until { btn.enabled? }
+        btn = wait_until(10) { driver.find_element(css: "button[type=submit]") && driver.find_element(css: "button[type=submit]").enabled? }
         log :info, "ログインボタンをクリック"
-        btn.click
+        driver.find_element(css: "button[type=submit]").click
 
         # セッション成立待ち
         ok_once = wait_until(35) { !looks_like_login_page?(driver) && has_session_cookie?(driver) }
         log :debug, "一次判定=#{ok_once} title=#{safe(driver.title)} url=#{driver.current_url}"
         confirm_login_or_raise!(driver)
 
-        ensure_basic_session(driver)
+        ensure_basic_session(driver) # /basic/friendlist を踏む
         cookies = driver.manage.all_cookies
         log_cookies_brief!(cookies)
         { cookies: cookies, driver: driver }
@@ -123,17 +117,18 @@ module Lme
         log :error, "error: #{e.class} #{e.message}"
         e.backtrace&.first(8)&.each { |l| log :error, "  at #{l}" }
         dump_page(driver)
-        dump_page(driver) if DUMP_ON_ERROR rescue nil
         driver.quit rescue nil
+        FileUtils.remove_entry_secure(@tmp_profile_dir) rescue nil
         raise
       end
     end
 
     # =========================
-    # 2) /basic へ“必ず”入って Cookie/XSRF を確定 (Playwright)
+    # 2) /basic へ“必ず”入って Cookie/XSRF を確定 (Seleniumのみ)
     # =========================
     def fetch_friend_history(loa_label: "プロアカ")
       login_result = login!
+      driver = login_result[:driver]
 
       basic_cookie_header = nil
       basic_xsrf          = nil
@@ -141,110 +136,56 @@ module Lme
       final_cookies       = nil
       raw_cookie_header   = nil
 
-      # Heroku では npx 経由でOK。CLIは明示。
-      cli = heroku? ? (ENV["PLAYWRIGHT_CLI"].presence || "npx playwright") : "npx playwright"
+      begin
+        # admin/home → LOA 確定
+        safe_selenium_goto(driver, "#{base_url}/admin/home", tries: 3)
+        wait_for_ready_state(driver)
+        choose_loa_if_needed_selenium(driver, loa_label)
 
-      Playwright.create(playwright_cli_executable_path: cli) do |pw|
-        log :info, "Playwright 起動（cookie引き継ぎ）"
+        # /basic へ遷移（まず friendlist → ダメなら overview）
+        bot_id = ENV["LME_BOT_ID"].to_s.strip
+        href_friend = build_basic_url(BASIC_FALLBACK,  bot_id: bot_id, ts: now_ms)
+        safe_selenium_goto(driver, href_friend, tries: 3)
+        wait_for_ready_state(driver)
 
-        common_args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-
-        # ---- ここ重要：launch（≠ persistent_context）で立ち上げる。----
-        launch_opts = {
-          headless: true,
-          args: common_args
-        }
-
-        # Chrome 実バイナリが指定されていれば使う（Heroku/CFT 向け）
-        chrome_path = ENV["GOOGLE_CHROME_BIN"].to_s.strip
-        if !chrome_path.empty? && File.exist?(chrome_path)
-          launch_opts[:executable_path] = chrome_path
-        else
-          # 何もなければ Playwright の既定（ローカルは `npx playwright install chromium` 済み前提）
-          # channel は指定しない（誤って /opt/google/chrome を見に行かないように）
+        unless selenium_reached_basic?(driver)
+          href_over = build_basic_url(BASIC_TARGET_PATH, bot_id: bot_id, ts: now_ms)
+          safe_selenium_goto(driver, href_over, tries: 3)
+          wait_for_ready_state(driver)
         end
 
-        browser = pw.chromium.launch(**launch_opts)
-        context = browser.new_context  # ここに Cookie を移植して“ログイン済み”状態にする
-        page    = context.new_page
+        raise "basicエリアに入れませんでした (url=#{driver.current_url})" unless selenium_reached_basic?(driver)
 
+        # 仕上げ（任意）overview をもう一度
         begin
-          # Selenium cookie を PW に移植
-          normalized = normalize_cookies_for_pw(login_result[:cookies])
-          begin
-            context.add_cookies(normalized)
-          rescue
-            context.add_cookies(cookies: normalized)
-          end
+          over = build_basic_url(BASIC_TARGET_PATH, bot_id: bot_id, ts: now_ms)
+          safe_selenium_goto(driver, over, tries: 2)
+          wait_for_ready_state(driver)
+        rescue; end
+        basic_url = driver.current_url.to_s
 
-          # admin → LOA 確定
-          admin_url = "https://step.lme.jp/admin/home"
-          safe_goto(page, admin_url, desc: "admin/home", tries: 2)
-          page.wait_for_load_state(state: "domcontentloaded") rescue nil
-          log :debug, "PW: admin url=#{page.url}"
-          choose_loa_if_needed(page, loa_label)
+        # Cookie/XSRF 確定
+        sel_cookies = driver.manage.all_cookies
+        final_cookies     = sel_cookies
+        raw_cookie_header = sel_cookies.map { |c| "#{c[:name]}=#{c[:value]}" }.join("; ")
+        basic_cookie_header = sanitize_cookie_header(raw_cookie_header)
 
-          # /basic へ “クリック遷移”
-          bot_id = ENV["LME_BOT_ID"].to_s.strip
-          href_friend = build_basic_url(BASIC_FALLBACK, bot_id: bot_id, ts: now_ms)
-          page.evaluate(NAV_CLICK_JS, arg: href_friend)
-          page.wait_for_load_state(state: "networkidle") rescue nil
-          sleep 0.5
-          unless pw_reached_basic?(page, timeout_ms: 8_000)
-            href_over = build_basic_url(BASIC_TARGET_PATH, bot_id: bot_id, ts: now_ms)
-            page.evaluate(NAV_CLICK_JS, arg: href_over)
-            page.wait_for_load_state(state: "networkidle") rescue nil
-            sleep 0.5
-          end
-
-          # ダメ押し（新規タブ）
-          unless pw_reached_basic?(page, timeout_ms: 8_000)
-            href_over = build_basic_url(BASIC_TARGET_PATH, bot_id: bot_id, ts: now_ms)
-            newp = open_in_new_tab(context, href_over + "&_tab=1&_r=#{now_ms}", desc: "overview(new tab)")
-            page = newp if newp && pw_reached_basic?(newp, timeout_ms: 8_000)
-          end
-
-          raise "basicエリアに入れませんでした (url=#{page.url})" unless pw_reached_basic?(page, timeout_ms: 2_000)
-
-          # 仕上げに overview へ（任意）
-          begin
-            over = build_basic_url(BASIC_TARGET_PATH, bot_id: bot_id, ts: now_ms)
-            safe_goto(page, over, desc: "overview(final)", tries: 1)
-          rescue; end
-          basic_url = page.url.to_s
-
-          # Cookie/XSRF 確定
-          pl_cookies = context.cookies || []
-          final_cookies     = pl_cookies
-          raw_cookie_header = pl_cookies.map { |c| "#{(c["name"] || c[:name])}=#{(c["value"] || c[:value])}" }.join("; ")
-          basic_cookie_header = sanitize_cookie_header(raw_cookie_header)
-
-          xsrf_cookie = pl_cookies.find { |c| (c["name"] || c[:name]) == "XSRF-TOKEN" }
-          xsrf_raw    = xsrf_cookie && (xsrf_cookie["value"] || xsrf_cookie[:value])
-          basic_xsrf  = xsrf_raw && CGI.unescape(xsrf_raw.to_s)
-          basic_xsrf  = dom_csrf_token(page) if basic_xsrf.to_s.empty?
-          log :debug, "[cookies sanitized] #{basic_cookie_header || '(none)'}"
-          log :debug, "PW XSRF head=#{basic_xsrf.to_s[0,10]}"
-        ensure
-          begin
-            context&.close
-          rescue => e
-            log :warn, "[Playwright] context close failed: #{e.class} #{e.message}"
-          end
-          begin
-            browser&.close
-          rescue => e
-            log :warn, "[Playwright] browser close failed: #{e.class} #{e.message}"
-          end
-        end
+        xsrf_cookie = sel_cookies.find { |c| c[:name] == "XSRF-TOKEN" }&.dig(:value)
+        basic_xsrf  = xsrf_cookie ? CGI.unescape(xsrf_cookie.to_s) : dom_csrf_token_selenium(driver)
+        log :debug, "[cookies sanitized] #{basic_cookie_header || '(none)'}"
+        log :debug, "XSRF head=#{basic_xsrf.to_s[0,10]}"
+      ensure
+        # 必要に応じてここでクローズ
+        # driver.quit rescue nil
+        # FileUtils.remove_entry_secure(@tmp_profile_dir) rescue nil
       end
 
       result = {
         basic_cookie_header: basic_cookie_header,
-        basic_xsrf: basic_xsrf,
-        cookies: final_cookies,
-        basic_url: basic_url,               # 必ず /basic/* で返す
-        raw_cookie_header: raw_cookie_header,
+        basic_xsrf:          basic_xsrf,
+        cookies:             final_cookies,
+        basic_url:           basic_url,
+        raw_cookie_header:   raw_cookie_header,
       }
 
       unless valid_basic_session?(result[:basic_cookie_header], result[:basic_xsrf])
@@ -255,120 +196,53 @@ module Lme
     end
 
     # =========================
-    # ヘルパ（最小セット）
+    # ヘルパ（Selenium）
     # =========================
 
-    def choose_loa_if_needed(page, loa_label)
+    def choose_loa_if_needed_selenium(driver, loa_label)
+      # 出てなければ確定済み
       begin
-        page.wait_for_selector("text=#{loa_label}", timeout: 8_000)
-      rescue Playwright::TimeoutError
+        elems = driver.find_elements(:xpath, "//*[contains(normalize-space(text()), '#{loa_label}')]")
+        return if elems.empty?
+      rescue
         return
       end
-
+      # 素直にクリック
       begin
-        el = page.locator("text=#{loa_label}")
-        if el.count > 0
-          el.first.click
-          page.wait_for_load_state(state: "networkidle") rescue nil
-          sleep 0.5
-          return
-        end
-      rescue; end
-
-      begin
-        page.evaluate(<<~JS, arg: loa_label)
-          (label) => {
-            function clickable(e){
-              if(!e) return false;
-              const s = window.getComputedStyle(e);
-              if(s.display==='none' || s.visibility==='hidden') return false;
-              return typeof e.click === 'function';
-            }
-            const els = Array.from(document.querySelectorAll('span,a,button,td,div'));
-            for (let i=0; i<els.length; i++){
-              const e = els[i];
-              const t = (e.innerText || '').trim();
-              if(!t) continue;
-              if(t.indexOf(label) !== -1){
-                let cur = e;
-                for (let j=0; j<4 && cur; j++){
-                  if (clickable(cur)) { cur.click(); return true; }
-                  cur = cur.parentElement;
-                }
-                e.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));
-                return true;
-              }
-            }
-            return false;
-          }
-        JS
-        page.wait_for_load_state(state: "networkidle") rescue nil
-        sleep 0.5
+        elems = driver.find_elements(:xpath, "//*[contains(normalize-space(text()), '#{loa_label}')]")
+        elems.first&.click
+        sleep 0.4
       rescue => e
-        log :debug, "LOAクリック(JS)失敗: #{e.class} #{e.message}"
+        log :debug, "LOAクリック失敗: #{e.class} #{e.message}"
       end
     end
 
-    def pw_reached_basic?(page, timeout_ms: 8_000)
-      begin
-        page.wait_for_url(%r{/basic/(overview|friendlist|chat-v3)}, timeout: timeout_ms)
-      rescue Playwright::TimeoutError
-      end
-      url_ok  = page.url.to_s.include?("/basic/")
+    def selenium_reached_basic?(driver)
+      url_ok  = driver.current_url.to_s.include?("/basic/")
       text_ok = begin
-        txt = page.evaluate("document.body && document.body.innerText || ''").to_s
-        txt.include?("友だちリスト") || txt.include?("チャット管理")
+        html = driver.page_source.to_s
+        html.include?("友だちリスト") || html.include?("チャット管理")
       rescue
         false
       end
       url_ok || text_ok
     end
 
-    def safe_goto(page, url, desc:, tries: 2)
+    def safe_selenium_goto(driver, url, tries: 2, base_backoff: 0.5)
       tries.times do |i|
         begin
-          page.goto(url, timeout: 30_000, referer: "https://step.lme.jp/admin/home")
-          page.wait_for_load_state(state: "domcontentloaded") rescue nil
-          return true if page.url.to_s.start_with?("https://")
+          driver.navigate.to url
+          return true
         rescue => e
-          log :debug, "goto失敗(#{desc} try=#{i + 1}/#{tries}): #{e.class} #{e.message}"
+          log :debug, "Selenium goto失敗 try=#{i + 1}/#{tries}: #{e.class} #{e.message}"
+          sleep(base_backoff * (i + 1))
         end
-        begin
-          page.evaluate("u => { try { window.location.assign(u) } catch(e) {} }", arg: url)
-          page.wait_for_url(%r{^https://}, timeout: 10_000) rescue nil
-          return true if page.url.to_s.start_with?("https://")
-        rescue => e
-          log :debug, "assign失敗(#{desc} try=#{i + 1}/#{tries}): #{e.class} #{e.message}"
-        end
-        sleep 0.3
       end
       false
     end
 
-    def open_in_new_tab(context, url, desc:)
-      newp = context.new_page
-      begin
-        newp.goto(url, timeout: 30_000, referer: "https://step.lme.jp/admin/home")
-        newp.wait_for_load_state(state: "domcontentloaded") rescue nil
-        return newp if newp.url.to_s.start_with?("https://")
-      rescue => e
-        log :debug, "new tab 失敗(#{desc}): #{e.class} #{e.message}"
-      end
-      newp.close rescue nil
-      nil
-    end
-
-    def build_basic_url(path, bot_id:, ts:)
-      base = "https://step.lme.jp#{path}"
-      q = []
-      q << "botIdCurrent=#{CGI.escape(bot_id)}" unless bot_id.empty?
-      q << "isOtherBot=1" unless bot_id.empty?
-      q << "_ts=#{ts}"
-      q.empty? ? base : "#{base}?#{q.join('&')}"
-    end
-
-    def dom_csrf_token(page)
-      page.evaluate(<<~JS).to_s
+    def dom_csrf_token_selenium(driver)
+      driver.execute_script(<<~JS).to_s
         (function(){
           var m = document.querySelector('meta[name="csrf-token"]');
           return m ? m.getAttribute('content') : '';
@@ -376,6 +250,23 @@ module Lme
       JS
     rescue
       ""
+    end
+
+    # =========================
+    # 共通ヘルパ
+    # =========================
+
+    def base_url
+      ENV["LME_BASE_URL"].presence || "https://step.lme.jp"
+    end
+
+    def build_basic_url(path, bot_id:, ts:)
+      base = "#{base_url}#{path}"
+      q = []
+      q << "botIdCurrent=#{CGI.escape(bot_id)}" unless bot_id.to_s.empty?
+      q << "isOtherBot=1" unless bot_id.to_s.empty?
+      q << "_ts=#{ts}"
+      q.empty? ? base : "#{base}?#{q.join('&')}"
     end
 
     def sanitize_cookie_header(cookie_header)
@@ -386,22 +277,7 @@ module Lme
       keep.map { |k| "#{k}=#{uniq[k]}" if uniq[k] }.compact.join("; ")
     end
 
-    def normalize_cookies_for_pw(raw)
-      Array(raw).map do |c|
-        h = c.respond_to?(:to_h) ? c.to_h : c
-        {
-          name:     (h[:name]  || h["name"]).to_s,
-          value:    (h[:value] || h["value"]).to_s,
-          domain:   (h[:domain] || h["domain"] || "step.lme.jp").to_s,
-          path:     (h[:path]   || h["path"]   || "/").to_s,
-          httpOnly: !!(h[:http_only] || h["http_only"] || h[:httponly] || h["httponly"]),
-          secure:   true
-        }
-      end
-    end
-
-    # ===== reCAPTCHA & Selenium ヘルパ =====
-    private
+    # ===== reCAPTCHA =====
 
     def obtain_recaptcha_token_with_retries(sitekey, url, tries: RECAPTCHA_MAX_SOLVES)
       attempt  = 0
@@ -452,9 +328,11 @@ module Lme
       end
     end
 
+    # ===== 汎用ユーティリティ =====
+
     def already_logged_in?(driver)
       return false if looks_like_login_page?(driver)
-      driver.navigate.to "https://step.lme.jp/admin/home"
+      safe_selenium_goto(driver, "#{base_url}/admin/home", tries: 2)
       wait_for_ready_state(driver)
       url        = driver.current_url.to_s
       cookies_ok = has_session_cookie?(driver)
@@ -474,7 +352,7 @@ module Lme
     end
 
     def confirm_login_or_raise!(driver)
-      driver.navigate.to "https://step.lme.jp/admin/home"
+      safe_selenium_goto(driver, "#{base_url}/admin/home", tries: 2)
       wait_for_ready_state(driver)
       url = driver.current_url.to_s
       ok  = (url.include?("/admin") || url.include?("/basic/"))
@@ -482,7 +360,7 @@ module Lme
     end
 
     def ensure_basic_session(driver)
-      driver.navigate.to "https://step.lme.jp#{BASIC_FALLBACK}"
+      safe_selenium_goto(driver, "#{base_url}#{BASIC_FALLBACK}", tries: 2)
       wait_for_ready_state(driver)
     end
 
@@ -511,16 +389,19 @@ module Lme
     def wait_for_ready_state(driver, timeout = 20)
       deadline = Time.now + timeout
       until Time.now > deadline
-        return true if driver.execute_script("return document.readyState") == "complete"
+        begin
+          return true if driver.execute_script("return document.readyState") == "complete"
+        rescue Selenium::WebDriver::Error::JavascriptError
+        end
         sleep 0.2
       end
       false
     end
 
-    def wait_until(sec = 15)
+    def wait_until(sec = 15, &blk)
       deadline = Time.now + sec
       loop do
-        return true if yield
+        return true if blk.call
         return false if Time.now > deadline
         sleep 0.3
       end
@@ -566,7 +447,6 @@ module Lme
       end
     end
 
-    # ===== 実行環境検出 =====
     def heroku?
       ENV["DYNO"].to_s != "" || ENV["HEROKU"].to_s == "1"
     end
