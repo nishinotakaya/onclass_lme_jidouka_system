@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+
 require 'json'
 require 'cgi'
 require 'uri'
@@ -11,8 +12,8 @@ require 'google/apis/sheets_v4'
 require 'googleauth'
 require 'selenium-webdriver'
 require 'net/http'
-require 'selenium/devtools'
-require 'playwright'
+require 'selenium/devtools'  # 必要なら
+# Playwright は削除
 
 module Lme
   class LineInflowsWorker
@@ -21,10 +22,9 @@ module Lme
 
     GOOGLE_SCOPE = [Google::Apis::SheetsV4::AUTH_SPREADSHEETS].freeze
 
-    # ==== タグ判定用定数 =======================================================
     PROAKA_CATEGORY_ID       = 5_180_568
-    PROAKA_SEMINAR_CATEGORY  = 5_238_317 # 「プロアカ 体験会&セミナー」
-    CUM_SINCE                = ENV['LME_CUM_SINCE'].presence || '2023-01-01' # 累計の起点
+    PROAKA_SEMINAR_CATEGORY  = 5_238_317
+    CUM_SINCE                = ENV['LME_CUM_SINCE'].presence || '2023-01-01'
 
     PROAKA_TAGS = { v1: 1_394_734, v2: 1_394_736, v3: 1_394_737, v4: 1_394_738 }.freeze
     PROAKA_DIGEST_NAMES = { dv1: '動画①_ダイジェスト', dv2: '動画②_ダイジェスト', dv3: '動画③_ダイジェスト' }.freeze
@@ -34,13 +34,11 @@ module Lme
       '現役エンジニアに質問したい'
     ].freeze
 
-    # ==== 通信基本情報 =========================================================
     ORIGIN      = 'https://step.lme.jp'
     UA          = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
     ACCEPT_LANG = 'ja,en-US;q=0.9,en;q=0.8'
     CH_UA       = %Q("Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140")
 
-    # ==== Entry point ==========================================================
     def perform(start_date = nil, end_date = nil)
       Time.zone = 'Asia/Tokyo'
 
@@ -74,7 +72,6 @@ module Lme
         normalize_row!(row)
         raw_rows << row
       end
-
       # ---- ブロック専用API ----------------------------------------------------
       blocked_rows = Lme::BlockListService.new(ctx: ctx).fetch(start_on: start_on, end_on: end_on)
       Rails.logger.info("[blocked-api] fetched=#{blocked_rows.size}")
@@ -123,7 +120,6 @@ module Lme
         sample_uid = extract_line_user_id_from_link(rows.first['link_my_page'])
         ctx.bake_chat_context_for!(sample_uid)
       end
-
       # ---- タグ/セミナー & my_page 補完 ---------------------------------------
       tags_svc   = Lme::ChatTagsService.new(ctx: ctx)
       mypage_svc = Lme::MyPageService.new(ctx: ctx)

@@ -1,7 +1,8 @@
-# frozen_string_literal: true
-
-# Cookie/Playwright/CSRFメタ取得などセッション周りを担当
-# 依存：Playwright, Faraday, CGI, Rails.logger
+require 'cgi'
+require 'uri'
+require 'time'
+require 'faraday'
+require 'selenium-webdriver'
 
 module Lme
   class CookieContext
@@ -13,44 +14,30 @@ module Lme
       @logger = logger
     end
 
-    # 旧 ensure_basic_context!
-    def ensure_basic_context!(raw_cookies, fallback_cookie: nil)
+    # /admin/home → /basic/overview を踏んで Cookie を安定化（Selenium）
+    def ensure_basic_context!(raw_cookies, driver:)
       cookie_header = nil
       xsrf = nil
+      raise 'ensure_basic_context! requires Selenium driver' unless driver
 
-      Playwright.create(playwright_cli_executable_path: 'npx playwright') do |pw|
-        browser = pw.chromium.launch(headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'])
-        context = browser.new_context
-        begin
-          if raw_cookies.present?
-            add_cookies_to_context!(context, raw_cookies)
-          elsif fallback_cookie.present?
-            pairs = fallback_cookie.split(';').map { |p| k, v = p.strip.split('=', 2); { name: k, value: v } }
-            add_cookies_to_context!(context, pairs)
-          end
-          page = context.new_page
-          page.goto("#{@origin}/admin/home")
-          pw_wait_networkidle(page)
-          page.goto("#{@origin}/basic/overview")
-          pw_wait_networkidle(page)
+      add_cookies_to_driver!(driver, raw_cookies)
 
-          pl = ctx_cookies(context, domain_base)
-          cookie_header = pl.map { |c| "#{(c['name']||c[:name])}=#{(c['value']||c[:value])}" }.join('; ')
-          xsrf_row = pl.find { |c| (c['name'] || c[:name]) == 'XSRF-TOKEN' }
-          xsrf_raw = xsrf_row && (xsrf_row['value'] || xsrf_row[:value])
-          xsrf = xsrf_raw && CGI.unescape(xsrf_raw.to_s)
-        ensure
-          context&.close rescue nil
-          browser&.close rescue nil
-        end
-      end
+      navigate_and_wait(driver, "#{@origin}/admin/home")
+      navigate_and_wait(driver, "#{@origin}/basic/overview")
+
+      all = normalize_driver_cookies(driver)
+      cookie_header = all.map { |c| "#{c[:name]}=#{c[:value]}" }.join('; ')
+      xsrf_row = all.find { |c| c[:name] == 'XSRF-TOKEN' }
+      xsrf_raw = xsrf_row && xsrf_row[:value]
+      xsrf = xsrf_raw && CGI.unescape(xsrf_raw.to_s)
+
       [cookie_header, xsrf]
     rescue => e
-      @logger.warn("[ensure_basic_context!] #{e.class}: #{e.message}")
-      [fallback_cookie, extract_cookie(fallback_cookie, 'XSRF-TOKEN')]
+      @logger.warn("[ensure_basic_context!(selenium)] #{e.class}: #{e.message}")
+      [header_from_pairs(raw_cookies), extract_cookie(header_from_pairs(raw_cookies), 'XSRF-TOKEN')]
     end
 
-    # 旧 fetch_csrf_meta_with_cookies
+    # HTTP で <meta name="csrf-token" ...> を探す
     def fetch_csrf_meta_with_cookies(cookie_header, paths = '/')
       Array(paths).compact_blank.each do |p|
         html, final_url = get_with_cookies(cookie_header, p)
@@ -60,10 +47,45 @@ module Lme
       [nil, nil]
     end
 
-    # 旧 get_with_cookies（HTML取得）
+    # Selenium で DOM から csrf-token を読む（HTTP失敗時の最後の砦）
+    # ついでに driver の Cookie を拾って Cookie ヘッダ/XSRF も更新する
+    def selenium_fetch_meta_csrf!(driver, raw_cookies, paths, origin:)
+      add_cookies_to_driver!(driver, raw_cookies) if raw_cookies.present?
+
+      csrf_meta     = nil
+      cookie_header = nil
+      xsrf_cookie   = nil
+      src           = nil
+
+      Array(paths).compact_blank.each do |p|
+        # p が絶対URLならそのまま、相対なら origin と結合
+        dest = p.to_s.start_with?('http') ? p.to_s : join(origin, p)
+        navigate_and_wait(driver, dest)
+
+        csrf_meta = eval_csrf_via_js(driver)
+        if csrf_meta.to_s.strip != ''
+          src = p
+          break
+        end
+      end
+
+      all = normalize_driver_cookies(driver)
+      cookie_header = all.map { |c| "#{c[:name]}=#{c[:value]}" }.join('; ')
+      xsrf_row = all.find { |c| c[:name] == 'XSRF-TOKEN' }
+      xsrf_cookie = xsrf_row && CGI.unescape(xsrf_row[:value].to_s)
+
+      [csrf_meta, cookie_header, xsrf_cookie, src]
+    rescue => e
+      @logger.debug("[selenium_fetch_meta_csrf!] #{e.class}: #{e.message}")
+      [nil, nil, nil, nil]
+    end
+
+    # ===== HTTPユーティリティ =====
+
     def get_with_cookies(cookie_header, path)
-      url = URI.join(@origin, path).to_s
-      res = Faraday.new(url: @origin) { |f| f.adapter Faraday.default_adapter }.get(path) do |req|
+      url = join(@origin, path)
+      conn = Faraday.new(url: @origin) { |f| f.adapter Faraday.default_adapter }
+      res = conn.get(URI(url).request_uri) do |req|
         req.headers['accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
         req.headers['accept-language'] = @accept_lang
         req.headers['cookie'] = cookie_header.to_s
@@ -82,163 +104,97 @@ module Lme
       ['', url]
     end
 
-    # 旧 extract_meta_csrf
     def extract_meta_csrf(html)
       return nil if html.blank?
       html[/<meta[^>]+name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i, 1] ||
         html[/csrfToken["']?\s*[:=]\s*["']([^"']+)["']/i, 1]
     end
 
-    # 旧 playwright_fetch_meta_csrf!
-    def playwright_fetch_meta_csrf!(raw_cookies, paths)
-      csrf_meta    = nil
-      cookie_header = nil
-      xsrf_cookie  = nil
-      src          = nil
+    # ===== Seleniumユーティリティ =====
 
-      Playwright.create(playwright_cli_executable_path: 'npx playwright') do |pw|
-        browser = pw.chromium.launch(headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'])
-        context = browser.new_context
-        begin
-          add_cookies_to_context!(context, raw_cookies)
-          page = context.new_page
-
-          Array(paths).compact_blank.each do |p|
-            page.goto("#{@origin}#{p}")
-            pw_wait_for_url(page, %r{/basic/}, 15_000)
-            pw_wait_networkidle(page)
-
-            csrf_meta = page.evaluate(<<~JS)
-              () => {
-                const m = document.querySelector('meta[name="csrf-token"]');
-                if (m && m.content) return m.content;
-                if (window && window.Laravel && window.Laravel.csrfToken) return window.Laravel.csrfToken;
-                if (window && window.csrfToken) return window.csrfToken;
-                return null;
-              }
-            JS
-            if csrf_meta.to_s.strip != ''
-              src = p
-              break
-            end
-          end
-
-          pl_cookies = ctx_cookies(context, domain_base)
-          cookie_header = pl_cookies.map { |c| "#{(c['name']||c[:name])}=#{(c['value']||c[:value])}" }.join('; ')
-          xsrf_row = pl_cookies.find { |c| (c['name'] || c[:name]) == 'XSRF-TOKEN' }
-          if xsrf_row
-            raw_val = (xsrf_row['value'] || xsrf_row[:value]).to_s
-            xsrf_cookie = CGI.unescape(raw_val)
-          end
-        ensure
-          context&.close rescue nil
-          browser&.close rescue nil
-        end
-      end
-
-      [csrf_meta, cookie_header, xsrf_cookie, src]
-    rescue => e
-      @logger.debug("[playwright_fetch_meta_csrf] #{e.class}: #{e.message}")
-      [nil, nil, nil, nil]
-    end
-
-    # 旧 playwright_bake_chat_cookies!
-    def playwright_bake_chat_cookies!(raw_cookies, sample_uid, _bot_id)
-      cookie_header = nil
-      xsrf = nil
-
-      Playwright.create(playwright_cli_executable_path: 'npx playwright') do |pw|
-        browser = pw.chromium.launch(headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'])
-        context = browser.new_context
-        begin
-          add_cookies_to_context!(context, raw_cookies)
-          page = context.new_page
-          pw_add_init_script(page, 'window.open = (url, target) => { location.href = url; }')
-          page.goto("#{@origin}/basic/chat-v3?friend_id=#{sample_uid}")
-          pw_wait_for_url(page, %r{/basic/chat-v3}, 15_000)
-          pw_wait_networkidle(page)
-
-          pl_cookies = ctx_cookies(context, domain_base)
-          cookie_header = pl_cookies.map { |c| "#{(c['name']||c[:name])}=#{(c['value']||c[:value])}" }.join('; ')
-          xsrf_cookie = pl_cookies.find { |c| (c['name'] || c[:name]) == 'XSRF-TOKEN' }
-          xsrf_raw = xsrf_cookie && (xsrf_cookie['value'] || xsrf_cookie[:value])
-          xsrf = xsrf_raw && CGI.unescape(xsrf_raw.to_s)
-        ensure
-          context&.close rescue nil
-          browser&.close rescue nil
-        end
-      end
-      [cookie_header, xsrf]
-    end
-
-    # ===== Cookie helpers / Playwright utils =====
-
-    def add_cookies_to_context!(context, raw_cookies, default_domain: domain_base)
-      normalized = Array(raw_cookies).map do |c|
+    def add_cookies_to_driver!(driver, raw_cookies)
+      domain = URI(@origin).host
+      Array(raw_cookies).each do |c|
         h = c.respond_to?(:to_h) ? c.to_h : c
-        http_only_flag = h[:http_only] || h['http_only'] || h[:httponly] || h['httponly'] || false
+        next if h[:name].to_s.empty?
         cookie = {
-          name: (h[:name] || h['name']).to_s,
+          name:  (h[:name]  || h['name']).to_s,
           value: (h[:value] || h['value']).to_s,
-          domain: (h[:domain] || h['domain'] || default_domain).to_s,
-          path: (h[:path] || h['path'] || '/').to_s,
-          httpOnly: !!http_only_flag,
+          path:  (h[:path]  || h['path']  || '/').to_s,
+          domain:(h[:domain]|| h['domain']|| domain).to_s,
           secure: true
         }
-        exp = (h[:expires] || h['expires'] || h[:expiry] || h['expiry'])
-        cookie[:expires] =
-          case exp
-          when Time    then exp.to_i
-          when Integer then exp
-          when Float   then exp.to_i
-          when String  then (Time.parse(exp).to_i rescue nil)
-          else nil
-          end
-        cookie.compact
-      end
-
-      begin
-        context.add_cookies(normalized)
-      rescue ArgumentError, Playwright::Error
-        context.add_cookies(cookies: normalized)
-      end
-    end
-
-    def ctx_cookies(context, domain = nil)
-      cookies = Array(context.cookies || [])
-      return cookies unless domain
-      cookies.select do |c|
-        d = (c['domain'] || c[:domain] || (c.respond_to?(:domain) ? c.domain : '') || '').to_s
-        d.include?(domain)
+        if (exp = (h[:expires] || h['expires'] || h[:expiry] || h['expiry']))
+          cookie[:expires] =
+            case exp
+            when Time    then exp
+            when Integer then Time.at(exp)
+            when Float   then Time.at(exp.to_i)
+            when String  then (Time.parse(exp) rescue nil)
+            end
+        end
+        begin
+          navigate_if_necessary_for_cookie!(driver)
+          driver.manage.add_cookie(cookie.compact)
+        rescue Selenium::WebDriver::Error::InvalidCookieDomainError
+          # ドメイン不一致時は無視
+        rescue => e
+          @logger.debug("[add_cookie] #{cookie[:name]} #{e.class}: #{e.message}")
+        end
       end
     end
 
-    def pw_wait_networkidle(page)
-      page.wait_for_load_state(state: 'networkidle')
-    rescue Playwright::TimeoutError, ArgumentError, NoMethodError
-      sleep 1
+    def navigate_if_necessary_for_cookie!(driver)
+      cur = (driver.current_url rescue '')
+      return if cur.start_with?(@origin)
+      driver.navigate.to(@origin)
+      short_wait
+    rescue => e
+      @logger.debug("[navigate_if_necessary] #{e.class}: #{e.message}")
     end
 
-    def pw_wait_for_url(page, pattern, timeout_ms = 15_000)
-      page.wait_for_url(pattern, timeout: timeout_ms)
-      true
-    rescue Playwright::TimeoutError, ArgumentError, NoMethodError
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_ms.to_f/1000
-      loop do
-        return true if page.url.to_s.match?(pattern)
-        break if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
-        sleep 0.2
+    def navigate_and_wait(driver, url)
+      driver.navigate.to(url)
+      Selenium::WebDriver::Wait.new(timeout: 10).until { driver.execute_script('return document.readyState') == 'complete' }
+    rescue => e
+      @logger.debug("[navigate_and_wait] #{url} #{e.class}: #{e.message}")
+      short_wait
+    end
+
+    def eval_csrf_via_js(driver)
+      driver.execute_script(<<~JS)
+        (function(){
+          var m = document.querySelector('meta[name="csrf-token"]');
+          if (m && m.content) return m.content;
+          if (window && window.Laravel && window.Laravel.csrfToken) return window.Laravel.csrfToken;
+          if (window && window.csrfToken) return window.csrfToken;
+          return null;
+        })();
+      JS
+    rescue => e
+      @logger.debug("[eval_csrf_via_js] #{e.class}: #{e.message}")
+      nil
+    end
+
+    def normalize_driver_cookies(driver)
+      Array(driver.manage.all_cookies).map do |c|
+        {
+          name: (c[:name] || c['name']).to_s,
+          value: (c[:value] || c['value']).to_s,
+          domain: (c[:domain] || c['domain']).to_s,
+          path: (c[:path] || c['path'] || '/').to_s,
+          expires: (c[:expires] || c['expires']),
+          http_only: (c[:httpOnly] || c['httpOnly'] || c[:http_only] || c['http_only'] || false),
+          secure: (c[:secure] || c['secure'] || true)
+        }.compact
       end
-      false
+    rescue => e
+      @logger.debug("[normalize_driver_cookies] #{e.class}: #{e.message}")
+      []
     end
 
-    def pw_add_init_script(page, code)
-      page.add_init_script(script: code)
-    rescue ArgumentError, NoMethodError
-      page.add_init_script(code)
-    end
+    # ===== 単純Cookie/文字列ユーティリティ =====
 
-    # ===== 単純Cookieユーティリティ =====
     def extract_cookie(cookie_str, key)
       return nil if cookie_str.blank?
       cookie_str.split(';').map(&:strip).each do |pair|
@@ -261,11 +217,16 @@ module Lme
       nil
     end
 
-    private
+    def header_from_pairs(pairs)
+      Array(pairs).map { |c| h = (c.respond_to?(:to_h) ? c.to_h : c); "#{h[:name] || h['name']}=#{h[:value] || h['value']}" }.join('; ')
+    end
 
-    def domain_base
-      # ORIGIN が https://step.lme.jp を想定
-      URI(@origin).host || 'step.lme.jp'
+    def join(base, path)
+      URI.join(base, path.to_s).to_s
+    end
+
+    def short_wait
+      sleep 0.3
     end
   end
 end

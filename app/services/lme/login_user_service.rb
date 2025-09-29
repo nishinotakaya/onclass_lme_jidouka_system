@@ -186,6 +186,7 @@ module Lme
         cookies:             final_cookies,
         basic_url:           basic_url,
         raw_cookie_header:   raw_cookie_header,
+        driver:              driver
       }
 
       unless valid_basic_session?(result[:basic_cookie_header], result[:basic_xsrf])
