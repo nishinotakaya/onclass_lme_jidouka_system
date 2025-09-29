@@ -15,7 +15,7 @@
 
 onclass_students_front:
   class: "Onclass::StudentsDataWorker"
-  cron: "0 */2 * * *"
+  cron: "0 7-23/2 * * *"   # 7:00, 9:00, 11:00, ..., 23:00
   queue: onclass_students_data
   args:
     - "oYTO4UDI6MGb"
@@ -25,7 +25,7 @@ onclass_students_front:
 
 onclass_students_backend:
   class: "Onclass::StudentsDataWorker"
-  cron: "15 */2 * * *"     # 2時間毎 + 15分（ずらす）
+  cron: "15 7-23/2 * * *"  # 7:15, 9:15, 11:15, ..., 23:15
   queue: onclass_students_data
   args:
     - "oEDI6MGb"

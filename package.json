@@ -1,16 +1,18 @@
 {
   "name": "onclass-lme-jidouka-app",
   "private": true,
+  "version": "1.0.0",
+  "description": "onclass automation",
+  "main": "index.js",
   "engines": {
     "node": "18.x"
   },
   "dependencies": {
-    "playwright": "1.55.0"
+    "playwright": "^1.55.0"
   },
-  "scripts": {},
-  "version": "1.0.0",
-  "description": "1.クローンコマンド",
-  "main": "index.js",
+  "scripts": {
+    "postinstall": "echo \"skip playwright browser download on Heroku\""
+  },
   "directories": {
     "lib": "lib",
     "test": "test"

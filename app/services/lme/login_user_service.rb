@@ -7,6 +7,8 @@ require "playwright"
 require "time"
 require "cgi"
 require "tmpdir"
+require "securerandom"
+require "fileutils"
 
 module Lme
   class LoginUserService
@@ -21,13 +23,13 @@ module Lme
       (target) => {
         try {
           const a = document.createElement('a');
-          a.href = target;
-          a.rel  = 'noopener';
-          a.style.display = 'none';
-          document.body.appendChild(a);
-          const ev = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-          a.dispatchEvent(ev);
-          setTimeout(() => { try { a.remove(); } catch(_){} }, 1000);
+        a.href = target;
+        a.rel  = 'noopener';
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        const ev = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+        a.dispatchEvent(ev);
+        setTimeout(() => { try { a.remove(); } catch(_){} }, 1000);
         } catch(e) {
           try { window.location.assign(target); } catch(_){}
         }
@@ -44,7 +46,6 @@ module Lme
     # 1) ログイン (Selenium)
     # =========================
     def login!
-      # 開発環境のままの初期化（Selenium Manager または CHROMEDRIVER_PATH）
       service =
         if ENV["CHROMEDRIVER_PATH"].to_s.strip.empty?
           Selenium::WebDriver::Service.chrome
@@ -54,7 +55,6 @@ module Lme
 
       options = Selenium::WebDriver::Chrome::Options.new
 
-      # 旧buildpack互換のバイナリ検出（開発も本番も可）
       bin = [ENV["GOOGLE_CHROME_SHIM"], ENV["CHROME_BIN"], ENV["GOOGLE_CHROME_BIN"]]
               .compact.map(&:to_s).map(&:strip)
               .find { |v| !v.empty? && File.exist?(v) }
@@ -115,7 +115,7 @@ module Lme
         log :debug, "一次判定=#{ok_once} title=#{safe(driver.title)} url=#{driver.current_url}"
         confirm_login_or_raise!(driver)
 
-        ensure_basic_session(driver) # /basic/friendlist まで一旦寄せる
+        ensure_basic_session(driver)
         cookies = driver.manage.all_cookies
         log_cookies_brief!(cookies)
         { cookies: cookies, driver: driver }
@@ -141,19 +141,41 @@ module Lme
       final_cookies       = nil
       raw_cookie_header   = nil
 
-      # ★開発は“絶対に”既存通り。Heroku の時だけ CLI を解決して指定。
+      # Heroku では npx 経由でOK。CLIは明示。
       cli = heroku? ? (ENV["PLAYWRIGHT_CLI"].presence || "npx playwright") : "npx playwright"
 
       Playwright.create(playwright_cli_executable_path: cli) do |pw|
         log :info, "Playwright 起動（cookie引き継ぎ）"
-        browser = pw.chromium.launch(headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"])
-        context = browser.new_context
+
+        common_args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+
+        # ---- ここ重要：launch（≠ persistent_context）で立ち上げる。----
+        launch_opts = {
+          headless: true,
+          args: common_args
+        }
+
+        # Chrome 実バイナリが指定されていれば使う（Heroku/CFT 向け）
+        chrome_path = ENV["GOOGLE_CHROME_BIN"].to_s.strip
+        if !chrome_path.empty? && File.exist?(chrome_path)
+          launch_opts[:executable_path] = chrome_path
+        else
+          # 何もなければ Playwright の既定（ローカルは `npx playwright install chromium` 済み前提）
+          # channel は指定しない（誤って /opt/google/chrome を見に行かないように）
+        end
+
+        browser = pw.chromium.launch(**launch_opts)
+        context = browser.new_context  # ここに Cookie を移植して“ログイン済み”状態にする
+        page    = context.new_page
+
         begin
           # Selenium cookie を PW に移植
           normalized = normalize_cookies_for_pw(login_result[:cookies])
-          context.add_cookies(normalized) rescue context.add_cookies(cookies: normalized)
-
-          page = context.new_page
+          begin
+            context.add_cookies(normalized)
+          rescue
+            context.add_cookies(cookies: normalized)
+          end
 
           # admin → LOA 確定
           admin_url = "https://step.lme.jp/admin/home"
@@ -182,31 +204,38 @@ module Lme
             page = newp if newp && pw_reached_basic?(newp, timeout_ms: 8_000)
           end
 
-          # ここで /basic にいなければ中止（admin の Cookie を返さない）
           raise "basicエリアに入れませんでした (url=#{page.url})" unless pw_reached_basic?(page, timeout_ms: 2_000)
 
-          # 見栄えとして overview を1回だけ（任意）
+          # 仕上げに overview へ（任意）
           begin
             over = build_basic_url(BASIC_TARGET_PATH, bot_id: bot_id, ts: now_ms)
             safe_goto(page, over, desc: "overview(final)", tries: 1)
           rescue; end
           basic_url = page.url.to_s
 
-          # Cookie/XSRF 碾定
+          # Cookie/XSRF 確定
           pl_cookies = context.cookies || []
           final_cookies     = pl_cookies
           raw_cookie_header = pl_cookies.map { |c| "#{(c["name"] || c[:name])}=#{(c["value"] || c[:value])}" }.join("; ")
           basic_cookie_header = sanitize_cookie_header(raw_cookie_header)
 
           xsrf_cookie = pl_cookies.find { |c| (c["name"] || c[:name]) == "XSRF-TOKEN" }
-          xsrf_raw    = xsrf_cookie && (cval = (xsrf_cookie["value"] || xsrf_cookie[:value]))
+          xsrf_raw    = xsrf_cookie && (xsrf_cookie["value"] || xsrf_cookie[:value])
           basic_xsrf  = xsrf_raw && CGI.unescape(xsrf_raw.to_s)
           basic_xsrf  = dom_csrf_token(page) if basic_xsrf.to_s.empty?
           log :debug, "[cookies sanitized] #{basic_cookie_header || '(none)'}"
           log :debug, "PW XSRF head=#{basic_xsrf.to_s[0,10]}"
         ensure
-          context&.close rescue nil
-          browser&.close rescue nil
+          begin
+            context&.close
+          rescue => e
+            log :warn, "[Playwright] context close failed: #{e.class} #{e.message}"
+          end
+          begin
+            browser&.close
+          rescue => e
+            log :warn, "[Playwright] browser close failed: #{e.class} #{e.message}"
+          end
         end
       end
 
@@ -230,14 +259,12 @@ module Lme
     # =========================
 
     def choose_loa_if_needed(page, loa_label)
-      # ラベルが出なければ確定済み
       begin
         page.wait_for_selector("text=#{loa_label}", timeout: 8_000)
       rescue Playwright::TimeoutError
         return
       end
 
-      # まずは素直に text= クリック
       begin
         el = page.locator("text=#{loa_label}")
         if el.count > 0
@@ -248,7 +275,6 @@ module Lme
         end
       rescue; end
 
-      # JS総当り：クリック可能な祖先を最大4段たどって click
       begin
         page.evaluate(<<~JS, arg: loa_label)
           (label) => {
@@ -287,7 +313,6 @@ module Lme
       begin
         page.wait_for_url(%r{/basic/(overview|friendlist|chat-v3)}, timeout: timeout_ms)
       rescue Playwright::TimeoutError
-        # URLが変わらなくても本文で判定
       end
       url_ok  = page.url.to_s.include?("/basic/")
       text_ok = begin
@@ -308,7 +333,6 @@ module Lme
         rescue => e
           log :debug, "goto失敗(#{desc} try=#{i + 1}/#{tries}): #{e.class} #{e.message}"
         end
-        # assign フォールバック
         begin
           page.evaluate("u => { try { window.location.assign(u) } catch(e) {} }", arg: url)
           page.wait_for_url(%r{^https://}, timeout: 10_000) rescue nil
