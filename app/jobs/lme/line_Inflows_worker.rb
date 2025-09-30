@@ -30,6 +30,11 @@ module Lme
       'プログラミング無料体験したい',
       '現役エンジニアに質問したい'
     ].freeze
+    # 追加: 入会関連/個別相談
+    JOIN_CATEGORY_ID                = 88_647
+    JOIN_PROAKA_PAID_TAG_NAME       = 'プロアカ決済完了'
+    JOIN_FREELANCE_PAID_TAG_NAME    = 'フリーエンジニア決済完了'
+    PROAKA_KOBETSU_TAG_NAME         = 'プロアカ個別相談'
 
     ORIGIN      = 'https://step.lme.jp'
     UA          = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
@@ -132,6 +137,11 @@ module Lme
         r['seminar_map'] = seminar_map || {}
         r['seminar_map'].keys.each { |ymd| seminar_dates_set << ymd }
 
+        # 追加: 入会関連（成約）＆ 個別相談
+        contracts, kobetsu = extract_join_and_kobetsu_from_payload(res_body)
+        r['contracts'] = contracts # "プロアカ決済完了", "フリーエンジニア決済完了", or "プロアカ決済完了/フリーエンジニア決済完了"
+        r['kobetsu']   = kobetsu   # "プロアカ個別相談"（該当時）/ 空文字
+
         # my_page
         info = fetch_user_basic_info_via_service(mypage_svc, uid)
         q = info[:qr_code].to_s.strip
@@ -223,7 +233,9 @@ module Lme
           'is_blocked'   => (rec['is_blocked'] || 0).to_i,
           'tags_flags'   => rec['tags_flags'] || {},
           'seminar_map'  => rec['seminar_map'] || {},
-          'qr_code'      => rec['qr_code']
+          'qr_code'      => rec['qr_code'],
+          'contracts'    => rec['contracts'], # 追加: 成約
+          'kobetsu'      => rec['kobetsu']    # 追加: 個別相談
         }
       end
     end
@@ -299,6 +311,52 @@ module Lme
         end
       end
       result
+    end
+
+    # 追加: 入会関連（成約）＆ 個別相談の抽出
+    def extract_join_and_kobetsu_from_payload(payload)
+      categories =
+        case payload
+        when String
+          j = JSON.parse(payload) rescue nil
+          if j.is_a?(Hash)
+            j['data'] || j['result'] || j['items'] || j['list'] || []
+          elsif j.is_a?(Array)
+            j
+          else
+            []
+          end
+        when Hash
+          payload['data'] || payload['result'] || payload['items'] || payload['list'] || []
+        when Array
+          payload
+        else
+          []
+        end
+
+      contracts = join_contracts_from_categories(categories)
+      kobetsu  = kobetsu_from_categories(categories)
+      [contracts, kobetsu]
+    rescue => e
+      Rails.logger.debug("[extract_join] #{e.class}: #{e.message}")
+      ['', '']
+    end
+
+    def join_contracts_from_categories(categories)
+      cat = Array(categories).find { |c| (c['id'] || c[:id]).to_i == JOIN_CATEGORY_ID }
+      return '' unless cat
+      names = Array(cat['tags'] || cat[:tags]).map { |t| (t['name'] || t[:name]).to_s }
+      vals = []
+      vals << JOIN_PROAKA_PAID_TAG_NAME    if names.include?(JOIN_PROAKA_PAID_TAG_NAME)
+      vals << JOIN_FREELANCE_PAID_TAG_NAME if names.include?(JOIN_FREELANCE_PAID_TAG_NAME)
+      vals.join('/')
+    end
+
+    def kobetsu_from_categories(categories)
+      cat = Array(categories).find { |c| (c['id'] || c[:id]).to_i == PROAKA_CATEGORY_ID }
+      return '' unless cat
+      tag = Array(cat['tags'] || cat[:tags]).find { |t| (t['name'] || t[:name]).to_s.include?(PROAKA_KOBETSU_TAG_NAME) }
+      tag ? (tag['name'] || tag[:name]).to_s : ''
     end
 
     def find_value_by_key(obj, key)
@@ -426,7 +484,8 @@ module Lme
         '動画①_ダイジェスト', 'プロアカ_動画①',
         '動画②_ダイジェスト', 'プロアカ_動画②',
         '動画③_ダイジェスト', 'プロアカ_動画③',
-        '', 'プロアカ_動画④', '選択肢'
+        '', 'プロアカ_動画④', '選択肢',
+        '個別相談', '成約'  # 追加: 個別相談（左）/ 成約（右）
       ] + seminar_headers
 
       cols = headers.size
@@ -488,7 +547,9 @@ module Lme
           (t[:v3]  ? 'タグあり' : ''),
           '',
           (t[:v4]  ? 'タグあり' : ''),
-          (t[:select] || '')
+          (t[:select] || ''),
+          (r['kobetsu'].presence || ''),   # 追加: 個別相談
+          (r['contracts'].presence || '')  # 追加: 成約
         ]
         sem = r['seminar_map'] || {}
         seminar_dates.each do |ymd|
