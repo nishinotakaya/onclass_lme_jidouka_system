@@ -26,6 +26,12 @@ module Lme
     REF_ROW_START = 25 # 流入経路 1月行
     REF_ROW_END = 36 # 流入経路 12月行
 
+    # 追加：特別集計のベース行（1月）と最終行（12月）
+    SPECIAL_ROW_START = 40
+    SPECIAL_ROW_END   = 51
+    BOTH_TAGS_ROW_START = 55
+    BOTH_TAGS_ROW_END   = 66
+
     TOTAL_CELL_COL = 'D'
     TOTAL_CELL_BASE = 'D5' # 2025年の総数セル
 
@@ -56,8 +62,8 @@ module Lme
       'M' => 'L', # 動画3 率 = L/D
       'O' => 'N', # 動画4 率 = N/D
       'Q' => 'P', # 動画4クリック 率 = P/D
-      'S' => 'R', # 予備（→ 個別相談 率 = R/D）
-      'U' => 'T' # 予備（→ 成約 率 = T/D）
+      'S' => 'R', # 個別相談 率 = R/D
+      'U' => 'T'  # 成約 率 = T/D
     }.freeze
 
     # 流入経路 → ダッシュボードの件数列（25〜36行）
@@ -67,7 +73,7 @@ module Lme
       '加藤' => 'I',
       '西野 ショート' => 'M',
       'YouTube概要欄' => 'O',
-      'YouTubeTop' => 'Q'
+      'YouTube概要欄 Top' => 'Q'
     }.freeze
 
     # 流入経路 率（25〜36行）: 「率列 => 分子（件数）列」の対応（左隣 基本）
@@ -108,7 +114,6 @@ module Lme
         write_dashboard!(service, spreadsheet_id, dashboard_sheet_name, year_offset, 0, Array.new(12, 0), {}, {})
         write_tag_monthlies!(service, spreadsheet_id, dashboard_sheet_name, default_tag_monthlies, year_offset)
         write_video4_counts!(service, spreadsheet_id, dashboard_sheet_name, Array.new(12, 0), year_offset)
-        # 追加: 個別相談 / 成約 の月次件数（R列/T列）
         write_kobetsu_counts!(service, spreadsheet_id, dashboard_sheet_name, Array.new(12, 0), year_offset)
         write_contract_counts!(service, spreadsheet_id, dashboard_sheet_name, Array.new(12, 0), year_offset)
         write_referrer_counts!(service, spreadsheet_id, dashboard_sheet_name, Hash.new { |h,k| h[k]=Array.new(12,0) }, year_offset)
@@ -116,6 +121,10 @@ module Lme
         write_monthly_percentage_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
         write_referrer_rate_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
         write_row6_summary_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
+        write_row5_total_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset) # Q5/S5/U5
+        write_row6_additional_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset) # S6/U6
+        write_special_ref_contract_counts!(service, spreadsheet_id, dashboard_sheet_name, [], nil, nil, nil, nil, nil, year_offset) # 空書き
+        write_both_tags_counts!(service, spreadsheet_id, dashboard_sheet_name, Array.new(12,0), year_offset)
         write_labels!(service, spreadsheet_id, dashboard_sheet_name)
         return
       end
@@ -132,7 +141,6 @@ module Lme
         write_dashboard!(service, spreadsheet_id, dashboard_sheet_name, year_offset, 0, Array.new(12, 0), {}, {})
         write_tag_monthlies!(service, spreadsheet_id, dashboard_sheet_name, default_tag_monthlies, year_offset)
         write_video4_counts!(service, spreadsheet_id, dashboard_sheet_name, Array.new(12, 0), year_offset)
-        # 追加: 個別相談 / 成約 の月次件数（R列/T列）
         write_kobetsu_counts!(service, spreadsheet_id, dashboard_sheet_name, Array.new(12, 0), year_offset)
         write_contract_counts!(service, spreadsheet_id, dashboard_sheet_name, Array.new(12, 0), year_offset)
         write_referrer_counts!(service, spreadsheet_id, dashboard_sheet_name, Hash.new { |h,k| h[k]=Array.new(12,0) }, year_offset)
@@ -140,19 +148,21 @@ module Lme
         write_monthly_percentage_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
         write_referrer_rate_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
         write_row6_summary_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
+        write_row5_total_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
+        write_row6_additional_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
+        write_special_ref_contract_counts!(service, spreadsheet_id, dashboard_sheet_name, [], nil, nil, nil, nil, nil, year_offset)
+        write_both_tags_counts!(service, spreadsheet_id, dashboard_sheet_name, Array.new(12,0), year_offset)
         write_labels!(service, spreadsheet_id, dashboard_sheet_name)
         return
       end
 
       # --- 2) ヘッダ名 → インデックス解決（ゆれ対応） ---------------------------
       header_map = build_header_index_map(header)
-      idx_follow = index_for_followed_at(header_map)
-      idx_name = index_for(header_map, ['名前', '氏名', 'お名前', 'LINE表示名', 'Name']) || col_index_from_letter('F') # F列保険
-      idx_referrer= index_for(header_map, ['流入経路', '流入元', '参照元', '経路']) || col_index_from_letter('D')
-      # 追加: 個別相談 / 成約 列
-      idx_kobetsu = index_for(header_map, ['個別相談'])
+      idx_follow   = index_for_followed_at(header_map)
+      idx_name     = index_for(header_map, ['名前', '氏名', 'お名前', 'LINE表示名', 'Name']) || col_index_from_letter('F') # F列保険
+      idx_referrer = index_for(header_map, ['流入経路', '流入元', '参照元', '経路']) || col_index_from_letter('D')
+      idx_kobetsu  = index_for(header_map, ['個別相談'])
       idx_contract = index_for(header_map, ['成約'])
-
       raise "Source header not found: 友達追加時刻/日時 @ #{source_sheet_name}!B6" if idx_follow.nil?
 
       # タグ列インデックス（① / 1 のゆれ吸収）
@@ -245,12 +255,11 @@ module Lme
 
         if idx_contract
           v = safe_at(row, idx_contract).to_s.strip
-          # 同一ユーザーで「プロアカ決済完了/フリーエンジニア決済完了」は1としてカウント
           contract_counts[m_idx] += 1 unless v.empty?
         end
       end
 
-      # --- 8) 流入経路（D列）月別集計 -------------------------------------------
+      # --- 8) 流入経路（D列）月別集計（25〜36行 各チャンネルの件数） -------------
       referrer_counts = Hash.new { |h, k| h[k] = Array.new(12, 0) }
       if idx_referrer
         rows_target.each do |row|
@@ -264,6 +273,59 @@ module Lme
         end
       end
 
+      # --- 8.5) 特別集計：流入×成約の月次件数（E/G/K/O/Q, 40〜51行） --------------
+      # 条件：
+      #  E: 小松 × 成約あり
+      #  G: 加藤 × 成約あり
+      #  K: 西野日常 × 成約あり（なければ「西野」含む & 「ショート」含まず）
+      #  O: YouTube概要欄（Top を含まない）× 成約あり
+      #  Q: YouTube概要欄 Top × 成約あり
+      special_e = Array.new(12, 0)
+      special_g = Array.new(12, 0)
+      special_k = Array.new(12, 0)
+      special_o = Array.new(12, 0)
+      special_q = Array.new(12, 0)
+
+      rows_target.each do |row|
+        t = parse_followed_at(safe_at(row, idx_follow))
+        next unless t
+        m_idx = t.month - 1
+
+        ref = safe_at(row, idx_referrer).to_s
+        has_contract = idx_contract ? safe_at(row, idx_contract).to_s.strip.present? : false
+        next unless has_contract
+
+        if ref.include?('小松')
+          special_e[m_idx] += 1
+        end
+        if ref.include?('加藤')
+          special_g[m_idx] += 1
+        end
+
+        if ref.include?('西野日常') || (ref.include?('西野') && !ref.include?('ショート'))
+          special_k[m_idx] += 1
+        end
+
+        if ref.include?('YouTube概要欄 Top')
+          special_q[m_idx] += 1
+        elsif ref.include?('YouTube概要欄')
+          # Top を除いた通常の YouTube概要欄
+          special_o[m_idx] += 1
+        end
+      end
+
+      # --- 8.6) 「個別相談 かつ 成約」月次件数（R列, 55〜66行） ------------------
+      both_tags_counts = Array.new(12, 0)
+      rows_target.each do |row|
+        t = parse_followed_at(safe_at(row, idx_follow))
+        next unless t
+        m_idx = t.month - 1
+
+        has_kobetsu = idx_kobetsu ? safe_at(row, idx_kobetsu).to_s.strip.present? : false
+        has_contract = idx_contract ? safe_at(row, idx_contract).to_s.strip.present? : false
+        both_tags_counts[m_idx] += 1 if has_kobetsu && has_contract
+      end
+
       # --- ログ -----------------------------------------------------------------
       Rails.logger.info("[Counts] year=#{target_year} total=#{total}")
       Rails.logger.info("[Counts] monthly total=#{monthly_total.each_with_index.map { |c,i| "#{i+1}月:#{c}" }.join(', ')}")
@@ -273,6 +335,8 @@ module Lme
       Rails.logger.info("[Counts] kobetsu counts(R)=#{kobetsu_counts}")
       Rails.logger.info("[Counts] contract counts(T)=#{contract_counts}")
       Rails.logger.info("[Counts] referrer counts=#{referrer_counts}")
+      Rails.logger.info("[Counts] special E/G/K/O/Q=#{[special_e, special_g, special_k, special_o, special_q].map { |a| a.sum }}")
+      Rails.logger.info("[Counts] both_tags_counts(R55-66)=#{both_tags_counts}")
 
       # --- 9) 書き込み（年オフセット適用） ---------------------------------------
       ensure_sheet_exists!(service, spreadsheet_id, dashboard_sheet_name)
@@ -280,7 +344,6 @@ module Lme
       write_dashboard!(service, spreadsheet_id, dashboard_sheet_name, year_offset, total, monthly_total, tag_totals, tag_rates)
       write_tag_monthlies!(service, spreadsheet_id, dashboard_sheet_name, tag_monthlies, year_offset)
       write_video4_counts!(service, spreadsheet_id, dashboard_sheet_name, video4_counts, year_offset)
-      # 追加: 個別相談 / 成約 の月次件数（R列/T列）
       write_kobetsu_counts!(service, spreadsheet_id, dashboard_sheet_name, kobetsu_counts, year_offset)
       write_contract_counts!(service, spreadsheet_id, dashboard_sheet_name, contract_counts, year_offset)
       write_referrer_counts!(service, spreadsheet_id, dashboard_sheet_name, referrer_counts, year_offset)
@@ -294,8 +357,19 @@ module Lme
       write_monthly_percentage_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
       write_referrer_rate_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
 
-      # 6行目（サマリ率）を一括で設定
+      # 6行目（サマリ率）を一括で設定（K6/M6/O6/Q6）
       write_row6_summary_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
+      # 追加の 5行目・6行目式（Q5/S5/U5 と S6/U6）
+      write_row5_total_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
+      write_row6_additional_formulas!(service, spreadsheet_id, dashboard_sheet_name, year_offset)
+
+      # 特別集計（40〜51行, E/G/K/O/Q）
+      write_special_ref_contract_counts!(
+        service, spreadsheet_id, dashboard_sheet_name,
+        special_e, special_g, special_k, special_o, special_q, year_offset
+      )
+      # 個別相談かつ成約（55〜66行, R列）
+      write_both_tags_counts!(service, spreadsheet_id, dashboard_sheet_name, both_tags_counts, year_offset)
     end
 
     # ==== ラベル書き込み（4行目） ===============================================
@@ -471,14 +545,11 @@ module Lme
       )
     end
 
-    # ==== 6行目サマリ率（共通メソッド）=========================================
-    # 例:
+    # ==== 6行目サマリ率（K6/M6/O6/Q6）=========================================
     # K6 = K5/I5
     # M6 = M5/K5
     # O6 = O5/M5
     # Q6 = IFERROR(Q5/O5,0)
-    #
-    # ※将来追加する場合は SPECS に 1 行追加するだけ
     def write_row6_summary_formulas!(service, spreadsheet_id, sheet, year_offset)
       row5 = TOTAL_ROW + year_offset
       row6 = row5 + 1
@@ -488,7 +559,6 @@ module Lme
         { dest: 'M', num: 'M', den: 'K', iferror: false },
         { dest: 'O', num: 'O', den: 'M', iferror: false },
         { dest: 'Q', num: 'Q', den: 'O', iferror: true }
-        # 例: 追加したい場合 → { dest: 'S', num: 'S', den: 'Q', iferror: true }
       ]
 
       updates = specs.map do |sp|
@@ -497,6 +567,85 @@ module Lme
         Google::Apis::SheetsV4::ValueRange.new(
           range: a1(sheet, "#{sp[:dest]}#{row6}"),
           values: [[formula]]
+        )
+      end
+
+      service.batch_update_values(
+        spreadsheet_id,
+        Google::Apis::SheetsV4::BatchUpdateValuesRequest.new(
+          value_input_option: 'USER_ENTERED',
+          data: updates
+        )
+      )
+    end
+
+    # ==== 追加: 5行目の合計式（Q5/S5/U5） =======================================
+    # Q5 = SUM(P14:P21)
+    # S5 = SUM(R14:R21)
+    # U5 = SUM(T14:T21)
+    def write_row5_total_formulas!(service, spreadsheet_id, sheet, year_offset)
+      row5 = TOTAL_ROW + year_offset
+      month_from = MONTH_START + year_offset
+      month_to   = MONTH_END + year_offset
+
+      updates = [
+        { cell: "Q#{row5}", formula: "=SUM(P#{month_from}:P#{month_to})" },
+        { cell: "S#{row5}", formula: "=SUM(R#{month_from}:R#{month_to})" },
+        { cell: "U#{row5}", formula: "=SUM(T#{month_from}:T#{month_to})" }
+      ].map do |sp|
+        Google::Apis::SheetsV4::ValueRange.new(
+          range: a1(sheet, sp[:cell]),
+          values: [[sp[:formula]]]
+        )
+      end
+
+      service.batch_update_values(
+        spreadsheet_id,
+        Google::Apis::SheetsV4::BatchUpdateValuesRequest.new(
+          value_input_option: 'USER_ENTERED',
+          data: updates
+        )
+      )
+    end
+
+    # ==== 追加: 6行目の率式（S6/U6） ===========================================
+    # S6 = Q5/D5
+    # U6 = S5/D5
+    def write_row6_additional_formulas!(service, spreadsheet_id, sheet, year_offset)
+      row5 = TOTAL_ROW + year_offset
+      row6 = row5 + 1
+
+      updates = [
+        { cell: "S#{row6}", formula: "=Q#{row5}/D#{row5}" },
+        { cell: "U#{row6}", formula: "=S#{row5}/D#{row5}" }
+      ].map do |sp|
+        Google::Apis::SheetsV4::ValueRange.new(
+          range: a1(sheet, sp[:cell]),
+          values: [[sp[:formula]]]
+        )
+      end
+
+      service.batch_update_values(
+        spreadsheet_id,
+        Google::Apis::SheetsV4::BatchUpdateValuesRequest.new(
+          value_input_option: 'USER_ENTERED',
+          data: updates
+        )
+      )
+    end
+
+    # ==== 特別集計（流入×成約）E/G/K/O/Q の 40〜51 行 ==========================
+    def write_special_ref_contract_counts!(service, spreadsheet_id, sheet,
+                                           counts_e, counts_g, counts_k, counts_o, counts_q, year_offset)
+      row_from = SPECIAL_ROW_START + year_offset
+      row_to   = SPECIAL_ROW_END   + year_offset
+
+      updates = []
+      { 'E' => counts_e, 'G' => counts_g, 'K' => counts_k, 'O' => counts_o, 'Q' => counts_q }.each do |col, arr|
+        arr ||= Array.new(12, 0)
+        updates << Google::Apis::SheetsV4::ValueRange.new(
+          range: a1(sheet, "#{col}#{row_from}:#{col}#{row_to}"),
+          values: (0..11).map { |i| [arr[i].to_i] }
         )
       end
 
@@ -510,29 +659,16 @@ module Lme
       )
     end
 
-    # ==== 流入経路の率（25〜36行）: F/H/J/L/N/P/R に IFERROR(左隣 / $D, 0) =======
-    def write_referrer_rate_formulas!(service, spreadsheet_id, sheet, year_offset)
-      row_from = REF_ROW_START + year_offset
-      row_to = REF_ROW_END + year_offset
-
-      updates = []
-      REF_RATE_COL_FROM_COUNT.each do |rate_col, count_col|
-        (row_from..row_to).each do |r|
-          formula = "=IFERROR(#{count_col}#{r}/$#{TOTAL_CELL_COL}#{r},0)"
-          updates << Google::Apis::SheetsV4::ValueRange.new(
-            range: a1(sheet, "#{rate_col}#{r}"),
-            values: [[formula]]
-          )
-        end
-      end
-
-      return if updates.empty?
-      service.batch_update_values(
+    # ==== 「個別相談 かつ 成約」R列の 55〜66 行 ================================
+    def write_both_tags_counts!(service, spreadsheet_id, sheet, counts, year_offset)
+      row_from = BOTH_TAGS_ROW_START + year_offset
+      row_to   = BOTH_TAGS_ROW_END   + year_offset
+      arr = counts || Array.new(12, 0)
+      service.update_spreadsheet_value(
         spreadsheet_id,
-        Google::Apis::SheetsV4::BatchUpdateValuesRequest.new(
-          value_input_option: 'USER_ENTERED',
-          data: updates
-        )
+        a1(sheet, "R#{row_from}:R#{row_to}"),
+        Google::Apis::SheetsV4::ValueRange.new(values: (0..11).map { |i| [arr[i].to_i] }),
+        value_input_option: 'USER_ENTERED'
       )
     end
 
@@ -545,7 +681,7 @@ module Lme
       sheet_id = sheet.properties.sheet_id
       row_count = sheet.properties.grid_properties.row_count
 
-      needed_last_row = [REF_ROW_END, MONTH_END, TOTAL_ROW].max + year_offset
+      needed_last_row = [REF_ROW_END, MONTH_END, TOTAL_ROW, SPECIAL_ROW_END, BOTH_TAGS_ROW_END].max + year_offset
       return if row_count && row_count >= needed_last_row
 
       to_add = needed_last_row - row_count
@@ -725,5 +861,32 @@ module Lme
     def default_tag_monthlies
       Hash[TAG_MONTHLY_COL.keys.map { |k| [k, Array.new(12, 0)] }]
     end
+
+    # ==== 流入経路の率（25〜36行）: F/H/J/L/N/P/R に IFERROR(左隣 / $D, 0) =======
+  def write_referrer_rate_formulas!(service, spreadsheet_id, sheet, year_offset)
+    row_from = REF_ROW_START + year_offset
+    row_to   = REF_ROW_END   + year_offset
+
+    updates = []
+    REF_RATE_COL_FROM_COUNT.each do |rate_col, count_col|
+      (row_from..row_to).each do |r|
+        formula = "=IFERROR(#{count_col}#{r}/$#{TOTAL_CELL_COL}#{r},0)"
+        updates << Google::Apis::SheetsV4::ValueRange.new(
+          range: a1(sheet, "#{rate_col}#{r}"),
+          values: [[formula]]
+        )
+      end
+    end
+
+    return if updates.empty?
+    service.batch_update_values(
+      spreadsheet_id,
+      Google::Apis::SheetsV4::BatchUpdateValuesRequest.new(
+        value_input_option: 'USER_ENTERED',
+        data: updates
+      )
+    )
+  end
+
   end
 end
