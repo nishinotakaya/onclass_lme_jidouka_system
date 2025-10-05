@@ -836,6 +836,8 @@ module Lme
     end
 
     # ソースの sheet(B2:ZZZ 以降) を、ターゲットの sheet の B2 から貼り付け（値のみ）
+    # --- 3) 別ブックコピー（ソース → ターゲット） -------------------------------
+    # ソースの sheet(B2:ZZZ 以降) を、ターゲットの sheet の B2 から貼り付け（式ごと）
     def copy_to_yamada_sheet!(service,
                               source_spreadsheet_id:,
                               source_sheet_name:,
@@ -846,9 +848,14 @@ module Lme
       raise 'target_spreadsheet_id is blank' if target_spreadsheet_id.to_s.blank?
       raise 'target_sheet_name is blank'     if target_sheet_name.to_s.blank?
 
-      # 1) 元データ取得（B2:ZZZ で十分広く＆左端の空白列を避ける）
+      # 1) 元データを「式で」取得（=HYPERLINK などを保持）
       src_range = a1(source_sheet_name, 'B2:ZZZ')
-      vr = service.get_spreadsheet_values(source_spreadsheet_id, src_range)
+      vr = service.get_spreadsheet_values(
+        source_spreadsheet_id,
+        src_range,
+        value_render_option: 'FORMULA',
+        date_time_render_option: 'SERIAL_NUMBER'
+      )
       values = vr.values || []
 
       if values.empty?
@@ -859,7 +866,7 @@ module Lme
       # 2) コピー先シートが無ければ作成
       ensure_sheet_exists_in_spreadsheet!(service, target_spreadsheet_id, target_sheet_name)
 
-      # 3) 貼り付け前クリア（B2:ZZZ）
+      # 3) 貼り付け前に範囲クリア
       begin
         clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
         service.clear_values(target_spreadsheet_id, a1(target_sheet_name, 'B2:ZZZ'), clear_req)
@@ -867,7 +874,7 @@ module Lme
         Rails.logger.warn("[copy_to_yamada_sheet!] clear skipped: #{e.class} - #{e.message}")
       end
 
-      # 4) 値を書き込み（開始セルだけ指定でOK）
+      # 4) USER_ENTERED で式を入力（=HYPERLINK が評価され、リンクが生きる）
       target_range = a1(target_sheet_name, 'B2')
       begin
         service.update_spreadsheet_value(
@@ -876,7 +883,7 @@ module Lme
           Google::Apis::SheetsV4::ValueRange.new(values: values),
           value_input_option: 'USER_ENTERED'
         )
-        Rails.logger.info("[copy_to_yamada_sheet!] Successfully copied data #{source_sheet_name} -> #{target_sheet_name}")
+        Rails.logger.info("[copy_to_yamada_sheet!] Successfully copied data #{source_sheet_name} -> #{target_sheet_name} (with formulas)")
       rescue StandardError => e
         Rails.logger.error("[copy_to_yamada_sheet!] Error copying data: #{e.class} - #{e.message}")
       end
