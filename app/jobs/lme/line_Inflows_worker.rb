@@ -139,21 +139,19 @@ module Lme
 
         # 追加: 入会関連（成約）＆ 個別相談
         contracts, kobetsu = extract_join_and_kobetsu_from_payload(res_body)
-        r['contracts'] = contracts # "プロアカ決済完了", "フリーエンジニア決済完了", or "プロアカ決済完了/フリーエンジニア決済完了"
-        r['kobetsu']   = kobetsu   # "プロアカ個別相談"（該当時）/ 空文字
+        r['contracts'] = contracts
+        r['kobetsu']   = kobetsu
 
         # my_page
         info = fetch_user_basic_info_via_service(mypage_svc, uid)
         q = info[:qr_code].to_s.strip
         r['qr_code'] = q unless blankish?(q)
 
-        # followed_at が空なら my_page の time_follow で補完（"-"は空扱い）
         tf = info[:time_follow].to_s.strip
         if r['followed_at'].blank? && !blankish?(tf)
           r['followed_at'] = tf
         end
 
-        # 流入元：landing_name が空のときだけ my_page 推定値で補完（"-"は空扱い）
         inf = info[:inflow].to_s.strip
         if blankish?(r['landing_name']) && !blankish?(inf)
           r['landing_name'] = inf
@@ -163,7 +161,7 @@ module Lme
       end
       Rails.logger.info("[tags] seminar dates unique=#{seminar_dates_set.size}")
 
-      # ---- GSheets 反映
+      # ---- GSheets 反映（ソース）
       spreadsheet_id = ENV.fetch('ONCLASS_SPREADSHEET_ID')
       sheet_name     = ENV.fetch('LME_SHEET_NAME', 'Line流入者')
       anchor_name    = ENV.fetch('ONCLASS_SHEET_NAME', 'フロントコース受講生')
@@ -179,6 +177,17 @@ module Lme
         seminar_dates: seminar_dates_set.to_a.sort
       )
 
+      # ---- 別ブックへコピー（ターゲット）
+      target_spreadsheet_id = ENV['LME_YAMADA_INFLOWS_SPREADSHEET_ID']
+      target_sheet_name     = ENV['LME_YAMADA_INFLOWS_SPREADSHEET_NAME']
+      copy_to_yamada_sheet!(
+        service,
+        source_spreadsheet_id: spreadsheet_id,
+        source_sheet_name:     sheet_name,
+        target_spreadsheet_id: target_spreadsheet_id,
+        target_sheet_name:     target_sheet_name
+      )
+
       Rails.logger.info("[LmeLineInflowsWorker] wrote #{rows.size} rows to #{sheet_name}")
       Lme::LineCountsWorker.new.perform
       { count: rows.size, sheet: sheet_name, range: [start_on, end_on] }
@@ -190,7 +199,7 @@ module Lme
       raise
     end
 
-    # === MyPage（サービス経由）
+    # === MyPage（サービス経由）/抽出 ===
 
     def extract_proaka_and_seminar_from_payload(payload)
       categories =
@@ -227,45 +236,17 @@ module Lme
           'date'         => rec['followed_at'].to_s[0,10],
           'followed_at'  => rec['followed_at'],
           'blocked_at'   => rec['blocked_at'],
-          'landing_name' => safe_landing_name(rec),  # 候補補完済み
+          'landing_name' => safe_landing_name(rec),
           'name'         => rec['name'],
           'line_user_id' => uid,
           'is_blocked'   => (rec['is_blocked'] || 0).to_i,
           'tags_flags'   => rec['tags_flags'] || {},
           'seminar_map'  => rec['seminar_map'] || {},
           'qr_code'      => rec['qr_code'],
-          'contracts'    => rec['contracts'], # 追加: 成約
-          'kobetsu'      => rec['kobetsu']    # 追加: 個別相談
+          'contracts'    => rec['contracts'],
+          'kobetsu'      => rec['kobetsu']
         }
       end
-    end
-
-    def extract_proaka_and_seminar_from_payload(payload)
-      categories =
-        case payload
-        when String
-          j = JSON.parse(payload) rescue nil
-          if j.is_a?(Hash)
-            j['data'] || j['result'] || j['items'] || j['list'] || []
-          elsif j.is_a?(Array)
-            j
-          else
-            []
-          end
-        when Hash
-          payload['data'] || payload['result'] || payload['items'] || payload['list'] || []
-        when Array
-          payload
-        else
-          []
-        end
-
-      proaka  = proaka_flags_from_categories(categories)
-      seminar = seminar_map_from_categories(categories)
-      [proaka, seminar]
-    rescue => e
-      Rails.logger.debug("[extract_tags] #{e.class}: #{e.message}")
-      [{ v1: false, v2: false, v3: false, v4: false, dv1: false, dv2: false, dv3: false, select: nil }, {}]
     end
 
     def proaka_flags_from_categories(categories)
@@ -515,7 +496,7 @@ module Lme
         '動画②_ダイジェスト', 'プロアカ_動画②',
         '動画③_ダイジェスト', 'プロアカ_動画③',
         '', 'プロアカ_動画④', '選択肢',
-        '個別相談', '成約'  # 追加: 個別相談（左）/ 成約（右）
+        '個別相談', '成約'
       ] + seminar_headers
 
       cols = headers.size
@@ -578,8 +559,8 @@ module Lme
           '',
           (t[:v4]  ? 'タグあり' : ''),
           (t[:select] || ''),
-          (r['kobetsu'].presence || ''),   # 個別相談
-          (r['contracts'].presence || '')  # 成約
+          (r['kobetsu'].presence || ''),
+          (r['contracts'].presence || '')
         ]
         sem = r['seminar_map'] || {}
         seminar_dates.each do |ymd|
@@ -709,6 +690,7 @@ module Lme
       t.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日 %H時%M分')
     end
 
+    # A1 形式: 1=>A, 26=>Z, 27=>AA...
     def a1_col(n)
       s = String.new
       while n && n > 0
@@ -716,6 +698,12 @@ module Lme
         s.prepend((65 + r).chr)
       end
       s
+    end
+
+    # "'シート名'!B2" のような A1 文字列を生成
+    def a1(sheet_name, range)
+      name = sheet_name.to_s.gsub("'", "''")
+      "'#{name}'!#{range}"
     end
 
     # === 空欄同等判定 & 流入元の最終決定（landing_name優先） ====================
@@ -805,12 +793,88 @@ module Lme
       {}.with_indifferent_access
     end
 
-
     def default_start_on
       raw = ENV['LME_DEFAULT_START_DATE'].presence || '2023-01-01'
       Date.parse(raw).strftime('%F')
     rescue
       '2023-01-01'
+    end
+
+    # --- 1) Yamada用ID解決（ID or URL） ---------------------------------
+    # ※今は未使用（カウント集計用の将来拡張として残置）
+    def resolve_yamada_spreadsheet_id!
+      id = ENV['LME_YAMADA_COUNT_SPREADSHEET_ID'].presence
+      return id if id.present?
+
+      url = ENV['LME_YAMADA_COUNT_SPREADSHEET_URL'].presence
+      if url.to_s =~ %r{\Ahttps?://docs\.google\.com/spreadsheets/d/([A-Za-z0-9_-]+)}
+        return Regexp.last_match(1)
+      end
+
+      raise 'Copy target Spreadsheet not provided. Set LME_YAMADA_COUNT_SPREADSHEET_ID or LME_YAMADA_COUNT_SPREADSHEET_URL.'
+    end
+
+    # --- 2) 汎用: 別スプレッドシートに値を書き出す（シートが無ければ作る） ----------
+    def ensure_sheet_exists_in_spreadsheet!(service, spreadsheet_id, sheet_name)
+      ss = service.get_spreadsheet(spreadsheet_id)
+      exists = ss.sheets.any? { |s| s.properties&.title == sheet_name }
+      return if exists
+
+      add_req = Google::Apis::SheetsV4::AddSheetRequest.new(
+        properties: Google::Apis::SheetsV4::SheetProperties.new(title: sheet_name)
+      )
+      batch = Google::Apis::SheetsV4::BatchUpdateSpreadsheetRequest.new(
+        requests: [Google::Apis::SheetsV4::Request.new(add_sheet: add_req)]
+      )
+      service.batch_update_spreadsheet(spreadsheet_id, batch)
+    end
+
+    # --- 3) 別ブックコピー（ソース → ターゲット） -------------------------------
+    # ソースの sheet(B2:ZZZ 以降) を、ターゲットの sheet の B2 から貼り付け（値のみ）
+    def copy_to_yamada_sheet!(service,
+                              source_spreadsheet_id:,
+                              source_sheet_name:,
+                              target_spreadsheet_id:,
+                              target_sheet_name:)
+      raise 'source_spreadsheet_id is blank' if source_spreadsheet_id.to_s.blank?
+      raise 'source_sheet_name is blank'     if source_sheet_name.to_s.blank?
+      raise 'target_spreadsheet_id is blank' if target_spreadsheet_id.to_s.blank?
+      raise 'target_sheet_name is blank'     if target_sheet_name.to_s.blank?
+
+      # 1) 元データ取得（B2:ZZZ で十分広く＆左端の空白列を避ける）
+      src_range = a1(source_sheet_name, 'B2:ZZZ')
+      vr = service.get_spreadsheet_values(source_spreadsheet_id, src_range)
+      values = vr.values || []
+
+      if values.empty?
+        Rails.logger.info("[copy_to_yamada_sheet!] No data to copy from #{source_sheet_name}!")
+        return
+      end
+
+      # 2) コピー先シートが無ければ作成
+      ensure_sheet_exists_in_spreadsheet!(service, target_spreadsheet_id, target_sheet_name)
+
+      # 3) 貼り付け前クリア（B2:ZZZ）
+      begin
+        clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
+        service.clear_values(target_spreadsheet_id, a1(target_sheet_name, 'B2:ZZZ'), clear_req)
+      rescue StandardError => e
+        Rails.logger.warn("[copy_to_yamada_sheet!] clear skipped: #{e.class} - #{e.message}")
+      end
+
+      # 4) 値を書き込み（開始セルだけ指定でOK）
+      target_range = a1(target_sheet_name, 'B2')
+      begin
+        service.update_spreadsheet_value(
+          target_spreadsheet_id,
+          target_range,
+          Google::Apis::SheetsV4::ValueRange.new(values: values),
+          value_input_option: 'USER_ENTERED'
+        )
+        Rails.logger.info("[copy_to_yamada_sheet!] Successfully copied data #{source_sheet_name} -> #{target_sheet_name}")
+      rescue StandardError => e
+        Rails.logger.error("[copy_to_yamada_sheet!] Error copying data: #{e.class} - #{e.message}")
+      end
     end
   end
 end
