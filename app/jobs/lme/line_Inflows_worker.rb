@@ -356,11 +356,17 @@ module Lme
     def join_contracts_from_categories(categories)
       cat = Array(categories).find { |c| (c['id'] || c[:id]).to_i == JOIN_CATEGORY_ID }
       return '' unless cat
-      names = Array(cat['tags'] || cat[:tags]).map { |t| (t['name'] || t[:name]).to_s }
+
+      tags  = Array(cat['tags'] || cat[:tags])
+      names = tags.map { |t| (t['name'] || t[:name]).to_s }
+
       vals = []
-      vals << JOIN_PROAKA_PAID_TAG_NAME    if names.include?(JOIN_PROAKA_PAID_TAG_NAME)
-      vals << JOIN_FREELANCE_PAID_TAG_NAME if names.include?(JOIN_FREELANCE_PAID_TAG_NAME)
-      vals.join('/')
+      # 決済完了タグ（そのまま）
+      vals << JOIN_PROAKA_PAID_TAG_NAME    if names.any? { |n| n.include?(JOIN_PROAKA_PAID_TAG_NAME) }
+      vals << JOIN_FREELANCE_PAID_TAG_NAME if names.any? { |n| n.include?(JOIN_FREELANCE_PAID_TAG_NAME) }
+      # 入会月タグを抽出して 0000年 00月入会 形式で追加（複数可）
+      months = extract_join_months_from_tags(names)
+      (vals + months).uniq.join('/')
     end
 
     def kobetsu_from_categories(categories)
@@ -829,7 +835,6 @@ module Lme
       service.batch_update_spreadsheet(spreadsheet_id, batch)
     end
 
-    # --- 3) 別ブックコピー（ソース → ターゲット） -------------------------------
     # ソースの sheet(B2:ZZZ 以降) を、ターゲットの sheet の B2 から貼り付け（値のみ）
     def copy_to_yamada_sheet!(service,
                               source_spreadsheet_id:,
@@ -875,6 +880,69 @@ module Lme
       rescue StandardError => e
         Rails.logger.error("[copy_to_yamada_sheet!] Error copying data: #{e.class} - #{e.message}")
       end
+    end
+
+    def extract_join_months_from_tags(names)
+      months = []
+
+      Array(names).each do |raw|
+        s = normalize_nfkc(raw)
+        # 「入会」を含むタグだけ対象
+        next unless s.include?('入会')
+
+        # 1) 2025年7月入会 / 2025年7月9日入会 など
+        if s =~ /(\d{4})\s*年\s*(\d{1,2})\s*月(?:\s*\d{1,2}\s*日)?/
+          y, m = $1.to_i, $2.to_i
+          months << format_join_month(y, m) if y > 1900 && (1..12).include?(m)
+          next
+        end
+
+        # 2) 2025/7 入会 / 2025/07/09 入会 / 2025-07 入会 / 2025.7 入会 など
+        if s =~ /(\d{4})\s*[-\/\.]\s*(\d{1,2})(?:\s*[-\/\.]\s*\d{1,2})?/
+          y, m = $1.to_i, $2.to_i
+          months << format_join_month(y, m) if y > 1900 && (1..12).include?(m)
+          next
+        end
+
+        # 3) 07/2025 入会（稀な月→年の順）
+        if s =~ /(\d{1,2})\s*[-\/\.]\s*(\d{4})/
+          m, y = $1.to_i, $2.to_i
+          months << format_join_month(y, m) if y > 1900 && (1..12).include?(m)
+          next
+        end
+
+        # 4) 入会 … 2025/07 といった順序入替の保険
+        if s =~ /入会.*?(\d{4})\s*[年\/\-\.]\s*(\d{1,2})/
+          y, m = $1.to_i, $2.to_i
+          months << format_join_month(y, m) if y > 1900 && (1..12).include?(m)
+          next
+        end
+        if s =~ /(\d{4})\s*[年\/\-\.]\s*(\d{1,2}).*?入会/
+          y, m = $1.to_i, $2.to_i
+          months << format_join_month(y, m) if y > 1900 && (1..12).include?(m)
+          next
+        end
+      end
+
+      # 重複除去 & 年月ソート（昇順）
+      months.uniq.sort_by do |txt|
+        if txt =~ /(\d{4})年\s*(\d{2})月/
+          [$1.to_i, $2.to_i]
+        else
+          [0, 0]
+        end
+      end
+    end
+    def normalize_nfkc(s)
+      if s.respond_to?(:unicode_normalize)
+        s.unicode_normalize(:nfkc).strip
+      else
+        s.tr('０-９／－．', '0-9/-.').strip
+      end
+    end
+
+    def format_join_month(y, m)
+      format('%04d年 %02d月入会', y, m)
     end
   end
 end
