@@ -864,11 +864,14 @@ module Lme
       # ダッシュボードシートのデータを取得
       dashboard_data = service.get_spreadsheet_values(spreadsheet_id, dashboard_range)
 
-      # コピー先のスプレッドシートIDを指定
-      target_spreadsheet_id = "1-R09tJ_kDAmbWhWsBGHV9asrktFBMxW79ujqdDx0xiM"  # コピー先のIDに更新
+      # 環境変数からスプレッドシートIDを取得
+      target_spreadsheet_id = ENV['LME_YAMADA_COUNT_SPREADSHEET_ID']  # 環境変数からコピー先のIDを取得
+
+      # 環境変数からシート名を取得
+      target_sheet_name = ENV['LME_YAMADA_COUNT_SPREADSHEET_NAME']  # 環境変数からシート名を取得
 
       # コピー先のシートと範囲を指定
-      target_range = "'25_Lme_合計値(自動)'!A1:Z100"  # コピー先シート名と範囲を指定
+      target_range = "'#{target_sheet_name}'!A1:Z100"  # シート名と範囲を動的に指定
 
       # データをコピー先シートに書き込み
       service.update_spreadsheet_value(
