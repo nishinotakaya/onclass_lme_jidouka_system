@@ -353,6 +353,7 @@ module Lme
 
       # 個別相談かつ成約（55〜66 行, R 列）
       write_both_tags_counts!(service, spreadsheet_id, dashboard_sheet_name, both_tags_counts, year_offset)
+      copy_to_yamada_sheet!(service, spreadsheet_id, dashboard_sheet_name)
     end
 
     # ==== ラベル書き込み（4行目） ===============================================
@@ -815,16 +816,19 @@ module Lme
 
     # ==== Spreadsheet ID 解決 ==================================================
     def resolve_spreadsheet_id_from_env!
+      # まずは、環境変数LME_SPREADSHEET_IDまたはONCLASS_SPREADSHEET_IDを優先して使用
       id = ENV['LME_SPREADSHEET_ID'].presence || ENV['ONCLASS_SPREADSHEET_ID'].presence
       return id if id.present?
 
-      url = ENV['LME_SPREADSHEET_URL'].presence || ENV['ONCLASS_SPREADSHEET_URL'].presence
+      # 次に、URLからスプレッドシートIDを抽出する
+      url = ENV['LME_SPREADSHEET_URL'].presence || ENV['ONCLASS_SPREADSHEET_URL'].presence || ENV['LME_YAMADA_COUNT_SPREADSHEET_URL'].presence
       if url.to_s =~ %r{\Ahttps?://docs\.google\.com/spreadsheets/d/([A-Za-z0-9_-]+)}
-        return Regexp.last_match(1)
+        return Regexp.last_match(1)  # URLからIDを取り出す
       end
 
-      raise 'Spreadsheet ID not provided. Set LME_SPREADSHEET_ID or LME_SPREADSHEET_URL (or pass as perform arg).'
+      raise 'Spreadsheet ID not provided. Set LME_SPREADSHEET_ID, ONCLASS_SPREADSHEET_ID, LME_SPREADSHEET_URL, or LME_YAMADA_COUNT_SPREADSHEET_URL.'
     end
+
 
     # ==== デフォルト（0埋め） ===================================================
     def default_tag_monthlies
@@ -851,6 +855,27 @@ module Lme
       service.batch_update_values(
         spreadsheet_id,
         Google::Apis::SheetsV4::BatchUpdateValuesRequest.new(value_input_option: 'USER_ENTERED', data: updates)
+      )
+    end
+
+    def copy_to_yamada_sheet!(service, spreadsheet_id, dashboard_sheet_name)
+      dashboard_range = "'#{dashboard_sheet_name}'!A1:Z100"  # ここでシート名と範囲を指定
+      
+      # ダッシュボードシートのデータを取得
+      dashboard_data = service.get_spreadsheet_values(spreadsheet_id, dashboard_range)
+
+      # コピー先のスプレッドシートIDを指定
+      target_spreadsheet_id = "1-R09tJ_kDAmbWhWsBGHV9asrktFBMxW79ujqdDx0xiM"  # コピー先のIDに更新
+
+      # コピー先のシートと範囲を指定
+      target_range = "'25_Lme_合計値(自動)'!A1:Z100"  # コピー先シート名と範囲を指定
+
+      # データをコピー先シートに書き込み
+      service.update_spreadsheet_value(
+        target_spreadsheet_id,
+        target_range,
+        Google::Apis::SheetsV4::ValueRange.new(values: dashboard_data.values),
+        value_input_option: 'USER_ENTERED'
       )
     end
   end
