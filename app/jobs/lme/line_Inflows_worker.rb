@@ -293,11 +293,23 @@ module Lme
       cat = Array(categories).find { |c| (c['id'] || c[:id]).to_i == PROAKA_SEMINAR_CATEGORY }
       return {} unless cat
       tag_list = Array(cat['tags'] || cat[:tags])
+
       result = Hash.new { |h, k| h[k] = { hope: false, attend: false } }
 
       tag_list.each do |t|
-        name = (t['name'] || t[:name]).to_s
-        if name =~ /(参加希望|参加)\s+(\d{4})-(\d{1,2})-(\d{1,2})/
+        raw_name = (t['name'] || t[:name]).to_s
+
+        # 全角→半角や互換文字の統一（例: ［／－］, 全角数字）
+        name = raw_name.dup
+        if name.respond_to?(:unicode_normalize)
+          name = name.unicode_normalize(:nfkc)
+        else
+          name = name.tr('０-９／－．', '0-9/-.')
+        end
+        name = name.strip
+
+        # 例: "参加希望 2025/10/09", "参加 2025-10-09", "参加希望2025年10月9日（木）"
+        if name =~ /(参加希望|参加)\s*([0-9]{4})[\/\-\.\s年]([0-9]{1,2})[\/\-\.\s月]([0-9]{1,2})(?:日|[^0-9].*)?\s*\z/
           what, y, m, d = $1, $2.to_i, $3.to_i, $4.to_i
           begin
             ymd = Date.new(y, m, d).strftime('%Y-%m-%d')
@@ -307,9 +319,27 @@ module Lme
               result[ymd][:attend] = true
             end
           rescue ArgumentError
+            # 無効日付はスキップ
+          end
+          next
+        end
+
+        # フォールバック: 「キーワード + 日付っぽいもの」を緩めに抽出
+        if name =~ /(参加希望|参加)\s*([0-9]{4}[\-\/\.][0-9]{1,2}[\-\/\.][0-9]{1,2})/
+          what, datestr = $1, $2
+          begin
+            ymd = Date.parse(datestr).strftime('%Y-%m-%d')
+            if what == '参加希望'
+              result[ymd][:hope] = true
+            else
+              result[ymd][:attend] = true
+            end
+          rescue ArgumentError
+            # だめなら無視
           end
         end
       end
+
       result
     end
 
@@ -548,8 +578,8 @@ module Lme
           '',
           (t[:v4]  ? 'タグあり' : ''),
           (t[:select] || ''),
-          (r['kobetsu'].presence || ''),   # 追加: 個別相談
-          (r['contracts'].presence || '')  # 追加: 成約
+          (r['kobetsu'].presence || ''),   # 個別相談
+          (r['contracts'].presence || '')  # 成約
         ]
         sem = r['seminar_map'] || {}
         seminar_dates.each do |ymd|
