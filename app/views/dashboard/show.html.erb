@@ -18,11 +18,11 @@
     <p class="card-desc"><%= job[:desc] %></p>
     <% end %>
 
-    <div class="card-footer">
-      <div class="status-row">
-        ステータス: <span class="status-chip">待機中</span>
-      </div>
+    <div class="status-row">
+      ステータス: <span class="status-chip">待機中</span>
+    </div>
 
+    <div class="card-footer">
       <button class="btn run-btn" data-key="<%= job[:key] %>">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
           <path d="M8 5v14l11-7z" />
