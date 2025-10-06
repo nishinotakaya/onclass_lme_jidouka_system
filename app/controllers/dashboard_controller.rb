@@ -147,16 +147,30 @@ class DashboardController < ApplicationController
   def fetch_jobs
     if defined?(Sidekiq::Cron::Job) && Sidekiq::Cron::Job.all.any?
       Sidekiq::Cron::Job.all.map do |j|
+        next_time = next_execution_time(j.cron)
         { key: j.name, name: FRIENDLY_TITLES[j.name] || j.name, klass: j.klass, cron: j.cron,
-          queue: (j.queue_name rescue nil), desc: (j.description rescue nil), args: (j.args.presence rescue nil) }
+          queue: (j.queue_name rescue nil), desc: (j.description rescue nil), args: (j.args.presence rescue nil),
+          next_execution: next_time }
       end
     else
       path = Rails.root.join("config", "scheduler_#{Rails.env}.yml")
       raw  = File.exist?(path) ? YAML.load_file(path) : {}
       raw.map do |key, v|
+        next_time = next_execution_time(v["cron"])
         { key: key, name: FRIENDLY_TITLES[key] || (v["description"].presence || key), klass: v["class"],
-          cron: v["cron"], queue: v["queue"], desc: v["description"], args: v["args"] }
+          cron: v["cron"], queue: v["queue"], desc: v["description"], args: v["args"],
+          next_execution: next_time }
       end
     end
+  end
+
+  # cronの次の実行時刻を計算
+  def next_execution_time(cron_expression)
+    return nil if cron_expression.blank?
+    
+    require 'fugit'
+    Fugit::Cron.parse(cron_expression).next_time
+  rescue
+    nil
   end
 end

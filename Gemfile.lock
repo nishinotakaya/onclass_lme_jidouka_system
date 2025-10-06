@@ -420,6 +420,7 @@ DEPENDENCIES
   devise
   dotenv-rails
   faraday (~> 2.9)
+  fugit
   google-apis-sheets_v4
   google-cloud-recaptcha_enterprise
   googleauth

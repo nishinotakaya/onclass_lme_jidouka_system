@@ -21,7 +21,7 @@ onclass_students_front:
     - "oYTO4UDI6MGb"
     - "フロントコース受講生"
   tz: "Asia/Tokyo"
-  description: "オンクラス受講生データ取得(2時間毎)_フロントコース"
+  description: "フロントコース受講生データ取得(2時間毎)"
 
 onclass_students_backend:
   class: "Onclass::StudentsDataWorker"
@@ -31,7 +31,7 @@ onclass_students_backend:
     - "oEDI6MGb"
     - "フリーエンジニア養成コース"
   tz: "Asia/Tokyo"
-  description: "オンクラス受講生データ取得(2時間毎)_バックエンドコース(フリーエンジニア養成コース)"
+  description: "バックエンドコース受講生データ取得(2時間毎)"
 
 lme_line_inflows_daily:
   class: "Lme::LineInflowsWorker"
@@ -40,11 +40,11 @@ lme_line_inflows_daily:
   args:
     - "2023-01-01"
   tz: "Asia/Tokyo"
-  description: "LME LINE流入数集計(7~23時に2時間おき)"
+  description: "LME LINE流入数集計(2時間おき)"
 
 lme_line_counts_every:
   class: "Lme::LineCountsWorker"
   cron: "5 7-23/2 * * *"   # 流入集計の5分後に実行
   queue: lme_line_counts
   tz: "Asia/Tokyo"
-  description: "LME LINEダッシュボード更新(7~23時に2時間おき)"
+  description: "LME LINEダッシュボード更新(2時間おき)"
