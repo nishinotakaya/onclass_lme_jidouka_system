@@ -1,7 +1,10 @@
 # config/initializers/google_service_account.rb
 require "fileutils"
 require "base64"
-
+if (ENV["RAILS_GROUPS"] || "").split(":").include?("assets") || ENV["ASSETS_PRECOMPILE"] == "true"
+  Rails.logger.info "[GSA] Skip on assets:precompile"
+  return
+end
 target_path = ENV["GOOGLE_APPLICATION_CREDENTIALS"].presence ||
               "/app/config/keys/google_service_account.json"
 
