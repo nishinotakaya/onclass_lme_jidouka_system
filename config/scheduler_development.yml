@@ -1,17 +1,17 @@
 # config/scheduler_development.yml
-onclass_mentions_every:
-  class: "Onclass::MentionsWorker"
-  cron: "0,30 7-23 * * *"   # 7-23時の間で30分おきに実行
-  queue: onclass_comunity_Mentions
-  tz: "Asia/Tokyo"
-  description: "コミュニティメンション機能通知(7-23時の間で30分おきに実行)"
+# onclass_mentions_every:
+#   class: "Onclass::MentionsWorker"
+#   cron: "0,30 7-23 * * *"   # 7-23時の間で30分おきに実行
+#   queue: onclass_comunity_Mentions
+#   tz: "Asia/Tokyo"
+#   description: "コミュニティメンション機能通知(7-23時の間で30分おきに実行)"
 
-onclass_pdca_every:
-  class: "Onclass::PdcaStudentsWorker"
-  cron: "0 7-23/2 * * *"   # 07,09,11,13,15,17,19,21,23
-  queue: onclass_comunity_pdca_students
-  tz: "Asia/Tokyo"
-  description: "コミュニティ機能毎日のPDCA通知(7~23時に2時間おきに実行)"
+# onclass_pdca_every:
+#   class: "Onclass::PdcaStudentsWorker"
+#   cron: "0 7-23/2 * * *"   # 07,09,11,13,15,17,19,21,23
+#   queue: onclass_comunity_pdca_students
+#   tz: "Asia/Tokyo"
+#   description: "コミュニティ機能毎日のPDCA通知(7~23時に2時間おきに実行)"
 
 onclass_students_front:
   class: "Onclass::StudentsDataWorker"

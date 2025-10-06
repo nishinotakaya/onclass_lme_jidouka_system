@@ -1,0 +1,33 @@
+<h1 class="page-title">自動化一覧
+</h1>
+<p class="page-sub">スケジュールされたタスクを一覧表示。必要に応じて「今すぐ実行」できます。</p>
+
+<div class="cards" id="job-list">
+  <% @jobs.each do |job| %>
+    <div class="card" data-key="<%= job[:key] %>">
+      <div class="card-head">
+        <div>
+          <div class="card-title"><%= job[:name] %></div>
+          <div class="card-meta">
+            <%= "クラス: #{job[:klass]}" %> /
+            <%= "キュー: #{job[:queue] || 'default'}" %> /
+            <%= "cron: #{job[:cron] || '—'}" %>
+          </div>
+        </div>
+        <button class="btn run-btn" data-key="<%= job[:key] %>">実行</button>
+      </div>
+
+      <% if job[:desc].present? %>
+        <p class="card-desc"><%= job[:desc] %></p>
+      <% end %>
+
+      <% if job[:args].present? %>
+        <div class="status-row">引数: <code><%= job[:args].to_json %></code></div>
+      <% end %>
+
+      <div class="status-row">
+        ステータス: <span class="status-chip">待機中</span>
+      </div>
+    </div>
+  <% end %>
+</div>

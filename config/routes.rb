@@ -1,12 +1,18 @@
-require "sidekiq/web"
-require "sidekiq-scheduler/web"
-
-# config/routes.rb
 Rails.application.routes.draw do
-  # ヘルスチェック用
-  get "/" => proc { [200, {"Content-Type" => "text/plain"}, ["ok"]] }
+  # Health check
 
-  # （Sidekiq Web UI を使うなら）
+  # Sidekiq Web UI
   require "sidekiq/web"
   mount Sidekiq::Web => "/sidekiq"
+
+  resource :dashboard, only: :show
+  post "/jobs/run", to: "dashboard#run_job"
+  root "dashboard#show"
+  get "/jobs/statuses", to: "dashboard#statuses"
+
+  if Rails.env.development?
+    get '/.well-known/appspecific/com.chrome.devtools.json',
+      to: proc { [204, { 'Content-Type' => 'application/json' }, ['']] }
+  end
+
 end

@@ -1,15 +1,30 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <title>Myapp</title>
+    <title>自動化システム</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
 
     <%= stylesheet_link_tag "application", "data-turbo-track": "reload" %>
+    <%= javascript_importmap_tags %> <%# ← Importmapの場合（jsbundlingなら javascript_include_tag に変更） %>
   </head>
 
-  <body>
-    <%= yield %>
+  <body class="app">
+    <header class="app-header">
+      <div class="brand">自動化システム</div>
+    </header>
+
+    <div class="app-shell">
+      <aside class="app-side">
+        <nav class="nav">
+          <%= link_to "自動で動く作業", dashboard_path, class: "nav-item #{current_page?(dashboard_path) ? 'active' : ''}" %>
+        </nav>
+      </aside>
+
+      <main class="app-main">
+        <%= yield %>
+      </main>
+    </div>
   </body>
 </html>
