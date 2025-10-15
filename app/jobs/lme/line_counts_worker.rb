@@ -111,6 +111,8 @@ module Lme
       if header.blank?
         Rails.logger.info("[LmeLineCountsWorker] header empty at #{header_range}")
         write_dashboard!(service, spreadsheet_id, dashboard_sheet_name, year_offset, 0, Array.new(12, 0), {}, {})
+        write_daily_average_e_formulas!(service, spreadsheet_id, dashboard_sheet_name, target_year, year_offset)
+
         write_tag_monthlies!(service, spreadsheet_id, dashboard_sheet_name, default_tag_monthlies, year_offset)
         write_video4_counts!(service, spreadsheet_id, dashboard_sheet_name, Array.new(12, 0), year_offset)
         write_kobetsu_counts!(service, spreadsheet_id, dashboard_sheet_name, Array.new(12, 0), year_offset)
@@ -139,6 +141,8 @@ module Lme
       if values.blank?
         Rails.logger.info("[LmeLineCountsWorker] no rows at #{data_range}")
         write_dashboard!(service, spreadsheet_id, dashboard_sheet_name, year_offset, 0, Array.new(12, 0), {}, {})
+        write_daily_average_e_formulas!(service, spreadsheet_id, dashboard_sheet_name, target_year, year_offset)
+
         write_tag_monthlies!(service, spreadsheet_id, dashboard_sheet_name, default_tag_monthlies, year_offset)
         write_video4_counts!(service, spreadsheet_id, dashboard_sheet_name, Array.new(12, 0), year_offset)
         write_kobetsu_counts!(service, spreadsheet_id, dashboard_sheet_name, Array.new(12, 0), year_offset)
@@ -328,6 +332,9 @@ module Lme
       ensure_sheet_exists!(service, spreadsheet_id, dashboard_sheet_name)
 
       write_dashboard!(service, spreadsheet_id, dashboard_sheet_name, year_offset, total, monthly_total, tag_totals, tag_rates)
+      # 追加：E10〜E21 の日次平均式
+      write_daily_average_e_formulas!(service, spreadsheet_id, dashboard_sheet_name, target_year, year_offset)
+
       write_tag_monthlies!(service, spreadsheet_id, dashboard_sheet_name, tag_monthlies, year_offset)
       write_video4_counts!(service, spreadsheet_id, dashboard_sheet_name, video4_counts, year_offset)
       write_kobetsu_counts!(service, spreadsheet_id, dashboard_sheet_name, kobetsu_counts, year_offset)
@@ -517,6 +524,42 @@ module Lme
       end
 
       return if updates.empty?
+      service.batch_update_values(
+        spreadsheet_id,
+        Google::Apis::SheetsV4::BatchUpdateValuesRequest.new(
+          value_input_option: 'USER_ENTERED',
+          data: updates
+        )
+      )
+    end
+
+    # ==== E10〜E21：日次平均（D行 ÷ その月の日数 / 当月は D行 ÷ DAY(TODAY())） ====
+    def write_daily_average_e_formulas!(service, spreadsheet_id, sheet, target_year, year_offset)
+      month_from = MONTH_START + year_offset # 10
+      today      = Time.zone.today
+      curr_y     = today.year
+      curr_m     = today.month
+
+      updates = []
+      12.times do |i|
+        row = month_from + i       # 10..21
+        mon = i + 1                # 1..12
+
+        formula =
+          if target_year == curr_y && mon == curr_m
+            # 当月：本日までの日数で割る
+            "=IFERROR($D#{row}/DAY(TODAY()),0)"
+          else
+            # それ以外：その月の最終日の日数で割る（うるう年対応）
+            "=IFERROR($D#{row}/DAY(EOMONTH(DATE(#{target_year},#{mon},1),0)),0)"
+          end
+
+        updates << Google::Apis::SheetsV4::ValueRange.new(
+          range: a1(sheet, "E#{row}"),
+          values: [[formula]]
+        )
+      end
+
       service.batch_update_values(
         spreadsheet_id,
         Google::Apis::SheetsV4::BatchUpdateValuesRequest.new(
@@ -829,7 +872,6 @@ module Lme
       raise 'Spreadsheet ID not provided. Set LME_SPREADSHEET_ID, ONCLASS_SPREADSHEET_ID, LME_SPREADSHEET_URL, or LME_YAMADA_COUNT_SPREADSHEET_URL.'
     end
 
-
     # ==== デフォルト（0埋め） ===================================================
     def default_tag_monthlies
       Hash[TAG_MONTHLY_COL.keys.map { |k| [k, Array.new(12, 0)] }]
@@ -860,7 +902,7 @@ module Lme
 
     def copy_to_yamada_sheet!(service, spreadsheet_id, dashboard_sheet_name)
       dashboard_range = "'#{dashboard_sheet_name}'!A1:Z100"  # ここでシート名と範囲を指定
-      
+
       # ダッシュボードシートのデータを取得
       dashboard_data = service.get_spreadsheet_values(spreadsheet_id, dashboard_range)
 
