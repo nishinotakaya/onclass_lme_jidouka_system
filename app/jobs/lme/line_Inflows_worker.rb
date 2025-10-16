@@ -324,6 +324,50 @@ module Lme
       result
     end
 
+    # ==== Helpers: セミナー参加率（参加希望→参加） ===============================
+    # 分母：その日付の「参加希望」人数
+    # 分子：その日付で「参加希望」かつ「参加」の両方が付いた人数（同一UIDの積集合）
+    def seminar_conversion_rates(rows, seminar_dates:, month: nil, since: nil, until_date: nil)
+      counts = seminar_dates.each_with_object({}) { |ymd, h| h[ymd] = { hope: 0, matched: 0 } }
+
+      Array(rows).each do |r|
+        sem = r['seminar_map'] || {}
+
+        seminar_dates.each do |ymd|
+          flags = sem[ymd]
+          next unless flags # その日付のタグが一切ない人はスキップ
+
+          # 月フィルタ（開催日の月で判定）
+          if month
+            ymd_month = (Date.parse(ymd).strftime('%Y-%m') rescue nil)
+            next unless ymd_month == month
+          end
+
+          # 累計の起点
+          if since
+            next unless (Date.parse(ymd) rescue Date.new(1900,1,1)) >= (Date.parse(since) rescue Date.new(1900,1,1))
+          end
+
+          # 上限日（未来日を除外したいとき用）
+          if until_date
+            next unless (Date.parse(ymd) rescue Date.new(2999,1,1)) <= (Date.parse(until_date) rescue Date.new(2999,1,1))
+          end
+
+          # 分母：希望
+          if flags[:hope]
+            counts[ymd][:hope] += 1
+            # 分子：希望かつ参加
+            counts[ymd][:matched] += 1 if flags[:attend]
+          end
+        end
+      end
+
+      # { "YYYY-MM-DD" => 66.7, ... } 小数1桁%（分母0は nil）
+      counts.transform_values do |c|
+        c[:hope] > 0 ? ((c[:matched].to_f / c[:hope]) * 100).round(1) : nil
+      end
+    end
+
     # 追加: 入会関連（成約）＆ 個別相談の抽出
     def extract_join_and_kobetsu_from_payload(payload)
       categories =
@@ -361,10 +405,8 @@ module Lme
       names = tags.map { |t| (t['name'] || t[:name]).to_s }
 
       vals = []
-      # 決済完了タグ（そのまま）
       vals << JOIN_PROAKA_PAID_TAG_NAME    if names.any? { |n| n.include?(JOIN_PROAKA_PAID_TAG_NAME) }
       vals << JOIN_FREELANCE_PAID_TAG_NAME if names.any? { |n| n.include?(JOIN_FREELANCE_PAID_TAG_NAME) }
-      # 入会月タグを抽出して 0000年 00月入会 形式で追加（複数可）
       months = extract_join_months_from_tags(names)
       (vals + months).uniq.join('/')
     end
@@ -517,6 +559,28 @@ module Lme
       put_percentages_dynamic!(row3, monthly_rates, headers)
       put_percentages_dynamic!(row4, prev_month_rates, headers)
       put_percentages_dynamic!(row5, cumulative_rates, headers)
+
+      # ===== セミナー転換率%（参加希望→参加：積集合 / 希望）を「参加」列の5行目だけに出力 =====
+      seminar_rates_cum = seminar_conversion_rates(
+        rows,
+        seminar_dates: seminar_dates,
+        month: nil,              # 月指定なし（全期間）
+        since: CUM_SINCE,        # 累計の起点
+        until_date: end_on       # 未来日の列を除外したい場合に効く
+      )
+
+      base_len = headers.size - seminar_headers.size  # 先頭の固定カラム数
+      seminar_dates.each_with_index do |ymd, idx|
+        attend_col = base_len + (2 * idx) + 1  # [希望, 参加]のうち「参加」列
+
+        # 今月/前月は空欄のまま（誤読防止）
+        row3[attend_col] = ''
+        row4[attend_col] = ''
+
+        # 累計%のみ表示
+        r_cum = seminar_rates_cum[ymd]
+        row5[attend_col] = r_cum ? "#{r_cum}%" : ''
+      end
 
       service.update_spreadsheet_value(
         spreadsheet_id, "#{sheet_name}!B3:#{a1_col(1 + headers.size)}3",
@@ -786,7 +850,6 @@ module Lme
     # === MyPage（サービス経由） -------------------------------------------------
     def fetch_user_basic_info_via_service(mypage_svc, uid)
       json = mypage_svc.fetch_common(line_user_id: uid)
-      # 念のため文字列が来ても吸収
       json = (JSON.parse(json) rescue {}) if json.is_a?(String)
 
       {
@@ -807,7 +870,6 @@ module Lme
     end
 
     # --- 1) Yamada用ID解決（ID or URL） ---------------------------------
-    # ※今は未使用（カウント集計用の将来拡張として残置）
     def resolve_yamada_spreadsheet_id!
       id = ENV['LME_YAMADA_COUNT_SPREADSHEET_ID'].presence
       return id if id.present?
@@ -835,9 +897,7 @@ module Lme
       service.batch_update_spreadsheet(spreadsheet_id, batch)
     end
 
-    # ソースの sheet(B2:ZZZ 以降) を、ターゲットの sheet の B2 から貼り付け（値のみ）
-    # --- 3) 別ブックコピー（ソース → ターゲット） -------------------------------
-    # ソースの sheet(B2:ZZZ 以降) を、ターゲットの sheet の B2 から貼り付け（式ごと）
+    # --- 3) 別ブックコピー（ソース → ターゲット / 式ごと） -------------------------
     def copy_to_yamada_sheet!(service,
                               source_spreadsheet_id:,
                               source_sheet_name:,
@@ -848,7 +908,6 @@ module Lme
       raise 'target_spreadsheet_id is blank' if target_spreadsheet_id.to_s.blank?
       raise 'target_sheet_name is blank'     if target_sheet_name.to_s.blank?
 
-      # 1) 元データを「式で」取得（=HYPERLINK などを保持）
       src_range = a1(source_sheet_name, 'B2:ZZZ')
       vr = service.get_spreadsheet_values(
         source_spreadsheet_id,
@@ -857,16 +916,13 @@ module Lme
         date_time_render_option: 'SERIAL_NUMBER'
       )
       values = vr.values || []
-
       if values.empty?
         Rails.logger.info("[copy_to_yamada_sheet!] No data to copy from #{source_sheet_name}!")
         return
       end
 
-      # 2) コピー先シートが無ければ作成
       ensure_sheet_exists_in_spreadsheet!(service, target_spreadsheet_id, target_sheet_name)
 
-      # 3) 貼り付け前に範囲クリア
       begin
         clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
         service.clear_values(target_spreadsheet_id, a1(target_sheet_name, 'B2:ZZZ'), clear_req)
@@ -874,7 +930,6 @@ module Lme
         Rails.logger.warn("[copy_to_yamada_sheet!] clear skipped: #{e.class} - #{e.message}")
       end
 
-      # 4) USER_ENTERED で式を入力（=HYPERLINK が評価され、リンクが生きる）
       target_range = a1(target_sheet_name, 'B2')
       begin
         service.update_spreadsheet_value(
@@ -894,31 +949,30 @@ module Lme
 
       Array(names).each do |raw|
         s = normalize_nfkc(raw)
-        # 「入会」を含むタグだけ対象
         next unless s.include?('入会')
 
-        # 1) 2025年7月入会 / 2025年7月9日入会 など
+        # 1) 2025年7月(9日)入会
         if s =~ /(\d{4})\s*年\s*(\d{1,2})\s*月(?:\s*\d{1,2}\s*日)?/
           y, m = $1.to_i, $2.to_i
           months << format_join_month(y, m) if y > 1900 && (1..12).include?(m)
           next
         end
 
-        # 2) 2025/7 入会 / 2025/07/09 入会 / 2025-07 入会 / 2025.7 入会 など
+        # 2) 2025/7( /07/09 ) 入会、2025-07、2025.7 など
         if s =~ /(\d{4})\s*[-\/\.]\s*(\d{1,2})(?:\s*[-\/\.]\s*\d{1,2})?/
           y, m = $1.to_i, $2.to_i
           months << format_join_month(y, m) if y > 1900 && (1..12).include?(m)
           next
         end
 
-        # 3) 07/2025 入会（稀な月→年の順）
+        # 3) 07/2025 入会
         if s =~ /(\d{1,2})\s*[-\/\.]\s*(\d{4})/
           m, y = $1.to_i, $2.to_i
           months << format_join_month(y, m) if y > 1900 && (1..12).include?(m)
           next
         end
 
-        # 4) 入会 … 2025/07 といった順序入替の保険
+        # 4) 入会と年月の順序が入れ替わるパターン
         if s =~ /入会.*?(\d{4})\s*[年\/\-\.]\s*(\d{1,2})/
           y, m = $1.to_i, $2.to_i
           months << format_join_month(y, m) if y > 1900 && (1..12).include?(m)
@@ -931,7 +985,6 @@ module Lme
         end
       end
 
-      # 重複除去 & 年月ソート（昇順）
       months.uniq.sort_by do |txt|
         if txt =~ /(\d{4})年\s*(\d{2})月/
           [$1.to_i, $2.to_i]
@@ -940,6 +993,7 @@ module Lme
         end
       end
     end
+
     def normalize_nfkc(s)
       if s.respond_to?(:unicode_normalize)
         s.unicode_normalize(:nfkc).strip
