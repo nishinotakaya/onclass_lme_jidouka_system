@@ -26,6 +26,20 @@ Sidekiq.configure_server do |config|
   end
 end
 
+Sidekiq.configure_server do |config|
+  config.redis = {
+    url: ENV.fetch('SIDEKIQ_REDIS_URL', ENV.fetch('REDIS_URL', nil)),
+    ssl_params: { verify_mode: OpenSSL::SSL::VERIFY_NONE }
+  }
+end
+
+Sidekiq.configure_client do |config|
+  config.redis = {
+    url: ENV.fetch('SIDEKIQ_REDIS_URL', ENV.fetch('REDIS_URL', nil)),
+    ssl_params: { verify_mode: OpenSSL::SSL::VERIFY_NONE }
+  }
+end
+
 Sidekiq.configure_client do |config|
   config.redis = sidekiq_redis_options
 end
