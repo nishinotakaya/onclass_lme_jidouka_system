@@ -1,0 +1,28 @@
+onclass_students_front:
+  class: "Onclass::StudentsDataWorker"
+  cron: "0 7-23/2 * * *"     # 7:00, 9:00, 11:00, ..., 23:00
+  queue: onclass_students_data
+  args:
+    - "oYTO4UDI6MGb"
+    - "フロントコース受講生"
+  tz: "Asia/Tokyo"
+  description: "フロントコース受講生データ取得"
+
+onclass_students_backend:
+  class: "Onclass::StudentsDataWorker"
+  cron: "15 7-23/2 * * *"    # 7:15, 9:15, 11:15, ..., 23:15
+  queue: onclass_students_data
+  args:
+    - "oEDI6MGb"
+    - "フリーエンジニア養成コース"
+  tz: "Asia/Tokyo"
+  description: "バックエンドコース受講生データ取得(2時間毎)"
+
+lme_line_inflows_daily:
+  class: "Lme::LineInflowsWorker"
+  cron: "0 7-23/2 * * *"
+  queue: lme_line_inflows
+  args:
+    - "2023-01-01"
+  tz: "Asia/Tokyo"
+  description: "LME LINE流入数集計"

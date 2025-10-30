@@ -7,6 +7,11 @@ require "sidekiq/web"
 require "sidekiq-scheduler"
 require "sidekiq-scheduler/web"
 
+schedule_file = Rails.root.join('config/sidekiq-cron.yml')
+if File.exist?(schedule_file)
+  Sidekiq::Cron::Job.load_from_hash YAML.load_file(schedule_file)
+end
+
 # ENV から URL を拾う（SIDEKIQ_REDIS_URL 優先、なければ REDIS_URL）
 def sidekiq_redis_options
   url = ENV["SIDEKIQ_REDIS_URL"].presence || ENV["REDIS_URL"]

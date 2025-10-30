@@ -9,6 +9,7 @@ gem "selenium-webdriver", "~> 4.23"
 gem "selenium-devtools", "= 0.120.0"
 gem "http-cookie"
 gem "sassc-rails"
+gem 'sidekiq-cron'
 
 
 gem 'recaptcha', require: 'recaptcha/rails'
