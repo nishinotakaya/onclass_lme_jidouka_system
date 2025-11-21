@@ -1,6 +1,5 @@
 # app/jobs/youtube/analytics_worker.rb
 require "google/apis/youtube_v3"
-require "google/apis/youtube_analytics_v2"
 require "google/apis/sheets_v4"
 require "googleauth"
 require "json"
@@ -20,10 +19,6 @@ class Youtube::AnalyticsWorker
     youtube = Google::Apis::YoutubeV3::YouTubeService.new
     youtube.authorization = auth
 
-    # v2: 動画別アナリティクス（平均視聴時間）
-    analytics = Google::Apis::YoutubeAnalyticsV2::YouTubeAnalyticsService.new
-    analytics.authorization = auth
-
     # ----------------------------------------------------
     # 2) 公開動画一覧を取得（サムネ・タイトル・公開日・視聴回数・高評価数）
     # ----------------------------------------------------
@@ -31,13 +26,7 @@ class Youtube::AnalyticsWorker
     Rails.logger.info("[YouTubeAnalytics] public_videos_count=#{videos.size}")
 
     # ----------------------------------------------------
-    # 3) Analytics で video 単位の平均視聴時間を取得
-    #    { "videoId" => { views:, likes:, average_view_duration: } }
-    # ----------------------------------------------------
-    metrics_by_video = fetch_video_metrics(analytics)
-
-    # ----------------------------------------------------
-    # 4) スプレッドシートに書き込むための values を組み立て
+    # 3) スプレッドシートに書き込むための values を組み立て
     # ----------------------------------------------------
     header = [
       "サムネイル",
@@ -46,9 +35,7 @@ class Youtube::AnalyticsWorker
       "公開日",
       "視聴回数",
       "高評価数",
-      "インプレッション数",
-      "インプレッションCTR",
-      "平均視聴時間(秒)"
+      "アナリティクスURL"
     ]
 
     values = [header]
@@ -57,7 +44,6 @@ class Youtube::AnalyticsWorker
       vid      = video.id
       snippet  = video.snippet
       stats    = video.statistics
-      metrics  = metrics_by_video[vid] || {}
 
       thumbnail_url = safe_thumbnail_url(snippet)
       title         = snippet.title.to_s
@@ -65,9 +51,8 @@ class Youtube::AnalyticsWorker
       published_at  = snippet.published_at
       publish_date  = published_at ? published_at.to_date.to_s : ""
 
-      view_count    = (stats&.view_count || metrics[:views]).to_i
-      like_count    = (stats&.like_count || metrics[:likes]).to_i
-      avg_duration  = (metrics[:average_view_duration] || "").to_s
+      view_count    = (stats&.view_count || 0).to_i
+      like_count    = (stats&.like_count || 0).to_i
 
       # ---------- 出演者判定（description 内の最初の URL） ----------
       desc      = snippet.description.to_s
@@ -103,7 +88,7 @@ class Youtube::AnalyticsWorker
         end
       # --------------------------------------------------
 
-      # サムネ：セル内フィット（cell size = 120x70 に後から揃える）
+      # サムネ：セル内フィット（A列を 120x70px に後から揃える）
       thumbnail_cell =
         if thumbnail_url.present?
           %Q(=IMAGE("#{thumbnail_url}", 1))
@@ -111,9 +96,9 @@ class Youtube::AnalyticsWorker
           ""
         end
 
-      # インプレッション系は現状 API で取れないので空欄のまま
-      impressions     = ""
-      impressions_ctr = ""
+      # アナリティクスURL（YouTube Studio）
+      analytics_url = "https://studio.youtube.com/video/#{vid}/analytics/tab-reach_viewers/period-default"
+      analytics_link_cell = %Q(=HYPERLINK("#{analytics_url}","アナリティクスURL"))
 
       values << [
         thumbnail_cell,
@@ -122,14 +107,12 @@ class Youtube::AnalyticsWorker
         publish_date,
         view_count,
         like_count,
-        impressions,
-        impressions_ctr,
-        avg_duration
+        analytics_link_cell
       ]
     end
 
     # ----------------------------------------------------
-    # 5) Sheets API で書き込み & 列幅/行高 調整
+    # 4) Sheets API で書き込み & 列幅/行高 調整
     # ----------------------------------------------------
     spreadsheet_id = ENV.fetch("YOUTUBE_ANALYTICS_SPREADSHEET_ID", ENV.fetch("ONCLASS_SPREADSHEET_ID"))
     sheet_name     = ENV.fetch("YOUTUBE_ANALYTICS_SHEET_NAME", "YouTube動画一覧")
@@ -152,14 +135,14 @@ class Youtube::AnalyticsWorker
       value_input_option: "USER_ENTERED"
     )
 
-    # A列の幅 & サムネ行の高さを 60x40px に揃える
+    # A列の幅 & サムネ行の高さを 120x70px に揃える
     sheet_id = sheet_id_for(sheets, spreadsheet_id, sheet_name)
     resize_thumbnail_column_and_rows!(
       sheets,
       spreadsheet_id,
       sheet_id,
       values.size,       # 行数（ヘッダ込み）
-      width_px:  60,
+      width_px:  70,
       height_px: 40
     )
 
@@ -238,33 +221,6 @@ class Youtube::AnalyticsWorker
     end
 
     videos
-  end
-
-  # --------------------------------
-  # v2: video 単位の analytics（views / likes / averageViewDuration）
-  # --------------------------------
-  def fetch_video_metrics(analytics)
-    resp = analytics.query_report(
-      ids:         "channel==MINE",
-      start_date:  "2006-01-01",
-      end_date:    Date.today.to_s,
-      metrics:     "views,likes,averageViewDuration",
-      dimensions:  "video",
-      max_results: 10000
-    )
-
-    rows = resp.rows || []
-    rows.each_with_object({}) do |row, hash|
-      video_id = row[0]
-      hash[video_id] = {
-        views:                 row[1].to_i,
-        likes:                 row[2].to_i,
-        average_view_duration: row[3].to_i
-      }
-    end
-  rescue Google::Apis::ClientError => e
-    Rails.logger.warn("[YouTubeAnalytics] fetch_video_metrics failed: #{e.message}")
-    {}
   end
 
   # --------------------------------
