@@ -15,7 +15,7 @@ class Youtube::AnalyticsWorker
     client = Google::YoutubeClient.new
     auth   = client.authorize!
 
-    # v3: 動画一覧・サムネ・タイトル・公開日・視聴回数・高評価数
+    # v3: 動画一覧・サムネ・タイトル・公開日・視聴回数・高評価数・コメント
     youtube = Google::Apis::YoutubeV3::YouTubeService.new
     youtube.authorization = auth
 
@@ -24,6 +24,9 @@ class Youtube::AnalyticsWorker
     # ----------------------------------------------------
     videos = fetch_all_public_videos(youtube)
     Rails.logger.info("[YouTubeAnalytics] public_videos_count=#{videos.size}")
+
+    # 1動画あたり取得するコメントの最大件数
+    max_comments_per_video = 20
 
     # ----------------------------------------------------
     # 3) スプレッドシートに書き込むための values を組み立て
@@ -36,7 +39,7 @@ class Youtube::AnalyticsWorker
       "視聴回数",
       "高評価数",
       "アナリティクスURL"
-    ]
+    ] + (1..max_comments_per_video).map { |i| "コメント#{i}" }
 
     values = [header]
 
@@ -97,8 +100,21 @@ class Youtube::AnalyticsWorker
         end
 
       # アナリティクスURL（YouTube Studio）
-      analytics_url = "https://studio.youtube.com/video/#{vid}/analytics/tab-reach_viewers/period-default"
+      analytics_url       = "https://studio.youtube.com/video/#{vid}/analytics/tab-reach_viewers/period-default"
       analytics_link_cell = %Q(=HYPERLINK("#{analytics_url}","アナリティクスURL"))
+
+      # ---------- コメント取得（トップレベルコメントのみ） ----------
+      comments = fetch_comments_for_video(youtube, vid, max_comments_per_video)
+
+      # セル内で扱いやすいように、改行はスペースに変換
+      comment_cells = comments.map { |text| text.to_s.gsub("\r", "").gsub("\n", " ") }
+
+      # 列数を揃えるため、足りない分は nil で埋める
+      if comment_cells.size < max_comments_per_video
+        comment_cells += Array.new(max_comments_per_video - comment_cells.size, nil)
+      else
+        comment_cells = comment_cells.first(max_comments_per_video)
+      end
 
       values << [
         thumbnail_cell,
@@ -107,7 +123,8 @@ class Youtube::AnalyticsWorker
         publish_date,
         view_count,
         like_count,
-        analytics_link_cell
+        analytics_link_cell,
+        *comment_cells
       ]
     end
 
@@ -120,8 +137,9 @@ class Youtube::AnalyticsWorker
     sheets = build_sheets_service
     ensure_sheet_exists!(sheets, spreadsheet_id, sheet_name)
 
+    # 列はコメント含めると AA 列まで使うので、少し余裕を見てクリア
     clear_req   = Google::Apis::SheetsV4::ClearValuesRequest.new
-    clear_range = "#{sheet_name}!A:Z"
+    clear_range = "#{sheet_name}!A:AZ"
 
     # タブ全体クリア
     sheets.clear_values(spreadsheet_id, clear_range, clear_req)
@@ -142,8 +160,8 @@ class Youtube::AnalyticsWorker
       spreadsheet_id,
       sheet_id,
       values.size,       # 行数（ヘッダ込み）
-      width_px:  70,
-      height_px: 40
+      width_px:  120,
+      height_px: 70
     )
 
     Rails.logger.info("[YouTubeAnalytics] wrote #{values.size - 1} rows to #{sheet_name}")
@@ -224,6 +242,41 @@ class Youtube::AnalyticsWorker
   end
 
   # --------------------------------
+  # コメント取得（トップレベルのみ）
+  # --------------------------------
+  def fetch_comments_for_video(youtube, video_id, max_comments)
+    comments   = []
+    page_token = nil
+
+    while comments.size < max_comments
+      resp = youtube.list_comment_threads(
+        "snippet",
+        video_id:    video_id,
+        max_results: [max_comments - comments.size, 100].min,
+        page_token:  page_token,
+        text_format: "plainText"
+      )
+
+      (resp.items || []).each do |thread|
+        snippet = thread.snippet&.top_level_comment&.snippet
+        text    = snippet&.text_display || snippet&.text_original
+        next if text.to_s.strip.empty?
+
+        comments << text
+        break if comments.size >= max_comments
+      end
+
+      page_token = resp.next_page_token
+      break if page_token.blank? || comments.size >= max_comments
+    end
+
+    comments
+  rescue Google::Apis::ClientError => e
+    Rails.logger.warn("[YouTubeAnalytics] fetch_comments_for_video(#{video_id}) failed: #{e.message}")
+    []
+  end
+
+  # --------------------------------
   # Sheets
   # --------------------------------
   def build_sheets_service
@@ -280,8 +333,8 @@ class Youtube::AnalyticsWorker
     requests << Google::Apis::SheetsV4::Request.new(
       update_dimension_properties: Google::Apis::SheetsV4::UpdateDimensionPropertiesRequest.new(
         range: Google::Apis::SheetsV4::DimensionRange.new(
-          sheet_id:  sheet_id,
-          dimension: "COLUMNS",
+          sheet_id:    sheet_id,
+          dimension:   "COLUMNS",
           start_index: 0,  # A列
           end_index:   1
         ),
@@ -297,8 +350,8 @@ class Youtube::AnalyticsWorker
       requests << Google::Apis::SheetsV4::Request.new(
         update_dimension_properties: Google::Apis::SheetsV4::UpdateDimensionPropertiesRequest.new(
           range: Google::Apis::SheetsV4::DimensionRange.new(
-            sheet_id:  sheet_id,
-            dimension: "ROWS",
+            sheet_id:    sheet_id,
+            dimension:   "ROWS",
             start_index: 1,          # index 1 = 2行目
             end_index:   row_count   # ヘッダ含めた行数
           ),
