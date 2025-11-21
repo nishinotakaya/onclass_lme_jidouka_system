@@ -31,7 +31,6 @@ class Youtube::AnalyticsWorker
 
     # ----------------------------------------------------
     # 3) Analytics で video 単位の平均視聴時間だけ取る
-    #    impressions 系は 400 になるので今は諦める
     # ----------------------------------------------------
     metrics_by_video = fetch_video_metrics(analytics) # { "videoId" => { views:, likes:, average_view_duration: } }
 
@@ -44,8 +43,8 @@ class Youtube::AnalyticsWorker
       "公開日",
       "視聴回数",
       "高評価数",
-      "インプレッション数",        # いまは空欄埋め
-      "インプレッションCTR",      # いまは空欄埋め
+      "インプレッション数",
+      "インプレッションCTR",
       "平均視聴時間(秒)"
     ]
 
@@ -67,12 +66,19 @@ class Youtube::AnalyticsWorker
       like_count    = (stats&.like_count || metrics[:likes]).to_i
       avg_duration  = (metrics[:average_view_duration] || "").to_s
 
-      # インプレッション系は、今のプロジェクトだと Unknown identifier で落ちるため空欄にしておく
-      impressions        = ""
-      impressions_ctr    = ""
+      # サムネ：セル内フィット（cell size = 120x70 に後から揃える）
+      thumbnail_cell =
+        if thumbnail_url.present?
+          %Q(=IMAGE("#{thumbnail_url}", 1))
+        else
+          ""
+        end
+
+      impressions     = ""  # いまは空欄
+      impressions_ctr = ""  # いまは空欄
 
       values << [
-        thumbnail_url.present? ? %(=IMAGE("#{thumbnail_url}")) : "",
+        thumbnail_cell,
         %Q(=HYPERLINK("#{video_url}","#{escape_for_formula(title)}")),
         publish_date,
         view_count,
@@ -84,7 +90,7 @@ class Youtube::AnalyticsWorker
     end
 
     # ----------------------------------------------------
-    # 5) Sheets API で書き込み
+    # 5) Sheets API で書き込み & 列幅/行高 調整
     # ----------------------------------------------------
     spreadsheet_id = ENV.fetch("YOUTUBE_SPREADSHEET_ID", ENV.fetch("ONCLASS_SPREADSHEET_ID"))
     sheet_name     = ENV.fetch("YOUTUBE_SHEET_NAME", "YouTube動画一覧")
@@ -107,6 +113,17 @@ class Youtube::AnalyticsWorker
       value_input_option: "USER_ENTERED"
     )
 
+    # A列の幅 & サムネ行の高さを 60x40px に揃える
+    sheet_id = sheet_id_for(sheets, spreadsheet_id, sheet_name)
+    resize_thumbnail_column_and_rows!(
+      sheets,
+      spreadsheet_id,
+      sheet_id,
+      values.size,       # 行数（ヘッダ込み）
+      width_px:  60,
+      height_px: 40
+    )
+
     Rails.logger.info("[YouTubeAnalytics] wrote #{values.size - 1} rows to #{sheet_name}")
   rescue Google::Apis::ClientError => e
     Rails.logger.error("[YouTubeAnalytics] ClientError: #{e.message}")
@@ -123,9 +140,6 @@ class Youtube::AnalyticsWorker
   # ====================================================
   private
 
-  # --------------------------------
-  # v3: 公開動画を全部取得
-  # --------------------------------
   # --------------------------------
   # v3: 公開動画を全部取得（YOUTUBE_CHANNEL_ID 優先）
   # --------------------------------
@@ -189,7 +203,6 @@ class Youtube::AnalyticsWorker
 
   # --------------------------------
   # v2: video 単位の analytics
-  # impressions 系は無視
   # --------------------------------
   def fetch_video_metrics(analytics)
     resp = analytics.query_report(
@@ -211,7 +224,6 @@ class Youtube::AnalyticsWorker
       }
     end
   rescue Google::Apis::ClientError => e
-    # impressions 系と違って、これが落ちることはレアだと思うが一応握りつぶす
     Rails.logger.warn("[YouTubeAnalytics] fetch_video_metrics failed: #{e.message}")
     {}
   end
@@ -256,13 +268,64 @@ class Youtube::AnalyticsWorker
     service.batch_update_spreadsheet(spreadsheet_id, batch)
   end
 
+  # 指定シート名の sheet_id を取得
+  def sheet_id_for(service, spreadsheet_id, sheet_name)
+    ss = service.get_spreadsheet(spreadsheet_id)
+    sheet = ss.sheets&.find { |s| s.properties&.title == sheet_name }
+    sheet&.properties&.sheet_id
+  end
+
+  # A列の幅と 2行目以降の行の高さを調整
+  def resize_thumbnail_column_and_rows!(service, spreadsheet_id, sheet_id, row_count, width_px:, height_px:)
+    return unless sheet_id
+
+    requests = []
+
+    # A列の幅
+    requests << Google::Apis::SheetsV4::Request.new(
+      update_dimension_properties: Google::Apis::SheetsV4::UpdateDimensionPropertiesRequest.new(
+        range: Google::Apis::SheetsV4::DimensionRange.new(
+          sheet_id:  sheet_id,
+          dimension: "COLUMNS",
+          start_index: 0,  # A列
+          end_index:   1
+        ),
+        properties: Google::Apis::SheetsV4::DimensionProperties.new(
+          pixel_size: width_px
+        ),
+        fields: "pixelSize"
+      )
+    )
+
+    # 2行目〜最終行の高さ
+    if row_count > 1
+      requests << Google::Apis::SheetsV4::Request.new(
+        update_dimension_properties: Google::Apis::SheetsV4::UpdateDimensionPropertiesRequest.new(
+          range: Google::Apis::SheetsV4::DimensionRange.new(
+            sheet_id:  sheet_id,
+            dimension: "ROWS",
+            start_index: 1,          # index 1 = 2行目
+            end_index:   row_count   # ヘッダ含めた行数
+          ),
+          properties: Google::Apis::SheetsV4::DimensionProperties.new(
+            pixel_size: height_px
+          ),
+          fields: "pixelSize"
+        )
+      )
+    end
+
+    batch = Google::Apis::SheetsV4::BatchUpdateSpreadsheetRequest.new(requests: requests)
+    service.batch_update_spreadsheet(spreadsheet_id, batch)
+  end
+
   # --------------------------------
   # 小物ヘルパー
   # --------------------------------
   def safe_thumbnail_url(snippet)
     thumbs = snippet&.thumbnails
-    return thumbs.high.url   if thumbs&.high&.url
-    return thumbs.medium.url if thumbs&.medium&.url
+    return thumbs.high.url    if thumbs&.high&.url
+    return thumbs.medium.url  if thumbs&.medium&.url
     return thumbs.default.url if thumbs&.default&.url
     nil
   end

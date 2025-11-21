@@ -48,3 +48,10 @@ lme_line_counts_every:
   queue: lme_line_counts
   tz: "Asia/Tokyo"
   description: "LME LINEダッシュボード更新"
+
+youtube_analytics_daily:
+  class: "Youtube::AnalyticsWorker"
+  cron: "30 7 * * *"   # 毎日 07:30
+  queue: youtube_analytics
+  tz: "Asia/Tokyo"
+  description: "YouTube動画一覧の集計＆スプレッドシート更新"

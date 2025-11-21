@@ -17,7 +17,6 @@ gem 'google-apis-youtube_analytics_v2'
 gem 'google-apis-core'
 
 
-
 gem 'recaptcha', require: 'recaptcha/rails'
 gem 'google-cloud-recaptcha_enterprise'
 # Bundle edge Rails instead: gem "rails", github: "rails/rails", branch: "main"
