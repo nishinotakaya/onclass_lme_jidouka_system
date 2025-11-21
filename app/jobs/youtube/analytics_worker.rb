@@ -7,6 +7,7 @@ require "json"
 
 class Youtube::AnalyticsWorker
   include Sidekiq::Worker
+  sidekiq_options queue: "youtube_analytics"
 
   def perform
     Rails.logger.info("[YouTubeAnalytics] Start (videos -> sheets)")
@@ -30,9 +31,10 @@ class Youtube::AnalyticsWorker
     Rails.logger.info("[YouTubeAnalytics] public_videos_count=#{videos.size}")
 
     # ----------------------------------------------------
-    # 3) Analytics で video 単位の平均視聴時間だけ取る
+    # 3) Analytics で video 単位の平均視聴時間を取得
+    #    { "videoId" => { views:, likes:, average_view_duration: } }
     # ----------------------------------------------------
-    metrics_by_video = fetch_video_metrics(analytics) # { "videoId" => { views:, likes:, average_view_duration: } }
+    metrics_by_video = fetch_video_metrics(analytics)
 
     # ----------------------------------------------------
     # 4) スプレッドシートに書き込むための values を組み立て
@@ -40,6 +42,7 @@ class Youtube::AnalyticsWorker
     header = [
       "サムネイル",
       "タイトル（リンク付き）",
+      "出演者",
       "公開日",
       "視聴回数",
       "高評価数",
@@ -66,6 +69,40 @@ class Youtube::AnalyticsWorker
       like_count    = (stats&.like_count || metrics[:likes]).to_i
       avg_duration  = (metrics[:average_view_duration] || "").to_s
 
+      # ---------- 出演者判定（description 内の最初の URL） ----------
+      desc      = snippet.description.to_s
+      first_url = desc.scan(%r{https?://\S+}).first
+
+      performer_name = "YouTube概要欄"
+
+      if first_url
+        # uLand パラメータを抽出（host が s.lmes.jp / form.lmes.jp どちらでもOK）
+        uland = first_url[/uLand=([A-Za-z0-9]+)/, 1]
+
+        performer_map = {
+          "2jTFMb" => "小松",
+          "6HfkXp" => "加藤",
+          "acSx8R" => "西野",
+          "r3UAhT" => "YouTubeLive",
+          "48vXlm" => "西野日常",
+          "Hsm2mV" => "西野 ショート",
+          "4YnKLB" => "加藤ショート",
+          "VmEg4f" => "YouTube TOP"
+        }
+
+        if uland && performer_map[uland]
+          performer_name = performer_map[uland]
+        end
+      end
+
+      performer_cell =
+        if first_url
+          %Q(=HYPERLINK("#{first_url}","#{escape_for_formula(performer_name)}"))
+        else
+          performer_name
+        end
+      # --------------------------------------------------
+
       # サムネ：セル内フィット（cell size = 120x70 に後から揃える）
       thumbnail_cell =
         if thumbnail_url.present?
@@ -74,12 +111,14 @@ class Youtube::AnalyticsWorker
           ""
         end
 
-      impressions     = ""  # いまは空欄
-      impressions_ctr = ""  # いまは空欄
+      # インプレッション系は現状 API で取れないので空欄のまま
+      impressions     = ""
+      impressions_ctr = ""
 
       values << [
         thumbnail_cell,
         %Q(=HYPERLINK("#{video_url}","#{escape_for_formula(title)}")),
+        performer_cell,
         publish_date,
         view_count,
         like_count,
@@ -92,8 +131,8 @@ class Youtube::AnalyticsWorker
     # ----------------------------------------------------
     # 5) Sheets API で書き込み & 列幅/行高 調整
     # ----------------------------------------------------
-    spreadsheet_id = ENV.fetch("YOUTUBE_SPREADSHEET_ID", ENV.fetch("ONCLASS_SPREADSHEET_ID"))
-    sheet_name     = ENV.fetch("YOUTUBE_SHEET_NAME", "YouTube動画一覧")
+    spreadsheet_id = ENV.fetch("YOUTUBE_ANALYTICS_SPREADSHEET_ID", ENV.fetch("ONCLASS_SPREADSHEET_ID"))
+    sheet_name     = ENV.fetch("YOUTUBE_ANALYTICS_SHEET_NAME", "YouTube動画一覧")
 
     sheets = build_sheets_service
     ensure_sheet_exists!(sheets, spreadsheet_id, sheet_name)
@@ -202,7 +241,7 @@ class Youtube::AnalyticsWorker
   end
 
   # --------------------------------
-  # v2: video 単位の analytics
+  # v2: video 単位の analytics（views / likes / averageViewDuration）
   # --------------------------------
   def fetch_video_metrics(analytics)
     resp = analytics.query_report(
