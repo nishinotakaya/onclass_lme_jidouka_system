@@ -8,6 +8,22 @@ Rails.application.configure do
   # since you don't have to restart the web server when you make code changes.
   config.enable_reloading = true
 
+  # ==============================
+  # ★ キャッシュ設定（Redis）★
+  # ==============================
+  # dev でも常にキャッシュ ON にして、Redis を使う
+  config.action_controller.perform_caching = true
+  config.action_controller.enable_fragment_cache_logging = true
+
+  config.cache_store = :redis_cache_store, {
+    url: ENV.fetch("RAILS_CACHE_URL", "redis://redis:6379/1"),
+    namespace: "onclass_jidouka:cache"
+  }
+
+  config.public_file_server.headers = {
+    "Cache-Control" => "public, max-age=#{2.days.to_i}"
+  }
+
   # Do not eager load code on boot.
   config.eager_load = false
 
@@ -16,22 +32,6 @@ Rails.application.configure do
 
   # Enable server timing
   config.server_timing = true
-
-  # Enable/disable caching. By default caching is disabled.
-  # Run rails dev:cache to toggle caching.
-  if Rails.root.join("tmp/caching-dev.txt").exist?
-    config.action_controller.perform_caching = true
-    config.action_controller.enable_fragment_cache_logging = true
-
-    config.cache_store = :memory_store
-    config.public_file_server.headers = {
-      "Cache-Control" => "public, max-age=#{2.days.to_i}"
-    }
-  else
-    config.action_controller.perform_caching = false
-
-    config.cache_store = :null_store
-  end
 
   # Store uploaded files on the local file system (see config/storage.yml for options).
   config.active_storage.service = :local

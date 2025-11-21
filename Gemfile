@@ -11,6 +11,12 @@ gem "http-cookie"
 gem "sassc-rails"
 gem 'sidekiq-cron'
 
+# === YouTube API ===
+gem 'google-apis-youtube_v3'
+gem 'google-apis-youtube_analytics_v2'
+gem 'google-apis-core'
+
+
 
 gem 'recaptcha', require: 'recaptcha/rails'
 gem 'google-cloud-recaptcha_enterprise'

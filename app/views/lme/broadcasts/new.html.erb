@@ -1,0 +1,54 @@
+<h1>LME 配信ジョブ投入</h1>
+
+<%= form_with url: lme_broadcasts_path, method: :post, local: true do |f| %>
+  <div>
+    <label>Broadcast ID</label>
+    <%= f.number_field :broadcast_id, required: true %>
+  </div>
+
+  <div>
+    <label>Template ID（クローン元）</label>
+    <%= f.number_field :template_id, required: true %>
+  </div>
+
+  <div>
+    <label>除外タグID（カンマ区切り）</label>
+    <%= f.text_field :exclude_tag_ids, placeholder: "1658734,1620163,341766,..." %>
+  </div>
+
+  <div>
+    <label>タググループID</label>
+    <%= f.number_field :group_id, value: 136007 %>
+  </div>
+
+  <div>
+    <label>配信日</label>
+    <%= f.date_field :send_day, required: true %>
+  </div>
+
+  <div>
+    <label>配信時刻</label>
+    <%= f.time_field :send_time, step: 60, required: true %>
+  </div>
+
+  <!-- 画面の URL に出てくるパラメータをそのまま渡したい場合に使用 -->
+  <details style="margin-top: 12px;">
+    <summary>高度な設定（必要時のみ）</summary>
+    <div>
+      <label>template_group_id</label>
+      <%= f.text_field :template_group_id, placeholder: "-11" %>
+    </div>
+    <div>
+      <label>template_child_id</label>
+      <%= f.text_field :template_child_id, placeholder: "12726061" %>
+    </div>
+    <div>
+      <label>action_type</label>
+      <%= f.text_field :action_type, placeholder: "sendAll" %>
+    </div>
+  </details>
+
+  <div style="margin-top:16px;">
+    <%= f.submit "ジョブ投入" %>
+  </div>
+<% end %>
