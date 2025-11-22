@@ -32,7 +32,7 @@ class Youtube::AnalyticsWorker
     # 3) スプレッドシートに書き込むための values を組み立て
     # ----------------------------------------------------
     header = [
-      "サムネイル",
+      "",
       "タイトル（リンク付き）",
       "出演者",
       "公開日",
@@ -41,7 +41,16 @@ class Youtube::AnalyticsWorker
       "アナリティクスURL"
     ] + (1..max_comments_per_video).map { |i| "コメント#{i}" }
 
-    values = [header]
+    values = []
+
+    # 1行目：空行
+    values << []
+
+    # 2行目：バッチ実行タイミング
+    values << ["バッチ実行タイミング", jp_timestamp]
+
+    # 3行目：ヘッダー
+    values << header
 
     videos.each do |video|
       vid      = video.id
@@ -106,8 +115,10 @@ class Youtube::AnalyticsWorker
       # ---------- コメント取得（トップレベルコメントのみ） ----------
       comments = fetch_comments_for_video(youtube, vid, max_comments_per_video)
 
-      # セル内で扱いやすいように、改行はスペースに変換
-      comment_cells = comments.map { |text| text.to_s.gsub("\r", "").gsub("\n", " ") }
+      # セル内で扱いやすいように整形
+      # - 元の改行はスペースに
+      # - 「。」「、」のあとでセル内改行
+      comment_cells = comments.map { |text| format_comment_for_cell(text) }
 
       # 列数を揃えるため、足りない分は nil で埋める
       if comment_cells.size < max_comments_per_video
@@ -159,12 +170,12 @@ class Youtube::AnalyticsWorker
       sheets,
       spreadsheet_id,
       sheet_id,
-      values.size,       # 行数（ヘッダ込み）
+      values.size,       # 行数（メタ＋ヘッダ込み）
       width_px:  120,
-      height_px: 70
+      height_px: 55
     )
 
-    Rails.logger.info("[YouTubeAnalytics] wrote #{values.size - 1} rows to #{sheet_name}")
+    Rails.logger.info("[YouTubeAnalytics] wrote #{values.size - 3} rows to #{sheet_name}")
   rescue Google::Apis::ClientError => e
     Rails.logger.error("[YouTubeAnalytics] ClientError: #{e.message}")
     Rails.logger.error(e.response_body) if e.respond_to?(:response_body)
@@ -353,7 +364,7 @@ class Youtube::AnalyticsWorker
             sheet_id:    sheet_id,
             dimension:   "ROWS",
             start_index: 1,          # index 1 = 2行目
-            end_index:   row_count   # ヘッダ含めた行数
+            end_index:   row_count   # メタ＋ヘッダ含めた行数
           ),
           properties: Google::Apis::SheetsV4::DimensionProperties.new(
             pixel_size: height_px
@@ -380,5 +391,25 @@ class Youtube::AnalyticsWorker
 
   def escape_for_formula(str)
     str.to_s.gsub('"', '""')
+  end
+
+  def jp_timestamp
+    Time.current.in_time_zone("Asia/Tokyo").strftime("%Y年%-m月%-d日 %H時%M分")
+  end
+
+  def format_comment_for_cell(text)
+    return "" if text.nil?
+
+    s = text.to_s
+
+    # 元の CR/LF はいったん潰す（YouTubeコメントの改行はとりあえずスペース扱い）
+    s = s.gsub("\r", "").gsub("\n", " ")
+
+    # 「。」「、」の直後でセル内改行
+    # Sheets は "\n" をセル内改行として扱ってくれる
+    s = s.gsub("。", "。\n").gsub("、", "、\n")
+
+    # 末尾の余計な改行やスペースを削る
+    s.rstrip
   end
 end
