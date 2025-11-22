@@ -47,7 +47,7 @@ class Youtube::AnalyticsWorker
     values << []
 
     # 2行目：バッチ実行タイミング
-    values << ["バッチ実行タイミング", jp_timestamp]
+    values << ["", "バッチ実行日時:  #{jp_timestamp}"]
 
     # 3行目：ヘッダー
     values << header
