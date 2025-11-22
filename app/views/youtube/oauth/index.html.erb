@@ -1,0 +1,305 @@
+<%# app/views/youtube/oauth/index.html.erb %>
+<style>
+  body {
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #0f172a;
+  }
+  .yt-page {
+    max-width: 1080px;
+    margin: 32px auto;
+    padding: 16px;
+  }
+  .yt-header {
+    color: #e5e7eb;
+    margin-bottom: 24px;
+  }
+  .yt-header h1 {
+    font-size: 28px;
+    margin: 0 0 4px;
+  }
+  .yt-header p {
+    margin: 0;
+    color: #9ca3af;
+    font-size: 14px;
+  }
+  .yt-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr);
+    gap: 16px;
+  }
+  .yt-card {
+    background: #020617;
+    border-radius: 16px;
+    padding: 16px 18px;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    box-shadow: 0 18px 40px rgba(15, 23, 42, 0.7);
+  }
+  .yt-card h2 {
+    margin: 0 0 6px;
+    font-size: 18px;
+    color: #e5e7eb;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .yt-card h2 span.icon {
+    font-size: 18px;
+  }
+  .yt-card p.desc {
+    margin: 0 0 12px;
+    font-size: 13px;
+    color: #9ca3af;
+  }
+  .yt-status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    margin-top: 6px;
+  }
+  .yt-status-ok {
+    background: rgba(22, 163, 74, 0.12);
+    color: #bbf7d0;
+    border: 1px solid rgba(22, 163, 74, 0.7);
+  }
+  .yt-status-ng {
+    background: rgba(220, 38, 38, 0.12);
+    color: #fecaca;
+    border: 1px solid rgba(220, 38, 38, 0.7);
+  }
+  .yt-field-group {
+    margin-bottom: 10px;
+  }
+  .yt-label {
+    display: block;
+    font-size: 12px;
+    color: #9ca3af;
+    margin-bottom: 3px;
+  }
+  .yt-input,
+  .yt-select,
+  .yt-textarea {
+    width: 100%;
+    border-radius: 10px;
+    border: 1px solid rgba(75, 85, 99, 0.8);
+    background: #020617;
+    padding: 7px 10px;
+    font-size: 13px;
+    color: #e5e7eb;
+    outline: none;
+  }
+  .yt-input:focus,
+  .yt-select:focus,
+  .yt-textarea:focus {
+    border-color: #38bdf8;
+    box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.5);
+  }
+  .yt-textarea {
+    resize: vertical;
+    min-height: 170px;
+  }
+  .yt-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 7px 14px;
+    font-size: 13px;
+    border-radius: 999px;
+    border: none;
+    cursor: pointer;
+    color: #0f172a;
+    background: linear-gradient(135deg, #f97316, #facc15);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    box-shadow: 0 10px 25px rgba(248, 181, 0, 0.38);
+  }
+  .yt-button:hover {
+    filter: brightness(1.05);
+  }
+  .yt-button-secondary {
+    background: transparent;
+    color: #e5e7eb;
+    border: 1px solid rgba(148, 163, 184, 0.7);
+    box-shadow: none;
+  }
+  .yt-badge-small {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.8);
+    color: #9ca3af;
+    margin-left: 6px;
+  }
+  .yt-footer-note {
+    margin-top: 20px;
+    font-size: 11px;
+    color: #6b7280;
+    text-align: right;
+  }
+  .yt-tag-pill {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.6);
+    font-size: 11px;
+    color: #9ca3af;
+    margin-left: 4px;
+  }
+</style>
+
+<div class="yt-page">
+  <div class="yt-header">
+    <h1>YouTube バッチダッシュボード</h1>
+    <p>プロアカ本体と競合チャンネルのデータを、スプレッドシートに自動同期します。</p>
+
+    <% if @authorized %>
+      <div class="yt-status-badge yt-status-ok">
+        <span>✅ OAuth 済み</span>
+        <span style="font-size: 11px; opacity: .8;">
+          有効期限: <%= @expires_at.in_time_zone("Asia/Tokyo").strftime("%Y/%m/%d %H:%M") %>
+        </span>
+      </div>
+    <% else %>
+      <div class="yt-status-badge yt-status-ng">
+        <span>⚠️ OAuth 未認証</span>
+        <span style="font-size: 11px; opacity: .8;">下の「YouTube と連携する」から認証してください</span>
+      </div>
+    <% end %>
+  </div>
+
+  <% if flash[:notice].present? %>
+    <div style="margin-bottom: 16px; padding: 8px 10px; border-radius: 10px; font-size: 13px; background: rgba(22, 163, 74, 0.08); color: #bbf7d0; border: 1px solid rgba(22, 163, 74, 0.6);">
+      <%= flash[:notice] %>
+    </div>
+  <% end %>
+
+  <div class="yt-grid">
+
+    <!-- 左：自チャンネル -->
+    <div class="yt-card">
+      <h2>
+        <span class="icon">📊</span>
+        プロアカ（自チャンネル）同期
+        <span class="yt-badge-small">AnalyticsWorker</span>
+      </h2>
+      <p class="desc">
+        自分のチャンネル（UCV_bOya...）の動画一覧＋コメントなどを、日次で見やすい形に落とし込みます。
+      </p>
+
+      <div class="yt-field-group">
+        <span class="yt-label">スプレッドシート URL（任意）</span>
+        <small style="color:#6b7280;">未入力なら ENV YOUTUBE_ANALYTICS_SPREADSHEET_ID を使用</small>
+        <!-- あくまで表示用の placeholder として URL を出す -->
+        <input
+          type="text"
+          name="fake"
+          class="yt-input"
+          value="<%= @youtube_sheet_id_default.present? ? "https://docs.google.com/spreadsheets/d/#{@youtube_sheet_id_default}/edit" : "" %>"
+          disabled
+          style="margin-top:2px; opacity:.7;"
+        />
+      </div>
+
+      <div class="yt-field-group">
+        <span class="yt-label">実行時に上書きしたい場合のみ入力</span>
+      </div>
+
+      <%= form_with url: youtube_oauth_run_analytics_path, method: :post, local: true do %>
+        <div class="yt-field-group">
+          <label class="yt-label">スプレッドシート URL（オプション）</label>
+          <%= text_field_tag :spreadsheet_url, "", class: "yt-input", placeholder: "https://docs.google.com/spreadsheets/d/XXXXXXXXXXXX/edit" %>
+        </div>
+
+        <div class="yt-field-group">
+          <label class="yt-label">
+            シート名（タブ名, オプション）
+          </label>
+          <%= text_field_tag :sheet_name, @youtube_sheet_name_default, class: "yt-input" %>
+        </div>
+
+        <div style="display:flex; gap:8px; align-items:center; margin-top:10px;">
+          <%= submit_tag "自チャンネル同期バッチを実行", class: "yt-button" %>
+          <% unless @authorized %>
+            <%= link_to "YouTube と連携する", youtube_oauth_authorize_path, class: "yt-button yt-button-secondary" %>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+
+    <!-- 右：競合チャンネル -->
+    <div class="yt-card">
+      <h2>
+        <span class="icon">🎯</span>
+        競合チャンネル同期
+        <span class="yt-badge-small">CompetitorWorker</span>
+      </h2>
+      <p class="desc">
+        指定したチャンネルの最新動画とコメントをまとめて取得し、分析用シートに落とし込みます。
+      </p>
+
+      <%= form_with url: youtube_oauth_run_competitors_path, method: :post, local: true do %>
+        <div class="yt-field-group">
+          <label class="yt-label">
+            1チャンネルあたり取得する動画数
+            <span class="yt-tag-pill">デフォルト 50 件</span>
+          </label>
+          <%= select_tag :max_videos_per_channel,
+                         options_for_select([10, 20, 30, 50, 100], 50),
+                         class: "yt-select" %>
+        </div>
+
+        <div class="yt-field-group">
+          <label class="yt-label">
+            出力先スプレッドシート URL（オプション）
+          </label>
+          <small style="color:#6b7280;">未入力なら ENV YOUTUBE_COMPETITORS_SPREADSHEET_ID を使用</small>
+          <%= text_field_tag :spreadsheet_url,
+                            nil,  # ★ デフォルト値は空
+                            class: "yt-input",
+                            placeholder: (
+                              if @competitor_sheet_id_default.present?
+                                "https://docs.google.com/spreadsheets/d/#{@competitor_sheet_id_default}/edit"
+                              else
+                                "https://docs.google.com/spreadsheets/d/XXXXXXXXXXXX/edit"
+                              end
+                            ) %>
+        </div>
+
+        <div class="yt-field-group">
+          <label class="yt-label">
+            シート名（タブ名）
+          </label>
+          <%= text_field_tag :sheet_name, @competitor_sheet_name_default, class: "yt-input" %>
+        </div>
+
+       <div class="yt-field-group">
+          <label class="yt-label">
+            競合チャンネル一覧（1行1チャンネル）
+          </label>
+          <small style="color:#6b7280;">
+            形式：<code>名前,URL</code> または <code>URLのみ</code>（空ならデフォルトの一覧を使用）
+          </small>
+          <%= text_area_tag :competitors_text,
+                            nil,  # ★ デフォルト値は空
+                            class: "yt-textarea",
+                            placeholder: (@competitors_text_default || "ここに競合チャンネル一覧を入力してください（1行1チャンネル）") %>
+        </div>
+
+        <div style="display:flex; gap:8px; align-items:center; margin-top:6px;">
+          <%= submit_tag "競合チャンネル同期バッチを実行", class: "yt-button" %>
+          <% unless @authorized %>
+            <%= link_to "YouTube と連携する", youtube_oauth_authorize_path, class: "yt-button yt-button-secondary" %>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+  </div>
+
+  <div class="yt-footer-note">
+    quotaExceeded が出たら、しばらく時間をおいてから叩いてね（1日10,000ユニット）。
+  </div>
+</div>
