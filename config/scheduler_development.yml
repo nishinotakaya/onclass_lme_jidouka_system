@@ -1,4 +1,5 @@
 # config/scheduler_development.yml
+
 # onclass_mentions_every:
 #   class: "Onclass::MentionsWorker"
 #   cron: "0,30 7-23 * * *"   # 7-23時の間で30分おきに実行
@@ -15,7 +16,7 @@
 
 onclass_students_front:
   class: "Onclass::StudentsDataWorker"
-  cron: "0 */2 * * *"      # 2時間毎など
+  cron: "0 */2 * * *"      # 2時間毎
   queue: onclass_students_data
   args:
     - "oYTO4UDI6MGb"
@@ -42,10 +43,26 @@ lme_line_inflows_daily:
   tz: "Asia/Tokyo"
   description: "LME LINE流入数集計"
 
-# ★ 追加（ダッシュボード集計）
+# ★ ダッシュボード集計
 lme_line_counts_every:
   class: "Lme::LineCountsWorker"
   cron: "5 7-23/2 * * *"   # 流入集計の5分後に実行
   queue: lme_line_counts
   tz: "Asia/Tokyo"
   description: "LME LINEダッシュボード更新"
+
+# ★ 自チャンネルの YouTube Analytics（開発）
+youtube_analytics_daily:
+  class: "Youtube::AnalyticsWorker"
+  cron: "30 7 * * *"   # 毎日 07:30
+  queue: youtube_analytics
+  tz: "Asia/Tokyo"
+  description: "YouTube動画一覧の集計＆スプレッドシート更新（開発）"
+
+# ★ 競合チャンネルの YouTube 分析（開発）
+youtube_competitors_daily:
+  class: "Youtube::CompetitorWorker"
+  cron: "45 7 * * *"   # 毎日 07:45（Analytics のあと）
+  queue: youtube_competitors
+  tz: "Asia/Tokyo"
+  description: "YouTube競合チャンネルの動画＆コメント収集（開発）"

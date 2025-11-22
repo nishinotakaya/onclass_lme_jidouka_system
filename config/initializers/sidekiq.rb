@@ -5,7 +5,7 @@ require "openssl"
 require "sidekiq"
 require "sidekiq/web"
 begin
-  require "sidekiq/cron/web" # UIタブだけ必要な場合は残してOK
+  require "sidekiq/cron/web" # cronUIタブ
 rescue LoadError
 end
 

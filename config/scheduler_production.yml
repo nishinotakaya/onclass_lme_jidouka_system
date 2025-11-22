@@ -1,4 +1,5 @@
-# # config/scheduler_production.yml
+# config/scheduler_production.yml
+
 # onclass_mentions_every:
 #   class: "Onclass::MentionsWorker"
 #   cron: "0,30 7-23 * * *"
@@ -49,9 +50,18 @@ lme_line_counts_every:
   tz: "Asia/Tokyo"
   description: "LME LINEダッシュボード更新"
 
+# ★ 自チャンネルの YouTube Analytics（本番）
 youtube_analytics_daily:
   class: "Youtube::AnalyticsWorker"
   cron: "30 7 * * *"   # 毎日 07:30
   queue: youtube_analytics
   tz: "Asia/Tokyo"
   description: "YouTube動画一覧の集計＆スプレッドシート更新"
+
+# ★ 競合チャンネルの YouTube 分析（本番）
+youtube_competitors_daily:
+  class: "Youtube::CompetitorWorker"
+  cron: "45 7 * * *"   # 毎日 07:45（Analytics のあと）
+  queue: youtube_competitors
+  tz: "Asia/Tokyo"
+  description: "YouTube競合チャンネルの動画＆コメント収集"

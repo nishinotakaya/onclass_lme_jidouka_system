@@ -1,7 +1,8 @@
 # config/sidekiq-cron.yml
+
 onclass_students_front:
   class: "Onclass::StudentsDataWorker"
-  cron: "0 7-23/2 * * *" 
+  cron: "0 7-23/2 * * *"
   queue: onclass_students_data
   args: ["oYTO4UDI6MGb", "フロントコース受講生"]
   tz: "Asia/Tokyo"
@@ -18,4 +19,22 @@ lme_line_inflows_daily:
   cron: "30 7-23/2 * * *"
   queue: lme_line_inflows
   args: ["2023-01-01"]
+  tz: "Asia/Tokyo"
+
+lme_line_counts_every:
+  class: "Lme::LineCountsWorker"
+  cron: "35 7-23/2 * * *"   # inflows の5分後
+  queue: lme_line_counts
+  tz: "Asia/Tokyo"
+
+youtube_analytics_daily:
+  class: "Youtube::AnalyticsWorker"
+  cron: "30 7 * * *"       # 毎日 07:30
+  queue: youtube_analytics
+  tz: "Asia/Tokyo"
+
+youtube_competitors_daily:
+  class: "Youtube::CompetitorWorker"
+  cron: "45 7 * * *"       # 毎日 07:45（自チャンネル集計のあと）
+  queue: youtube_competitors
   tz: "Asia/Tokyo"

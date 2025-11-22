@@ -16,9 +16,14 @@ Rails.application.routes.draw do
 
   # === YouTube OAuth ===
   namespace :youtube do
-    # /youtube/oauth/authorize → Youtube::OauthController#authorize
-    get "oauth/authorize", to: "oauth#authorize"
+    get  "oauth",          to: "oauth#index",     as: :oauth
+    get  "oauth/authorize", to: "oauth#authorize"
+    post "oauth/run_analytics",   to: "oauth#run_analytics"
+    post "oauth/run_competitors", to: "oauth#run_competitors"
   end
+
+  # リダイレクトURI
+  get "/oauth2callback", to: "youtube/oauth#callback"
 
   # Google のリダイレクトURI（GCP コンソールに登録してるやつ）
   # http://localhost:3008/oauth2callback
