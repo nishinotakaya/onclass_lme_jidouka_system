@@ -44,6 +44,10 @@ module Onclass
 
     TARGET_COLUMNS = %w[name email last_sign_in_at course_name course_start_at course_progress].freeze
 
+    # 新PDCA（条件: BASE と weekly_goals?user_id= を含むURLが free_text に存在する時だけ採用）
+    PDCA_APP_BASE_URL   = 'https://pdca-app-475677fd481e.herokuapp.com'.freeze
+    PDCA_WEEKLY_PREFIX  = 'weekly_goals?user_id='.freeze
+
     # ================ Entry =================
     def perform(course_id = nil, sheet_name = nil)
       course_id  ||= ENV.fetch('ONCLASS_COURSE_ID', DEFAULT_LEARNING_COURSE_ID)
@@ -135,7 +139,13 @@ module Onclass
 
         b = basic_by_id[r['id']] || {}
         free = b['free_text']
+
+        # 旧PDCA（スプシURL）
         r['pdca_url'] = extract_gsheets_url(free)
+
+        # ✅ 新PDCA（free_text に BASE + weekly_goals?user_id= を含むURLがある時だけ）
+        r['new_pdca_url'] = extract_new_pdca_url(free)
+
         r['line_url'] = extract_line_url(free)
 
         key_id   = r['id']
@@ -399,16 +409,22 @@ module Onclass
       service = build_sheets_service
       ensure_sheet_exists!(service, spreadsheet_id, sheet_name)
       clear_req = Google::Apis::SheetsV4::ClearValuesRequest.new
-      # 本体は P 列まで（N列は「PDCA更新日時」で不触）、右マトリクスは Q 列以降
-      service.clear_values(spreadsheet_id, "#{sheet_name}!B2:P2", clear_req)
-      service.clear_values(spreadsheet_id, "#{sheet_name}!B3:P3", clear_req)
-      service.clear_values(spreadsheet_id, "#{sheet_name}!B4:M", clear_req)
-      service.clear_values(spreadsheet_id, "#{sheet_name}!O4:P", clear_req)
-      service.clear_values(spreadsheet_id, "#{sheet_name}!Q2:ZZ", clear_req)
 
-      # B2（メタ）
-      meta_row   = ['バッチ実行タイミング', jp_timestamp] + Array.new(13, '')
-      meta_range = "#{sheet_name}!B2:P2"
+      # 列構成
+      # B:名前 C:Line D:メール E:ステータス F:ステータス_B G:カテゴリ/予定 H:ブロック I:受講日 J:期限 K:ログイン率 L:最新ログイン日
+      # M:旧PDCA N:新PDCA O:PDCA更新日時(不触) P:西野メンション Q:加藤メンション
+      # 右マトリクスは R 列以降
+
+      # クリア（PDCA更新日時＝O列は触らない）
+      service.clear_values(spreadsheet_id, "#{sheet_name}!B2:Q2", clear_req)
+      service.clear_values(spreadsheet_id, "#{sheet_name}!B3:Q3", clear_req)
+      service.clear_values(spreadsheet_id, "#{sheet_name}!B4:N",  clear_req) # 左ブロック（旧PDCA+新PDCAまで）
+      service.clear_values(spreadsheet_id, "#{sheet_name}!P4:Q",  clear_req) # メンション（右ブロック）
+      service.clear_values(spreadsheet_id, "#{sheet_name}!R2:ZZ", clear_req) # マトリクス
+
+      # B2（メタ） ※B〜Qは16列なので、空埋めは 14
+      meta_row   = ['バッチ実行タイミング', jp_timestamp] + Array.new(14, '')
+      meta_range = "#{sheet_name}!B2:Q2"
       service.update_spreadsheet_value(
         spreadsheet_id,
         meta_range,
@@ -416,13 +432,14 @@ module Onclass
         value_input_option: 'USER_ENTERED'
       )
 
-      # 見出し（B3:P3）
+      # 見出し（B3:Q3）
       headers = %w[
         名前 Line メールアドレス ステータス ステータス_B
-        現在進行カテゴリ/完了予定日 現在進行ブロック 受講日 受講期限日 ログイン率 最新ログイン日 PDCA
+        現在進行カテゴリ/完了予定日 現在進行ブロック 受講日 受講期限日 ログイン率 最新ログイン日
+        旧PDCA 新PDCA
         PDCA更新日時 西野メンション 加藤メンション
       ]
-      header_range = "#{sheet_name}!B3:P3"
+      header_range = "#{sheet_name}!B3:Q3"
       service.update_spreadsheet_value(
         spreadsheet_id,
         header_range,
@@ -438,12 +455,15 @@ module Onclass
         id.casecmp('id').zero? || name == '名前' || email == 'メールアドレス'
       end
 
-      # 左ブロック（B〜M）：N はスキップ
+      # 左ブロック（B〜N）：O（PDCA更新日時）は不触
       left_block_values = sanitized_rows.map do |r|
         g_val_name     = r['current_category'].to_s
         g_val_date     = to_jp_ymd(r['current_category_scheduled_at'])
         g_val_combined = g_val_name
         g_val_combined = "#{g_val_name} / #{g_val_date}" unless g_val_name.empty? || g_val_date.empty?
+
+        old_pdca_url = r['pdca_url']      # 旧PDCA（スプシURL）
+        new_pdca_url = r['new_pdca_url']  # ✅ 新PDCA（free_textから抽出できた時だけ）
 
         [
           hyperlink_name(r['id'], r['name']),
@@ -457,7 +477,8 @@ module Onclass
           to_jp_ymd(r['extension_study_date']) || '',
           (r['course_login_rate'].nil? ? '' : r['course_login_rate'].to_s),
           to_jp_ymdhm(r['latest_login_at'])    || '',
-          hyperlink_pdca(r['pdca_url'], r['name'])
+          hyperlink_pdca(old_pdca_url, r['name']), # 旧PDCA
+          hyperlink_pdca(new_pdca_url, r['name'])  # 新PDCA
         ]
       end
 
@@ -470,7 +491,7 @@ module Onclass
         )
       end
 
-      # 右ブロック（O〜P）
+      # メンション（P〜Q）※ OはPDCA更新日時（不触）
       right_block_values = sanitized_rows.map do |r|
         [
           mention_cell(channel_counts_for(nishino_maps, r)),
@@ -481,17 +502,17 @@ module Onclass
       if right_block_values.any?
         service.update_spreadsheet_value(
           spreadsheet_id,
-          "#{sheet_name}!O4",
-          Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!O4", values: right_block_values),
+          "#{sheet_name}!P4",
+          Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!P4", values: right_block_values),
           value_input_option: 'USER_ENTERED'
         )
       end
 
-      # 「カリキュラム完了予定日」マトリクス（Q列〜）
+      # 「カリキュラム完了予定日」マトリクス（R列〜に右シフト）
       service.update_spreadsheet_value(
         spreadsheet_id,
-        "#{sheet_name}!Q2",
-        Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!Q2", values: [['カリキュラム完了予定日']]),
+        "#{sheet_name}!R2",
+        Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!R2", values: [['カリキュラム完了予定日']]),
         value_input_option: 'USER_ENTERED'
       )
 
@@ -508,8 +529,8 @@ module Onclass
       if category_order.any?
         service.update_spreadsheet_value(
           spreadsheet_id,
-          "#{sheet_name}!Q3",
-          Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!Q3", values: [category_order]),
+          "#{sheet_name}!R3",
+          Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!R3", values: [category_order]),
           value_input_option: 'USER_ENTERED'
         )
 
@@ -521,14 +542,14 @@ module Onclass
         if schedule_matrix.any?
           service.update_spreadsheet_value(
             spreadsheet_id,
-            "#{sheet_name}!Q4",
-            Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!Q4", values: schedule_matrix),
+            "#{sheet_name}!R4",
+            Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!R4", values: schedule_matrix),
             value_input_option: 'USER_ENTERED'
           )
         end
       end
 
-      Rails.logger.info("[Onclass::StudentsDataWorker] uploaded #{sanitized_rows.size} rows with extension date, mentions and schedules (P列まで + Q列〜).")
+      Rails.logger.info("[Onclass::StudentsDataWorker] uploaded #{sanitized_rows.size} rows with old/new pdca, mentions and schedules (B列〜N列 + P/Q + R列〜).")
     end
 
     # ---------- 表示ヘルパ ----------
@@ -545,7 +566,7 @@ module Onclass
 
     def to_jp_ymdhm(str)
       return '' if str.blank?
-      t = (Time.zone.parse(str.to_s) rescue Time.parse(str.to_s) rescue nil)
+      t = (Time.zone.parse(str) rescue Time.parse(str) rescue nil)
       return '' unless t
       t.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日 %H時%M分')
     end
@@ -557,9 +578,10 @@ module Onclass
       %Q(=HYPERLINK("#{url}","#{label}"))
     end
 
+    # 旧PDCA/新PDCA 両方とも表示文字は「pdca_名前」
     def hyperlink_pdca(url, name)
       return '' if url.to_s.strip.empty?
-      label = "#{name}_PDCA".gsub('"', '""')
+      label = "pdca_#{name}".to_s.gsub('"', '""')
       %Q(=HYPERLINK("#{url}","#{label}"))
     end
 
@@ -739,6 +761,24 @@ module Onclass
       return nil unless m
       url = m.to_s
       url = "https://#{url}" unless url.start_with?('http')
+      url
+    end
+
+    # 新PDCA：free_text 内に BASE + weekly_goals?user_id= を含むURLが「ある時だけ」拾う
+    def extract_new_pdca_url(free_text)
+      return nil if free_text.to_s.strip.empty?
+
+      text = free_text.to_s
+      base   = Regexp.escape(PDCA_APP_BASE_URL)
+      prefix = Regexp.escape(PDCA_WEEKLY_PREFIX)
+
+      # 例: https://pdca-app-.../weekly_goals?user_id=16
+      re = %r{(#{base}/?#{prefix}\d+)}i
+      m = text.match(re)
+      return nil unless m
+
+      url = m[1].to_s.strip
+      url = url.sub(%r{\A#{base}/?}i, "#{PDCA_APP_BASE_URL}/")
       url
     end
 
