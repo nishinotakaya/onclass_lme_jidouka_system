@@ -17,8 +17,8 @@ module Lme
 
     GOOGLE_SCOPE = [Google::Apis::SheetsV4::AUTH_SPREADSHEETS].freeze
 
-    # ==== ダッシュボードの行・列レイアウト（基準: 2025年ブロック） =================
-    BASE_YEAR = 2025
+    # ==== ダッシュボードの行・列レイアウト（基準: 2026年ブロック） =================
+    BASE_YEAR = 2026
     BLOCK_HEIGHT = 13 # 1年分で下に追加する行数
     TOTAL_ROW = 5     # 総数の行
     MONTH_START = 10  # 1月行
@@ -179,14 +179,15 @@ module Lme
         '動画4'             => index_for(header_map, ['プロアカ_動画④', 'プロアカ_動画4', '動画④', '動画4'])
       }
 
-      # --- 3) 5月以降 & NG名前除外で抽出 ----------------------------------------
+      # --- 3) 5月以降（2026年は1月以降）& NG名前除外で抽出 ----------------------
       rows_target = []
+      min_month = (target_year >= 2026) ? 1 : 5  # 2026年以降は1月から、それ以前は5月から
       values.each do |row|
         name = normalize_name(safe_at(row, idx_name))
         next if banned_name?(name)
 
         t = parse_followed_at(safe_at(row, idx_follow))
-        next unless t && t.year == target_year && t.month >= 5
+        next unless t && t.year == target_year && t.month >= min_month
         rows_target << row
       end
 
@@ -287,25 +288,27 @@ module Lme
       special_o = Array.new(12, 0) # YouTube概要欄(Top除く) + 成約
       special_q = Array.new(12, 0) # YouTube概要欄 Top + 成約
 
-      rows_target.each do |row|
-        t = parse_followed_at(safe_at(row, idx_follow)); next unless t
-        m_idx = t.month - 1
+      if idx_referrer
+        rows_target.each do |row|
+          t = parse_followed_at(safe_at(row, idx_follow)); next unless t
+          m_idx = t.month - 1
 
-        ref = safe_at(row, idx_referrer).to_s
-        has_contract = idx_contract ? safe_at(row, idx_contract).to_s.strip.present? : false
-        next unless has_contract
+          ref = safe_at(row, idx_referrer).to_s
+          has_contract = idx_contract ? safe_at(row, idx_contract).to_s.strip.present? : false
+          next unless has_contract
 
-        special_e[m_idx] += 1 if ref.include?('小松')
-        special_g[m_idx] += 1 if ref.include?('西野')
+          special_e[m_idx] += 1 if ref.include?('小松')
+          special_g[m_idx] += 1 if ref.include?('西野')
 
-        if ref.include?('西野日常') || (ref.include?('西野') && !ref.include?('ショート'))
-          special_k[m_idx] += 1
-        end
+          if ref.include?('西野日常') || (ref.include?('西野') && !ref.include?('ショート'))
+            special_k[m_idx] += 1
+          end
 
-        if ref.include?('YouTube概要欄 Top')
-          special_q[m_idx] += 1
-        elsif ref.include?('YouTube概要欄')
-          special_o[m_idx] += 1
+          if ref.include?('YouTube概要欄 Top')
+            special_q[m_idx] += 1
+          elsif ref.include?('YouTube概要欄')
+            special_o[m_idx] += 1
+          end
         end
       end
 
