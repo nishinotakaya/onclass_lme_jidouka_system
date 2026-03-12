@@ -85,13 +85,11 @@ module Onclass
       student_ids.each do |sid|
         details_by_id[sid]   = fetch_user_learning_course(conn, base_headers, sid, course_id) rescue {}
         extension_by_id[sid] = fetch_extension_study_date(conn, base_headers, sid, course_id) rescue nil
-        sleep 0.05
       end
 
       student_ids.each do |sid|
         begin
           basic_by_id[sid] = fetch_user_basic(conn, base_headers, sid)
-          sleep 0.03
         rescue => e
           Rails.logger.warn("[Onclass::StudentsDataWorker] basic fetch failed for #{sid}: #{e.class} #{e.message}")
         end
