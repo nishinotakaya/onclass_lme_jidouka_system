@@ -112,7 +112,18 @@ module Onclass
       nishino_maps = nishino_headers ? fetch_unread_mentions_map(conn, nishino_headers) : { id: {}, name: {} }
       kato_maps    = kato_headers    ? fetch_unread_mentions_map(conn, kato_headers)    : { id: {}, name: {} }
 
-      # 7) 付加情報 & motivation 補完
+      # 7) PDCAアプリから最新報告日を取得（email/name → 日付のマップ）
+      pdca_report_maps = begin
+        Onclass::PdcaStudentsService.new.fetch_latest_reports
+      rescue => e
+        Rails.logger.warn("[Onclass::StudentsDataWorker] PdcaStudentsService failed: #{e.class} #{e.message}")
+        { by_email: {}, by_name: {} }
+      end
+      pdca_by_email = pdca_report_maps[:by_email] || {}
+      pdca_by_name  = pdca_report_maps[:by_name]  || {}
+      Rails.logger.info("[Onclass::StudentsDataWorker] pdca_latest_reports fetched: #{pdca_by_email.size} entries (by email)")
+
+      # 8) 付加情報 & motivation 補完
       rows.each do |r|
         d = details_by_id[r['id']] || {}
         r['current_category']               = current_category_name(d) || ''
@@ -145,6 +156,12 @@ module Onclass
 
         # ✅ 新PDCA（free_text に BASE + weekly_goals?user_id= を含むURLがある時だけ）
         r['new_pdca_url'] = extract_new_pdca_url(free)
+
+        # 新PDCAの最新報告日（PDCAアプリから取得 / メール優先・名前フォールバック）
+        r['pdca_latest_report'] =
+          pdca_by_email[r['email'].to_s] ||
+          pdca_by_name[normalize_name(r['name'].to_s)] ||
+          pdca_by_name[r['name'].to_s]
 
         r['line_url'] = extract_line_url(free)
 
@@ -412,19 +429,19 @@ module Onclass
 
       # 列構成
       # B:名前 C:Line D:メール E:ステータス F:ステータス_B G:カテゴリ/予定 H:ブロック I:受講日 J:期限 K:ログイン率 L:最新ログイン日
-      # M:旧PDCA N:新PDCA O:PDCA更新日時(不触) P:西野メンション Q:加藤メンション
-      # 右マトリクスは R 列以降
+      # M:旧PDCA N:新PDCA O:(不触) P:西野メンション Q:PDCA最新報告日 R:加藤メンション
+      # 右マトリクスは S 列以降
 
-      # クリア（PDCA更新日時＝O列は触らない）
-      service.clear_values(spreadsheet_id, "#{sheet_name}!B2:Q2", clear_req)
-      service.clear_values(spreadsheet_id, "#{sheet_name}!B3:Q3", clear_req)
-      service.clear_values(spreadsheet_id, "#{sheet_name}!B4:N",  clear_req) # 左ブロック（旧PDCA+新PDCAまで）
-      service.clear_values(spreadsheet_id, "#{sheet_name}!P4:Q",  clear_req) # メンション（右ブロック）
-      service.clear_values(spreadsheet_id, "#{sheet_name}!R2:ZZ", clear_req) # マトリクス
+      # クリア
+      service.clear_values(spreadsheet_id, "#{sheet_name}!B2:R2", clear_req)
+      service.clear_values(spreadsheet_id, "#{sheet_name}!B3:R3", clear_req)
+      service.clear_values(spreadsheet_id, "#{sheet_name}!B4:N",  clear_req) # 左ブロック（O は不触）
+      service.clear_values(spreadsheet_id, "#{sheet_name}!P4:R",  clear_req) # 右ブロック（西野/PDCA報告日/加藤）
+      service.clear_values(spreadsheet_id, "#{sheet_name}!S2:ZZ", clear_req) # マトリクス
 
-      # B2（メタ） ※B〜Qは16列なので、空埋めは 14
-      meta_row   = ['バッチ実行タイミング', jp_timestamp] + Array.new(14, '')
-      meta_range = "#{sheet_name}!B2:Q2"
+      # B2（メタ） B〜R = 17列、空埋めは 15
+      meta_row   = ['バッチ実行タイミング', jp_timestamp] + Array.new(15, '')
+      meta_range = "#{sheet_name}!B2:R2"
       service.update_spreadsheet_value(
         spreadsheet_id,
         meta_range,
@@ -432,14 +449,15 @@ module Onclass
         value_input_option: 'USER_ENTERED'
       )
 
-      # 見出し（B3:Q3）
-      headers = %w[
-        名前 Line メールアドレス ステータス ステータス_B
-        現在進行カテゴリ/完了予定日 現在進行ブロック 受講日 受講期限日 ログイン率 最新ログイン日
-        旧PDCA 新PDCA
-        PDCA更新日時 西野メンション 加藤メンション
+      # 見出し（B3:R3） ※O列は空（不触）
+      headers = [
+        '名前', 'Line', 'メールアドレス', 'ステータス', 'ステータス_B',
+        '現在進行カテゴリ/完了予定日', '現在進行ブロック', '受講日', '受講期限日', 'ログイン率', '最新ログイン日',
+        '旧PDCA', '新PDCA',
+        '',              # O: 不触
+        '西野メンション', 'PDCA最新報告日', '加藤メンション'
       ]
-      header_range = "#{sheet_name}!B3:Q3"
+      header_range = "#{sheet_name}!B3:R3"
       service.update_spreadsheet_value(
         spreadsheet_id,
         header_range,
@@ -455,7 +473,7 @@ module Onclass
         id.casecmp('id').zero? || name == '名前' || email == 'メールアドレス'
       end
 
-      # 左ブロック（B〜N）：O（PDCA更新日時）は不触
+      # 左ブロック（B〜N）: O は不触
       left_block_values = sanitized_rows.map do |r|
         g_val_name     = r['current_category'].to_s
         g_val_date     = to_jp_ymd(r['current_category_scheduled_at'])
@@ -477,8 +495,8 @@ module Onclass
           to_jp_ymd(r['extension_study_date']) || '',
           (r['course_login_rate'].nil? ? '' : r['course_login_rate'].to_s),
           to_jp_ymdhm(r['latest_login_at'])    || '',
-          hyperlink_pdca(old_pdca_url, r['name']), # 旧PDCA
-          hyperlink_pdca(new_pdca_url, r['name'])  # 新PDCA
+          hyperlink_pdca(old_pdca_url, r['name']),  # M: 旧PDCA
+          hyperlink_pdca(new_pdca_url, r['name'])   # N: 新PDCA
         ]
       end
 
@@ -491,11 +509,12 @@ module Onclass
         )
       end
 
-      # メンション（P〜Q）※ OはPDCA更新日時（不触）
+      # 右ブロック（P〜R）: P=西野メンション Q=PDCA最新報告日 R=加藤メンション
       right_block_values = sanitized_rows.map do |r|
         [
-          mention_cell(channel_counts_for(nishino_maps, r)),
-          mention_cell(channel_counts_for(kato_maps, r))
+          mention_cell(channel_counts_for(nishino_maps, r)), # P: 西野メンション
+          r['pdca_latest_report'].to_s,                      # Q: PDCA最新報告日
+          mention_cell(channel_counts_for(kato_maps, r))     # R: 加藤メンション
         ]
       end
 
@@ -508,11 +527,11 @@ module Onclass
         )
       end
 
-      # 「カリキュラム完了予定日」マトリクス（R列〜に右シフト）
+      # 「カリキュラム完了予定日」マトリクス（S列〜）
       service.update_spreadsheet_value(
         spreadsheet_id,
-        "#{sheet_name}!R2",
-        Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!R2", values: [['カリキュラム完了予定日']]),
+        "#{sheet_name}!S2",
+        Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!S2", values: [['カリキュラム完了予定日']]),
         value_input_option: 'USER_ENTERED'
       )
 
@@ -529,8 +548,8 @@ module Onclass
       if category_order.any?
         service.update_spreadsheet_value(
           spreadsheet_id,
-          "#{sheet_name}!R3",
-          Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!R3", values: [category_order]),
+          "#{sheet_name}!S3",
+          Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!S3", values: [category_order]),
           value_input_option: 'USER_ENTERED'
         )
 
@@ -542,14 +561,14 @@ module Onclass
         if schedule_matrix.any?
           service.update_spreadsheet_value(
             spreadsheet_id,
-            "#{sheet_name}!R4",
-            Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!R4", values: schedule_matrix),
+            "#{sheet_name}!S4",
+            Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!S4", values: schedule_matrix),
             value_input_option: 'USER_ENTERED'
           )
         end
       end
 
-      Rails.logger.info("[Onclass::StudentsDataWorker] uploaded #{sanitized_rows.size} rows with old/new pdca, mentions and schedules (B列〜N列 + P/Q + R列〜).")
+      Rails.logger.info("[Onclass::StudentsDataWorker] uploaded #{sanitized_rows.size} rows (B〜N: 左ブロック, P:西野 Q:PDCA最新報告日 R:加藤, S〜: スケジュール).")
     end
 
     # ---------- 表示ヘルパ ----------
@@ -578,10 +597,10 @@ module Onclass
       %Q(=HYPERLINK("#{url}","#{label}"))
     end
 
-    # 旧PDCA/新PDCA 両方とも表示文字は「pdca_名前」
+    # 旧PDCA/新PDCA 共通ハイパーリンク（表示文字は「pdca_名前」）
     def hyperlink_pdca(url, name)
       return '' if url.to_s.strip.empty?
-      label = "pdca_#{name}".to_s.gsub('"', '""')
+      label = "pdca_#{name}".gsub('"', '""')
       %Q(=HYPERLINK("#{url}","#{label}"))
     end
 

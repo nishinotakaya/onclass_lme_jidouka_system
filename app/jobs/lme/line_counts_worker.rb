@@ -8,7 +8,7 @@ require 'google/apis/sheets_v4'
 require 'googleauth'
 
 #
-# 「Line流入者」シートを読み、ダッシュボードへ集計を書き込む
+# 「Line流入者」シートを読み、ダッシュボードへ集計を書き込む(テスト済)
 #
 module Lme
   class LineCountsWorker
@@ -24,7 +24,7 @@ module Lme
     MONTH_START = 10  # 1月行
     MONTH_END = 21    # 12月行
     REF_ROW_START = 25 # 流入経路 1月行
-    REF_ROW_END = 36   # 流入経路 12月行
+    REF_ROW_END = 36   # 流入経路 12月行(テスト済)
 
     # 特別集計（月次 1〜12月の行）
     SPECIAL_ROW_START   = 40
