@@ -427,19 +427,19 @@ module Onclass
 
       # 列構成
       # B:名前 C:Line D:メール E:ステータス F:ステータス_B G:カテゴリ/予定 H:ブロック I:受講日 J:期限 K:ログイン率 L:最新ログイン日
-      # M:旧PDCA N:新PDCA O:(不触) P:西野メンション Q:加藤メンション R:PDCA最新報告日
-      # 右マトリクスは S 列以降
+      # M:旧PDCA N:新PDCA O:西野メンション P:PDCA最新報告日 Q:加藤メンション
+      # 右マトリクスは R 列以降
 
       # クリア
-      service.clear_values(spreadsheet_id, "#{sheet_name}!B2:R2", clear_req)
-      service.clear_values(spreadsheet_id, "#{sheet_name}!B3:R3", clear_req)
-      service.clear_values(spreadsheet_id, "#{sheet_name}!B4:N",  clear_req) # 左ブロック（O は不触）
-      service.clear_values(spreadsheet_id, "#{sheet_name}!P4:R",  clear_req) # 右ブロック（西野/PDCA報告日/加藤）
-      service.clear_values(spreadsheet_id, "#{sheet_name}!S2:ZZ", clear_req) # マトリクス
+      service.clear_values(spreadsheet_id, "#{sheet_name}!B2:Q2", clear_req)
+      service.clear_values(spreadsheet_id, "#{sheet_name}!B3:Q3", clear_req)
+      service.clear_values(spreadsheet_id, "#{sheet_name}!B4:N",  clear_req) # 左ブロック
+      service.clear_values(spreadsheet_id, "#{sheet_name}!O4:Q",  clear_req) # 右ブロック（西野/PDCA報告日/加藤）
+      service.clear_values(spreadsheet_id, "#{sheet_name}!R2:ZZ", clear_req) # マトリクス
 
-      # B2（メタ） B〜R = 17列、空埋めは 15
-      meta_row   = ['バッチ実行タイミング', jp_timestamp] + Array.new(15, '')
-      meta_range = "#{sheet_name}!B2:R2"
+      # B2（メタ） B〜Q = 16列、空埋めは 14
+      meta_row   = ['バッチ実行タイミング', jp_timestamp] + Array.new(14, '')
+      meta_range = "#{sheet_name}!B2:Q2"
       service.update_spreadsheet_value(
         spreadsheet_id,
         meta_range,
@@ -447,15 +447,14 @@ module Onclass
         value_input_option: 'USER_ENTERED'
       )
 
-      # 見出し（B3:R3） ※O列は空（不触）
+      # 見出し（B3:Q3）
       headers = [
         '名前', 'Line', 'メールアドレス', 'ステータス', 'ステータス_B',
         '現在進行カテゴリ/完了予定日', '現在進行ブロック', '受講日', '受講期限日', 'ログイン率', '最新ログイン日',
         '旧PDCA', '新PDCA',
-        '',              # O: 不触
-        '西野メンション', '加藤メンション', 'PDCA最新報告日'
+        '西野メンション', 'PDCA最新報告日', '加藤メンション'
       ]
-      header_range = "#{sheet_name}!B3:R3"
+      header_range = "#{sheet_name}!B3:Q3"
       service.update_spreadsheet_value(
         spreadsheet_id,
         header_range,
@@ -507,29 +506,29 @@ module Onclass
         )
       end
 
-      # 右ブロック（P〜R）: P=西野メンション Q=加藤メンション R=PDCA最新報告日
+      # 右ブロック（O〜Q）: O=西野メンション P=PDCA最新報告日 Q=加藤メンション
       right_block_values = sanitized_rows.map do |r|
         [
-          mention_cell(channel_counts_for(nishino_maps, r)), # P: 西野メンション
-          mention_cell(channel_counts_for(kato_maps, r)),    # Q: 加藤メンション
-          r['pdca_latest_report'].to_s                       # R: PDCA最新報告日
+          mention_cell(channel_counts_for(nishino_maps, r)), # O: 西野メンション
+          r['pdca_latest_report'].to_s,                      # P: PDCA最新報告日
+          mention_cell(channel_counts_for(kato_maps, r))     # Q: 加藤メンション
         ]
       end
 
       if right_block_values.any?
         service.update_spreadsheet_value(
           spreadsheet_id,
-          "#{sheet_name}!P4",
-          Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!P4", values: right_block_values),
+          "#{sheet_name}!O4",
+          Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!O4", values: right_block_values),
           value_input_option: 'USER_ENTERED'
         )
       end
 
-      # 「カリキュラム完了予定日」マトリクス（S列〜）
+      # 「カリキュラム完了予定日」マトリクス（R列〜）
       service.update_spreadsheet_value(
         spreadsheet_id,
-        "#{sheet_name}!S2",
-        Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!S2", values: [['カリキュラム完了予定日']]),
+        "#{sheet_name}!R2",
+        Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!R2", values: [['カリキュラム完了予定日']]),
         value_input_option: 'USER_ENTERED'
       )
 
@@ -546,8 +545,8 @@ module Onclass
       if category_order.any?
         service.update_spreadsheet_value(
           spreadsheet_id,
-          "#{sheet_name}!S3",
-          Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!S3", values: [category_order]),
+          "#{sheet_name}!R3",
+          Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!R3", values: [category_order]),
           value_input_option: 'USER_ENTERED'
         )
 
@@ -559,63 +558,75 @@ module Onclass
         if schedule_matrix.any?
           service.update_spreadsheet_value(
             spreadsheet_id,
-            "#{sheet_name}!S4",
-            Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!S4", values: schedule_matrix),
+            "#{sheet_name}!R4",
+            Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet_name}!R4", values: schedule_matrix),
             value_input_option: 'USER_ENTERED'
           )
         end
       end
 
-      # Q列: 本日日付の行にオレンジ背景を付ける
-      apply_q_column_highlights!(service, spreadsheet_id, sheet_name, sanitized_rows)
+      # セルハイライト: P列(PDCA最新報告日)=本日→オレンジ / O列(西野)・Q列(加藤)=メンションあり→黄色
+      apply_cell_highlights!(service, spreadsheet_id, sheet_name, sanitized_rows, nishino_maps, kato_maps)
 
-      Rails.logger.info("[Onclass::StudentsDataWorker] uploaded #{sanitized_rows.size} rows (B〜N: 左ブロック, P:西野 Q:加藤 R:PDCA最新報告日, S〜: スケジュール).")
+      Rails.logger.info("[Onclass::StudentsDataWorker] uploaded #{sanitized_rows.size} rows (B〜N: 左ブロック, O:西野 P:PDCA最新報告日 Q:加藤, R〜: スケジュール).")
     end
 
-    # ---------- Q列ハイライト ----------
-    # PDCA最新報告日（R列）が本日の行にオレンジ背景を付ける（それ以外はクリア）
-    def apply_q_column_highlights!(service, spreadsheet_id, sheet_name, sanitized_rows)
-      ss       = service.get_spreadsheet(spreadsheet_id)
-      sheet    = ss.sheets.find { |s| s.properties&.title == sheet_name }
+    # ---------- セルハイライト ----------
+    # ・P列(PDCA最新報告日): 本日 → オレンジ、それ以外 → 白
+    # ・O列(西野メンション) / Q列(加藤メンション): 値あり → 黄色、なし → 白
+    #   ※ GASのメンション色処理をRuby側に移植
+    def apply_cell_highlights!(service, spreadsheet_id, sheet_name, sanitized_rows, nishino_maps, kato_maps)
+      ss    = service.get_spreadsheet(spreadsheet_id)
+      sheet = ss.sheets.find { |s| s.properties&.title == sheet_name }
       return unless sheet
 
-      sheet_id  = sheet.properties.sheet_id
-      today_jp  = Time.now.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日')
-      # R列 = 0始まりで index 17 (A=0, B=1 ... R=17)
-      q_col     = 17
-      # データ開始行: 行4 = 0始まりで index 3
-      data_start_row = 3
+      sheet_id       = sheet.properties.sheet_id
+      today_jp       = Time.now.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日')
+      data_start_row = 3  # 行4 = 0始まりindex 3
 
-      orange = Google::Apis::SheetsV4::Color.new(red: 1.0, green: 0.647, blue: 0.0)
-      clear  = Google::Apis::SheetsV4::Color.new(red: 1.0, green: 1.0,   blue: 1.0)
+      # 色定数
+      orange = Google::Apis::SheetsV4::Color.new(red: 1.0,  green: 0.647, blue: 0.0)  # PDCA本日
+      yellow = Google::Apis::SheetsV4::Color.new(red: 1.0,  green: 0.98,  blue: 0.6)  # メンションあり
+      white  = Google::Apis::SheetsV4::Color.new(red: 1.0,  green: 1.0,   blue: 1.0)  # クリア
 
-      requests = sanitized_rows.each_with_index.map do |r, i|
-        row_index = data_start_row + i
-        color     = r['pdca_latest_report'] == today_jp ? orange : clear
+      # 列インデックス (0始まり: A=0, B=1 ...)
+      col_nishino = 14  # O列: 西野メンション
+      col_pdca    = 15  # P列: PDCA最新報告日
+      col_kato    = 16  # Q列: 加藤メンション
 
-        Google::Apis::SheetsV4::Request.new(
-          update_cells: Google::Apis::SheetsV4::UpdateCellsRequest.new(
-            range: Google::Apis::SheetsV4::GridRange.new(
-              sheet_id:          sheet_id,
-              start_row_index:   row_index,
-              end_row_index:     row_index + 1,
-              start_column_index: q_col,
-              end_column_index:   q_col + 1
-            ),
-            rows: [
-              Google::Apis::SheetsV4::RowData.new(
-                values: [
-                  Google::Apis::SheetsV4::CellData.new(
-                    user_entered_format: Google::Apis::SheetsV4::CellFormat.new(
-                      background_color: color
+      requests = sanitized_rows.each_with_index.flat_map do |r, i|
+        row_index    = data_start_row + i
+        pdca_color   = r['pdca_latest_report'] == today_jp ? orange : white
+        nishino_cell = mention_cell(channel_counts_for(nishino_maps, r))
+        kato_cell    = mention_cell(channel_counts_for(kato_maps,    r))
+        nishino_color = nishino_cell.present? ? yellow : white
+        kato_color    = kato_cell.present?    ? yellow : white
+
+        [col_nishino, col_pdca, col_kato].zip([nishino_color, pdca_color, kato_color]).map do |col, color|
+          Google::Apis::SheetsV4::Request.new(
+            update_cells: Google::Apis::SheetsV4::UpdateCellsRequest.new(
+              range: Google::Apis::SheetsV4::GridRange.new(
+                sheet_id:           sheet_id,
+                start_row_index:    row_index,
+                end_row_index:      row_index + 1,
+                start_column_index: col,
+                end_column_index:   col + 1
+              ),
+              rows: [
+                Google::Apis::SheetsV4::RowData.new(
+                  values: [
+                    Google::Apis::SheetsV4::CellData.new(
+                      user_entered_format: Google::Apis::SheetsV4::CellFormat.new(
+                        background_color: color
+                      )
                     )
-                  )
-                ]
-              )
-            ],
-            fields: 'userEnteredFormat.backgroundColor'
+                  ]
+                )
+              ],
+              fields: 'userEnteredFormat.backgroundColor'
+            )
           )
-        )
+        end
       end
 
       return if requests.empty?
@@ -625,10 +636,10 @@ module Onclass
         Google::Apis::SheetsV4::BatchUpdateSpreadsheetRequest.new(requests: requests)
       )
 
-      today_count = sanitized_rows.count { |r| r['pdca_latest_report'] == today_jp }
-      Rails.logger.info("[Onclass::StudentsDataWorker] Q列ハイライト: #{today_count}行をオレンジに（本日=#{today_jp}）")
+      pdca_count    = sanitized_rows.count { |r| r['pdca_latest_report'] == today_jp }
+      Rails.logger.info("[Onclass::StudentsDataWorker] ハイライト完了: PDCA本日=#{pdca_count}行(オレンジ) / メンション列(黄色)")
     rescue => e
-      Rails.logger.warn("[Onclass::StudentsDataWorker] Q列ハイライト失敗: #{e.class} #{e.message}")
+      Rails.logger.warn("[Onclass::StudentsDataWorker] ハイライト失敗: #{e.class} #{e.message}")
     end
 
     # ---------- 表示ヘルパ ----------
