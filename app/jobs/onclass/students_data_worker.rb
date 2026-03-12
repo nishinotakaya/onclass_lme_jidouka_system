@@ -427,7 +427,7 @@ module Onclass
 
       # 列構成
       # B:名前 C:Line D:メール E:ステータス F:ステータス_B G:カテゴリ/予定 H:ブロック I:受講日 J:期限 K:ログイン率 L:最新ログイン日
-      # M:旧PDCA N:新PDCA O:西野メンション P:PDCA最新報告日 Q:加藤メンション
+      # M:旧PDCA N:新PDCA O:PDCA最新報告日 P:西野メンション Q:加藤メンション
       # 右マトリクスは R 列以降
 
       # クリア
@@ -452,7 +452,7 @@ module Onclass
         '名前', 'Line', 'メールアドレス', 'ステータス', 'ステータス_B',
         '現在進行カテゴリ/完了予定日', '現在進行ブロック', '受講日', '受講期限日', 'ログイン率', '最新ログイン日',
         '旧PDCA', '新PDCA',
-        '西野メンション', 'PDCA最新報告日', '加藤メンション'
+        'PDCA最新報告日', '西野メンション', '加藤メンション'
       ]
       header_range = "#{sheet_name}!B3:Q3"
       service.update_spreadsheet_value(
@@ -506,11 +506,11 @@ module Onclass
         )
       end
 
-      # 右ブロック（O〜Q）: O=西野メンション P=PDCA最新報告日 Q=加藤メンション
+      # 右ブロック（O〜Q）: O=PDCA最新報告日 P=西野メンション Q=加藤メンション
       right_block_values = sanitized_rows.map do |r|
         [
-          mention_cell(channel_counts_for(nishino_maps, r)), # O: 西野メンション
-          r['pdca_latest_report'].to_s,                      # P: PDCA最新報告日
+          r['pdca_latest_report'].to_s,                      # O: PDCA最新報告日
+          mention_cell(channel_counts_for(nishino_maps, r)), # P: 西野メンション
           mention_cell(channel_counts_for(kato_maps, r))     # Q: 加藤メンション
         ]
       end
@@ -568,7 +568,7 @@ module Onclass
       # セルハイライト: P列(PDCA最新報告日)=本日→オレンジ / O列(西野)・Q列(加藤)=メンションあり→黄色
       apply_cell_highlights!(service, spreadsheet_id, sheet_name, sanitized_rows, nishino_maps, kato_maps)
 
-      Rails.logger.info("[Onclass::StudentsDataWorker] uploaded #{sanitized_rows.size} rows (B〜N: 左ブロック, O:西野 P:PDCA最新報告日 Q:加藤, R〜: スケジュール).")
+      Rails.logger.info("[Onclass::StudentsDataWorker] uploaded #{sanitized_rows.size} rows (B〜N: 左ブロック, O:PDCA最新報告日 P:西野 Q:加藤, R〜: スケジュール).")
     end
 
     # ---------- セルハイライト ----------
@@ -590,8 +590,8 @@ module Onclass
       white  = Google::Apis::SheetsV4::Color.new(red: 1.0,  green: 1.0,   blue: 1.0)  # クリア
 
       # 列インデックス (0始まり: A=0, B=1 ...)
-      col_nishino = 14  # O列: 西野メンション
-      col_pdca    = 15  # P列: PDCA最新報告日
+      col_pdca    = 14  # O列: PDCA最新報告日
+      col_nishino = 15  # P列: 西野メンション
       col_kato    = 16  # Q列: 加藤メンション
 
       requests = sanitized_rows.each_with_index.flat_map do |r, i|
@@ -602,7 +602,7 @@ module Onclass
         nishino_color = nishino_cell.present? ? yellow : white
         kato_color    = kato_cell.present?    ? yellow : white
 
-        [col_nishino, col_pdca, col_kato].zip([nishino_color, pdca_color, kato_color]).map do |col, color|
+        [col_pdca, col_nishino, col_kato].zip([pdca_color, nishino_color, kato_color]).map do |col, color|
           Google::Apis::SheetsV4::Request.new(
             update_cells: Google::Apis::SheetsV4::UpdateCellsRequest.new(
               range: Google::Apis::SheetsV4::GridRange.new(
