@@ -566,7 +566,69 @@ module Onclass
         end
       end
 
+      # Q列: 本日日付の行にオレンジ背景を付ける
+      apply_q_column_highlights!(service, spreadsheet_id, sheet_name, sanitized_rows)
+
       Rails.logger.info("[Onclass::StudentsDataWorker] uploaded #{sanitized_rows.size} rows (B〜N: 左ブロック, P:西野 Q:PDCA最新報告日 R:加藤, S〜: スケジュール).")
+    end
+
+    # ---------- Q列ハイライト ----------
+    # PDCA最新報告日が本日の行にオレンジ背景を付ける（それ以外はクリア）
+    def apply_q_column_highlights!(service, spreadsheet_id, sheet_name, sanitized_rows)
+      ss       = service.get_spreadsheet(spreadsheet_id)
+      sheet    = ss.sheets.find { |s| s.properties&.title == sheet_name }
+      return unless sheet
+
+      sheet_id  = sheet.properties.sheet_id
+      today_jp  = Time.now.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日')
+      # Q列 = 0始まりで index 16 (A=0, B=1 ... Q=16)
+      q_col     = 16
+      # データ開始行: 行4 = 0始まりで index 3
+      data_start_row = 3
+
+      orange = Google::Apis::SheetsV4::Color.new(red: 1.0, green: 0.647, blue: 0.0)
+      clear  = Google::Apis::SheetsV4::Color.new(red: 1.0, green: 1.0,   blue: 1.0)
+
+      requests = sanitized_rows.each_with_index.map do |r, i|
+        row_index = data_start_row + i
+        color     = r['pdca_latest_report'] == today_jp ? orange : clear
+
+        Google::Apis::SheetsV4::Request.new(
+          update_cells: Google::Apis::SheetsV4::UpdateCellsRequest.new(
+            range: Google::Apis::SheetsV4::GridRange.new(
+              sheet_id:          sheet_id,
+              start_row_index:   row_index,
+              end_row_index:     row_index + 1,
+              start_column_index: q_col,
+              end_column_index:   q_col + 1
+            ),
+            rows: [
+              Google::Apis::SheetsV4::RowData.new(
+                values: [
+                  Google::Apis::SheetsV4::CellData.new(
+                    user_entered_format: Google::Apis::SheetsV4::CellFormat.new(
+                      background_color: color
+                    )
+                  )
+                ]
+              )
+            ],
+            fields: 'userEnteredFormat.backgroundColor'
+          )
+        )
+      end
+
+      return if requests.empty?
+
+      service.batch_update_spreadsheet(
+        spreadsheet_id,
+        Google::Apis::SheetsV4::BatchUpdateSpreadsheetRequest.new(requests: requests)
+      )
+
+      today_count = sanitized_rows.count { |r| r['pdca_latest_report'] == today_jp }
+      Rails.logger.info("[Onclass::StudentsDataWorker] Q列ハイライト: #{today_count}行をオレンジに（本日=#{today_jp}）")
+    rescue => e
+      Rails.logger.warn("[Onclass::StudentsDataWorker] Q列ハイライト失敗: #{e.class} #{e.message}")
     end
 
     # ---------- 表示ヘルパ ----------
