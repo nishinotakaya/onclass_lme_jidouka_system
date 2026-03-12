@@ -25,22 +25,34 @@ end
 Sidekiq.configure_server do |config|
   config.redis = SidekiqRedisConfig.opts
 
-  # ← Scheduler運用デフォルトは読み込まない。
-  #   Sidekiq-Cronを使うときだけ LOAD_SIDEKIQ_CRON=1 を設定して有効化。
-  if ENV["LOAD_SIDEKIQ_CRON"] == "1"
-    config.on(:startup) do
+  config.on(:startup) do
+    # ── sidekiq-scheduler: 環境別スケジュールファイルを読み込む ──
+    env_file  = Rails.root.join("config", "scheduler_#{Rails.env}.yml")
+    prod_file = Rails.root.join("config", "scheduler_production.yml")
+    schedule_file = File.exist?(env_file) ? env_file : prod_file
+
+    if File.exist?(schedule_file)
+      yaml     = ERB.new(File.read(schedule_file)).result
+      schedule = YAML.safe_load(yaml, permitted_classes: [Symbol], aliases: true) || {}
+      Sidekiq.schedule = schedule
+      SidekiqScheduler::Scheduler.instance.reload_schedule!
+      Sidekiq.logger.info "Loaded sidekiq-scheduler from #{schedule_file} (#{schedule.keys.size} jobs)"
+    else
+      Sidekiq.logger.warn "Schedule file not found: #{schedule_file}"
+    end
+
+    # ── sidekiq-cron: LOAD_SIDEKIQ_CRON=1 の時だけ有効 ──
+    if ENV["LOAD_SIDEKIQ_CRON"] == "1"
       cron_path = Rails.root.join("config", "sidekiq-cron.yml")
       if File.exist?(cron_path)
         yaml = ERB.new(File.read(cron_path)).result
         jobs = YAML.safe_load(yaml, permitted_classes: [Symbol], aliases: true) || {}
         Sidekiq::Cron::Job.load_from_hash(jobs)
-        Sidekiq.logger.info "Loaded cron jobs: #{jobs.keys.join(', ')}"
+        Sidekiq.logger.info "Loaded sidekiq-cron jobs: #{jobs.keys.join(', ')}"
       else
         Sidekiq.logger.warn "Cron file not found: #{cron_path}"
       end
     end
-  else
-    Sidekiq.logger.info "LOAD_SIDEKIQ_CRON != 1 → skip loading sidekiq-cron"
   end
 end
 
