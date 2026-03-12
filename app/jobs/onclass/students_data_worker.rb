@@ -427,7 +427,7 @@ module Onclass
 
       # 列構成
       # B:名前 C:Line D:メール E:ステータス F:ステータス_B G:カテゴリ/予定 H:ブロック I:受講日 J:期限 K:ログイン率 L:最新ログイン日
-      # M:旧PDCA N:新PDCA O:(不触) P:西野メンション Q:PDCA最新報告日 R:加藤メンション
+      # M:旧PDCA N:新PDCA O:(不触) P:西野メンション Q:加藤メンション R:PDCA最新報告日
       # 右マトリクスは S 列以降
 
       # クリア
@@ -453,7 +453,7 @@ module Onclass
         '現在進行カテゴリ/完了予定日', '現在進行ブロック', '受講日', '受講期限日', 'ログイン率', '最新ログイン日',
         '旧PDCA', '新PDCA',
         '',              # O: 不触
-        '西野メンション', 'PDCA最新報告日', '加藤メンション'
+        '西野メンション', '加藤メンション', 'PDCA最新報告日'
       ]
       header_range = "#{sheet_name}!B3:R3"
       service.update_spreadsheet_value(
@@ -507,12 +507,12 @@ module Onclass
         )
       end
 
-      # 右ブロック（P〜R）: P=西野メンション Q=PDCA最新報告日 R=加藤メンション
+      # 右ブロック（P〜R）: P=西野メンション Q=加藤メンション R=PDCA最新報告日
       right_block_values = sanitized_rows.map do |r|
         [
           mention_cell(channel_counts_for(nishino_maps, r)), # P: 西野メンション
-          r['pdca_latest_report'].to_s,                      # Q: PDCA最新報告日
-          mention_cell(channel_counts_for(kato_maps, r))     # R: 加藤メンション
+          mention_cell(channel_counts_for(kato_maps, r)),    # Q: 加藤メンション
+          r['pdca_latest_report'].to_s                       # R: PDCA最新報告日
         ]
       end
 
@@ -569,11 +569,11 @@ module Onclass
       # Q列: 本日日付の行にオレンジ背景を付ける
       apply_q_column_highlights!(service, spreadsheet_id, sheet_name, sanitized_rows)
 
-      Rails.logger.info("[Onclass::StudentsDataWorker] uploaded #{sanitized_rows.size} rows (B〜N: 左ブロック, P:西野 Q:PDCA最新報告日 R:加藤, S〜: スケジュール).")
+      Rails.logger.info("[Onclass::StudentsDataWorker] uploaded #{sanitized_rows.size} rows (B〜N: 左ブロック, P:西野 Q:加藤 R:PDCA最新報告日, S〜: スケジュール).")
     end
 
     # ---------- Q列ハイライト ----------
-    # PDCA最新報告日が本日の行にオレンジ背景を付ける（それ以外はクリア）
+    # PDCA最新報告日（R列）が本日の行にオレンジ背景を付ける（それ以外はクリア）
     def apply_q_column_highlights!(service, spreadsheet_id, sheet_name, sanitized_rows)
       ss       = service.get_spreadsheet(spreadsheet_id)
       sheet    = ss.sheets.find { |s| s.properties&.title == sheet_name }
@@ -581,8 +581,8 @@ module Onclass
 
       sheet_id  = sheet.properties.sheet_id
       today_jp  = Time.now.in_time_zone('Asia/Tokyo').strftime('%Y年%-m月%-d日')
-      # Q列 = 0始まりで index 16 (A=0, B=1 ... Q=16)
-      q_col     = 16
+      # R列 = 0始まりで index 17 (A=0, B=1 ... R=17)
+      q_col     = 17
       # データ開始行: 行4 = 0始まりで index 3
       data_start_row = 3
 
