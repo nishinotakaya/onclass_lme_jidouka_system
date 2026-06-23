@@ -48,8 +48,13 @@ lme_line_counts_every:
   class: "Lme::LineCountsWorker"
   cron: "5 7-23/2 * * *"   # 流入集計の5分後に実行
   queue: lme_line_counts
+  args:
+    - null  # spreadsheet_id
+    - null  # source_sheet_name
+    - null  # dashboard_sheet_name
+    - 2026  # target_year
   tz: "Asia/Tokyo"
-  description: "LME LINEダッシュボード更新"
+  description: "LME LINEダッシュボード更新(2026年)"
 
 # ★ 自チャンネルの YouTube Analytics（開発）
 youtube_analytics_daily:

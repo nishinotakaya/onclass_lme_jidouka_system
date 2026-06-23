@@ -5,16 +5,13 @@ module Onclass
     include Sidekiq::Worker
     sidekiq_options queue: :default, retry: 3
 
-    # デフォルト資格情報でサインイン（従来どおり）
+    # デフォルト資格情報でサインイン（Cookie セッションを Redis に保存）
     def perform
       client  = Onclass::AuthClient.new
-      headers = client.sign_in!
-      masked = headers.merge(
-        "access-token" => mask(headers["access-token"]),
-        "client"       => mask(headers["client"]),
-        "uid"          => headers["uid"]
+      session = client.sign_in!
+      Rails.logger.info(
+        "[Onclass::SignInWorker] login success cookie=#{mask(session['cookie'])} csrf=#{mask(session['csrf'])}"
       )
-      Rails.logger.info("[Onclass::SignInWorker] login success headers=#{masked.inspect}")
       true
     rescue Faraday::Error => e
       Rails.logger.error("[Onclass::SignInWorker] HTTP error: #{e.class} #{e.message}")
@@ -24,11 +21,14 @@ module Onclass
       raise
     end
 
-    # 任意アカウントでサインインしてヘッダ取得
+    # 任意アカウントでサインインして認証ヘッダ(Cookie + CSRF)を取得
     def self.sign_in_headers_for(email:, password:)
       client = Onclass::AuthClient.new(email: email, password: password)
-      client.headers
+      client.auth_headers(with_csrf: true)
     rescue Faraday::Error => e
+      Rails.logger.warn("[Onclass::SignInWorker] sign_in_headers_for(#{email}) error: #{e.class} #{e.message}")
+      nil
+    rescue => e
       Rails.logger.warn("[Onclass::SignInWorker] sign_in_headers_for(#{email}) error: #{e.class} #{e.message}")
       nil
     end

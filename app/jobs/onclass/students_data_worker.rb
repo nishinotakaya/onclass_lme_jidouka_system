@@ -53,14 +53,11 @@ module Onclass
       course_id  ||= ENV.fetch('ONCLASS_COURSE_ID', DEFAULT_LEARNING_COURSE_ID)
       sheet_name ||= ENV.fetch('ONCLASS_SHEET_NAME', 'フロントコース受講生')
 
-      # 1) 既定アカウントでサインイン（トークン更新）
+      # 1) 既定アカウントでサインイン（Cookie セッション更新）
       Onclass::SignInWorker.new.perform
       base_client  = Onclass::AuthClient.new
-      base_headers = base_http_headers.merge(
-        'access-token' => base_client.headers['access-token'],
-        'client'       => base_client.headers['client'],
-        'uid'          => base_client.headers['uid']
-      ).compact
+      # 新方式は Cookie 認証。更新系(export_csv 等)もあるため CSRF も常に同梱しておく
+      base_headers = base_http_headers.merge(base_client.auth_headers(with_csrf: true)).compact
 
       # 2) Faraday 接続
       conn = Faraday.new(url: base_client.base_url) do |f|
@@ -725,8 +722,8 @@ module Onclass
     end
 
     # ---------- メンション ----------
-    def fetch_unread_mentions_map(conn, token_headers)
-      headers = base_http_headers.merge(token_headers.slice('uid','access-token','client','token-type','expiry').compact)
+    def fetch_unread_mentions_map(conn, auth_headers)
+      headers = base_http_headers.merge(Hash(auth_headers).compact)
       resp = safe_get(conn, '/v1/enterprise_manager/communities/activity/mentions', {}, headers)
       json = JSON.parse(resp.body) rescue {}
       list = Array(json['data'] || json['records'] || json)
@@ -745,12 +742,11 @@ module Onclass
         end
       end
 
-      uid = token_headers && token_headers['uid']
-      Rails.logger.info("[OnclassStudentsDataWorker] mentions uid=#{uid} unread_total=#{by_id.values.sum { |h| h.values.sum } + by_name.values.sum { |h| h.values.sum }}")
+      unread_total = by_id.values.sum { |h| h.values.sum } + by_name.values.sum { |h| h.values.sum }
+      Rails.logger.info("[OnclassStudentsDataWorker] mentions unread_total=#{unread_total}")
       { id: by_id, name: by_name }
     rescue Faraday::Error => e
-      uid = token_headers && token_headers['uid']
-      Rails.logger.warn("[OnclassStudentsDataWorker] fetch_unread_mentions_map(uid=#{uid}) error: #{e.class} #{e.message}")
+      Rails.logger.warn("[OnclassStudentsDataWorker] fetch_unread_mentions_map error: #{e.class} #{e.message}")
       { id: {}, name: {} }
     end
 
