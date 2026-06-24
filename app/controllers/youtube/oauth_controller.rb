@@ -37,8 +37,8 @@ class Youtube::OauthController < ApplicationController
       redirect_uri: ENV["YOUTUBE_REDIRECT_URI"]
     )
 
-    # redirect_to client.authorization_uri.to_s, allow_other_host: true
-    redirect_to youtube_oauth_path
+    redirect_to client.authorization_uri.to_s, allow_other_host: true
+    # redirect_to youtube_oauth_path
   end
 
   # GET /oauth2callback  （ENV["YOUTUBE_REDIRECT_URI"] に対応）
