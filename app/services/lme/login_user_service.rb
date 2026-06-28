@@ -80,33 +80,57 @@ module Lme
           return { cookies: cookies, driver: driver }
         end
 
-        # 入力
-        email_el = driver.find_elements(id: "email_login").first ||
-                   driver.find_elements(css: "input[name='email']").first
-        pass_el  = driver.find_elements(id: "password_login").first ||
-                   driver.find_elements(css: "input[name='password']").first
+        # 入力（step.lme.jp は Vue 2 + lme-input コンポーネントで描画されるため、
+        #  Vue マウント後に light DOM へ展開される実 input を待って掴む。
+        #  email は type=email、password は placeholder で一意に特定できる。id/name は付与されない）
+        email_el = wait_for_element(driver, 20) do
+          driver.find_elements(css: "form input[type='email']").first ||
+            driver.find_elements(css: "input[placeholder='example@mail.com']").first
+        end
+        pass_el = driver.find_elements(css: "input[placeholder='パスワードを入力']").first ||
+                  driver.find_elements(css: "form input[type='password']").first
         raise "ログインフォーム要素が見つかりません" unless email_el && pass_el
 
-        email_el.send_keys(@email)
-        pass_el.send_keys(@password)
+        fill_vue_input!(driver, email_el, @email)
+        fill_vue_input!(driver, pass_el, @password)
 
-        # reCAPTCHA
+        # reCAPTCHA（v2 / sitekey は DOM から動的取得。
+        #  新ログイン(login-v2)は grecaptcha.getResponse() でトークンを読むため、
+        #  textarea 注入だけでなく getResponse 自体を 2Captcha のトークンで上書きする）
         if driver.find_elements(css: ".g-recaptcha").any?
           sitekey = driver.find_element(css: ".g-recaptcha").attribute("data-sitekey")
           token   = obtain_recaptcha_token_with_retries(sitekey, driver.current_url, tries: RECAPTCHA_MAX_SOLVES)
           inject_recaptcha_token!(driver, token)
+          override_grecaptcha_response!(driver, token)
         else
           log :info, "reCAPTCHA 要素なし → スキップ"
         end
 
-        # 送信
-        btn = wait_until(10) { driver.find_element(css: "button[type=submit]") && driver.find_element(css: "button[type=submit]").enabled? }
+        # 送信（lme-button-default → <button type="button"> の「ログイン」を押下。
+        #  type=submit ではないので JS click で確実に @click="login" を発火させる）
+        login_btn = wait_for_element(driver, 10) do
+          driver.find_elements(:xpath, "//form//button[.//span[contains(normalize-space(.), 'ログイン')]]")
+                .find { |b| b.enabled? rescue false }
+        end
+        raise "ログインボタンが見つかりません" unless login_btn
         log :info, "ログインボタンをクリック"
-        driver.find_element(css: "button[type=submit]").click
+        driver.execute_script("arguments[0].click()", login_btn)
+
+        # 2段階認証の検知（成功レスポンスの redirect に verify-code-login が含まれると
+        #  ページ遷移せず currentStep=2 のコード入力フォームへ切り替わる。
+        #  メール/SMS のコードは自動取得できないため、明示的に失敗させて運用者へ通知する）
+        if wait_until(8) { two_factor_prompt?(driver) }
+          raise "step.lme.jp が2段階認証コードを要求しています（同一ページに認証コード入力が出現）。" \
+                "アカウント側の2段階認証設定、もしくは固定IPでのログインを検討してください。"
+        end
 
         # セッション成立待ち
         ok_once = wait_until(35) { !looks_like_login_page?(driver) && has_session_cookie?(driver) }
         log :debug, "一次判定=#{ok_once} title=#{safe(driver.title)} url=#{driver.current_url}"
+        unless ok_once
+          err = login_error_text(driver)
+          raise "ログインに失敗しました#{err.present? ? "：#{err}" : ''}（url=#{driver.current_url}）"
+        end
         confirm_login_or_raise!(driver)
 
         ensure_basic_session(driver) # /basic/friendlist を踏む
@@ -345,8 +369,8 @@ module Lme
     def looks_like_login_page?(driver)
       t = driver.title.to_s
       u = driver.current_url.to_s
-      has_form = driver.find_elements(id: "email_login").any? ||
-                 driver.find_elements(css: "input[name='email']").any?
+      has_form = driver.find_elements(css: "form input[type='email']").any? ||
+                 driver.find_elements(css: "input[placeholder='example@mail.com']").any?
       is_login_title = t.include?("ログイン") || t.downcase.include?("login")
       is_login_url   = u.end_with?("/") || u.include?("/login")
       has_form || is_login_title || is_login_url
@@ -385,6 +409,69 @@ module Lme
           f.dispatchEvent(new Event('change', { bubbles: true }));
         })(arguments[0]);
       JS
+    end
+
+    # 新ログイン(login-v2)は captcha トークンを grecaptcha.getResponse() から読むため、
+    # 2Captcha のトークンを返すよう getResponse を上書きする
+    def override_grecaptcha_response!(driver, token)
+      driver.execute_script(<<~JS, token)
+        (function(tok){
+          try {
+            if (typeof grecaptcha === 'undefined' || !grecaptcha) { window.grecaptcha = {}; }
+            grecaptcha.getResponse = function(){ return tok; };
+          } catch (e) {}
+        })(arguments[0]);
+      JS
+    rescue => e
+      log :debug, "grecaptcha getResponse 上書き失敗: #{e.class} #{e.message}"
+    end
+
+    # Vue 2 の v-model(@input)へ確実に値を反映させる。
+    # send_keys でキー入力イベントを発火しつつ、保険で input/change を JS でも dispatch する
+    def fill_vue_input!(driver, el, value)
+      el.click rescue nil
+      el.clear rescue nil
+      el.send_keys(value) rescue nil
+      driver.execute_script(<<~JS, el, value.to_s)
+        (function(node, val){
+          node.value = val;
+          node.dispatchEvent(new Event('input',  { bubbles: true }));
+          node.dispatchEvent(new Event('change', { bubbles: true }));
+        })(arguments[0], arguments[1]);
+      JS
+    end
+
+    # 2段階認証フォーム（currentStep=2）が出ているか
+    def two_factor_prompt?(driver)
+      driver.find_elements(css: "input[placeholder='認証コードを入力']").any? ||
+        driver.page_source.to_s.include?("認証コードが送信されました")
+    rescue
+      false
+    end
+
+    # ログイン失敗時に画面へ表示される赤字エラー文言を拾う（診断用）
+    def login_error_text(driver)
+      driver.find_elements(css: ".text-red-500")
+            .map { |e| e.text.to_s.strip rescue "" }
+            .reject(&:empty?)
+            .uniq
+            .join(" / ")
+    rescue
+      ""
+    end
+
+    # ブロックが要素を返すまで待つ（NoSuchElement / Stale を無視）
+    def wait_for_element(driver, sec = 15)
+      deadline = Time.now + sec
+      loop do
+        begin
+          el = yield
+          return el if el
+        rescue Selenium::WebDriver::Error::WebDriverError
+        end
+        return nil if Time.now > deadline
+        sleep 0.3
+      end
     end
 
     def wait_for_ready_state(driver, timeout = 20)
