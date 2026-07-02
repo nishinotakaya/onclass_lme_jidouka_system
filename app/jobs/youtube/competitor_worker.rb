@@ -24,7 +24,12 @@ class Youtube::CompetitorWorker
     { name: "ずんだもんつんだもん",          url: "https://www.youtube.com/@zundamon_tundamon" },
     { name: "テックキャンプのプログラミング塾", url: "https://www.youtube.com/@TechCampChannel" },
     { name: "セイト先生のWeb・ITエンジニア転職ラボ", url: "https://www.youtube.com/@webit7652" },
-    { name: "まゆり 未経験エンジニア転職",        url: "https://www.youtube.com/@mikeiken-engineer" }
+    { name: "まゆり 未経験エンジニア転職",        url: "https://www.youtube.com/@mikeiken-engineer" },
+    { name: "キノコード / プログラミング学習チャンネル", url: "https://www.youtube.com/@kinocode" },
+    { name: "いまにゅのAIプログラミング塾",          url: "https://www.youtube.com/@imanyu_programming" },
+    { name: "プログラミングチュートリアル",          url: "https://www.youtube.com/@programming_tutorial_youtube" },
+    { name: "PythonプログラミングVTuber サプー",     url: "https://www.youtube.com/@pythonvtuber9917" },
+    { name: "IT菩薩モロー",                          url: "https://www.youtube.com/@it_bosatsu_moro" }
   ].freeze
 
   MAX_COMMENTS_PER_VIDEO        = 20
@@ -220,19 +225,18 @@ class Youtube::CompetitorWorker
     end
   end
 
-  # 競合URL（@ハンドルなど）から channel_id を解決
+  # 競合URL（@ハンドル）から channel_id を解決。
+  # @handle は forHandle で「そのハンドルの正確なチャンネル」を引く（検索の先頭採用だと
+  # 同名の別チャンネルを拾ってしまうため）。forHandle で取れない時だけ検索にフォールバック。
   def resolve_channel_id(youtube, url)
-    # @handle を抜き出す
-    handle = url[%r{/@(.[^/?]+)}, 1]
+    handle = url[%r{/@([^/?]+)}, 1]
 
     if handle
-      # ハンドル名で検索して最初のチャンネルを使う（ざっくり）
-      resp = youtube.list_searches(
-        "snippet",
-        q: handle,
-        type: "channel",
-        max_results: 1
-      )
+      resp = youtube.list_channels("id", for_handle: "@#{handle}")
+      return resp.items.first.id if resp.items&.any?
+
+      # フォールバック: forHandle で解決できない旧 URL 等
+      resp = youtube.list_searches("snippet", q: handle, type: "channel", max_results: 1)
       return resp.items.first.id.channel_id if resp.items&.any?
     end
 
@@ -242,37 +246,43 @@ class Youtube::CompetitorWorker
     nil
   end
 
-  # 特定チャンネルの最新動画を取得
+  # 特定チャンネルの「最新」動画を取得する。
+  # Search API(order:date) はインデックス遅延・件数制限で最新を取りこぼすため、
+  # 自チャンネルと同じく uploads プレイリスト（新しい順）から確実に取得する。
   def fetch_recent_videos_for_channel(youtube, channel_id, max_videos)
-    videos = []
-    page_token = nil
+    channel = youtube.list_channels("contentDetails", id: channel_id).items&.first
+    uploads_playlist_id = channel&.content_details&.related_playlists&.uploads
+    return [] unless uploads_playlist_id
 
-    while videos.size < max_videos
-      resp = youtube.list_searches(
-        "snippet",
-        channel_id:  channel_id,
-        type:        "video",
-        order:       "date",
-        max_results: [max_videos - videos.size, 50].min,
+    # uploads は新しい順。非公開を捨てる分を見込んで、少し多めに videoId を集める
+    video_ids  = []
+    page_token = nil
+    target_ids = max_videos * 2
+
+    loop do
+      resp = youtube.list_playlist_items(
+        "contentDetails",
+        playlist_id: uploads_playlist_id,
+        max_results: 50,
         page_token:  page_token
       )
+      resp.items.each do |item|
+        vid = item.content_details&.video_id
+        video_ids << vid if vid.present?
+      end
+      page_token = resp.next_page_token
+      break if page_token.blank? || video_ids.size >= target_ids
+    end
 
-      video_ids = (resp.items || []).map { |i| i.id.video_id }.compact
-      break if video_ids.empty?
-
-      detail = youtube.list_videos(
-        "snippet,statistics,status",
-        id: video_ids.join(",")
-      )
-
+    videos = []
+    video_ids.each_slice(50) do |ids|
+      detail = youtube.list_videos("snippet,statistics,status", id: ids.join(","))
       (detail.items || []).each do |v|
         next unless v.status&.privacy_status == "public"
         videos << v
         break if videos.size >= max_videos
       end
-
-      page_token = resp.next_page_token
-      break if page_token.blank?
+      break if videos.size >= max_videos
     end
 
     videos
