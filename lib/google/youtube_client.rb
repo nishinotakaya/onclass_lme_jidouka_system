@@ -39,7 +39,11 @@ class Google::YoutubeClient
   # ------------------------------------------------------
   def initialize
     access_token  = Rails.cache.read("youtube_access_token")
-    refresh_token = Rails.cache.read("youtube_refresh_token")
+    # refresh_token は永続クレデンシャル。Redis キャッシュが飛んでいても
+    # ENV["YOUTUBE_OAUTH_REFRESH_TOKEN"] があればそこから復帰できるようにする
+    # （＝一度ブラウザ同意すれば、以降はバッチが自動でアクセストークンを再発行する）。
+    refresh_token = Rails.cache.read("youtube_refresh_token").presence ||
+                    ENV["YOUTUBE_OAUTH_REFRESH_TOKEN"].presence
     expires_at    = Rails.cache.read("youtube_expires_at")
 
     @client = Signet::OAuth2::Client.new(
@@ -57,29 +61,28 @@ class Google::YoutubeClient
 
   # Worker 側から使うメインメソッド
   def authorize!
-    # access_token がない → そもそも OAuth 未実施
-    if @client.access_token.blank?
+    # access_token も refresh_token も無い → そもそも OAuth 未実施
+    if @client.access_token.blank? && @client.refresh_token.blank?
       raise <<~MSG
-        [YouTubeOAuth] access_token がありません。
+        [YouTubeOAuth] access_token も refresh_token もありません。
 
-        1. Rails を起動
-        2. ブラウザで http://localhost:3008/youtube/oauth/authorize にアクセス
-        3. Google の同意画面で YouTube へのアクセスを許可
+        1. ブラウザで <APP_URL>/youtube/oauth/authorize にアクセス
+        2. Google の同意画面で YouTube へのアクセスを許可
+        3. 発行された refresh_token を Heroku config var
+           YOUTUBE_OAUTH_REFRESH_TOKEN に設定
 
         を実行してから再度 Worker を動かしてください。
       MSG
     end
 
-    # 期限切れ & refresh_token があるときだけ更新する
-    if @client.expired? && @client.refresh_token.present?
-      new_token = @client.refresh!
+    # access_token が無い or 期限切れで refresh_token がある場合はリフレッシュして
+    # アクセストークンを取り直す（refresh_token だけあれば自動復帰できる）。
+    if (@client.access_token.blank? || @client.expired?) && @client.refresh_token.present?
+      @client.refresh!
 
-      Rails.cache.write("youtube_access_token",  new_token["access_token"])
-      Rails.cache.write("youtube_refresh_token", new_token["refresh_token"]) if new_token["refresh_token"]
-
-      if new_token["expires_in"]
-        Rails.cache.write("youtube_expires_at", Time.current + new_token["expires_in"].to_i.seconds)
-      end
+      Rails.cache.write("youtube_access_token",  @client.access_token)
+      Rails.cache.write("youtube_refresh_token", @client.refresh_token)
+      Rails.cache.write("youtube_expires_at",    @client.expires_at) if @client.expires_at
     end
 
     @client

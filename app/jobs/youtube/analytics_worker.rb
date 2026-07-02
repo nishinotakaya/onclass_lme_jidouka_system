@@ -8,7 +8,11 @@ class Youtube::AnalyticsWorker
   include Sidekiq::Worker
   sidekiq_options queue: "youtube_analytics"
 
-  def perform
+  # 引数:
+  #   spreadsheet_url_arg : 出力先スプレッドシート URL / ID（nil なら ENV）
+  #   sheet_name_arg      : シート名（nil なら ENV / デフォルト）
+  # スケジューラからは引数なしで呼ばれ、画面フォームからは2引数で呼ばれる。
+  def perform(spreadsheet_url_arg = nil, sheet_name_arg = nil)
     Rails.logger.info("[YouTubeAnalytics] Start (videos -> sheets)")
 
     # 1) OAuth（ブラウザで認可済みの onclass_jidouka クライアント）
@@ -142,8 +146,13 @@ class Youtube::AnalyticsWorker
     # ----------------------------------------------------
     # 4) Sheets API で書き込み & 列幅/行高 調整
     # ----------------------------------------------------
-    spreadsheet_id = ENV.fetch("YOUTUBE_ANALYTICS_SPREADSHEET_ID", ENV.fetch("ONCLASS_SPREADSHEET_ID"))
-    sheet_name     = ENV.fetch("YOUTUBE_ANALYTICS_SHEET_NAME", "YouTube動画一覧")
+    spreadsheet_id =
+      if spreadsheet_url_arg.present?
+        extract_spreadsheet_id_from_url(spreadsheet_url_arg)
+      else
+        ENV.fetch("YOUTUBE_ANALYTICS_SPREADSHEET_ID", ENV.fetch("ONCLASS_SPREADSHEET_ID"))
+      end
+    sheet_name = sheet_name_arg.presence || ENV.fetch("YOUTUBE_ANALYTICS_SHEET_NAME", "YouTube動画一覧")
 
     sheets = build_sheets_service
     ensure_sheet_exists!(sheets, spreadsheet_id, sheet_name)
@@ -190,6 +199,15 @@ class Youtube::AnalyticsWorker
   # private
   # ====================================================
   private
+
+  # URL からスプレッドシート ID を抜き出す（ID だけ渡された場合はそのまま返す）
+  def extract_spreadsheet_id_from_url(url)
+    if url =~ %r{/spreadsheets/d/([^/]+)}
+      Regexp.last_match(1)
+    else
+      url
+    end
+  end
 
   # --------------------------------
   # v3: 公開動画を全部取得（YOUTUBE_CHANNEL_ID 優先）
