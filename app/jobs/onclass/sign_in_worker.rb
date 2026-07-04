@@ -3,7 +3,7 @@
 module Onclass
   class SignInWorker
     include Sidekiq::Worker
-    sidekiq_options queue: :default, retry: 3
+    sidekiq_options queue: :onclass_sign_in, retry: 3
 
     # デフォルト資格情報でサインイン（Cookie セッションを Redis に保存）
     def perform
