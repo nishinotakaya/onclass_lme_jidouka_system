@@ -23,9 +23,8 @@ module Lme
     CH_UA   = %Q("Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140")
     CUTOFF_HOUR = (ENV['LME_SEMINAR_CUTOFF_HOUR'].presence || '20').to_i # 第2木曜の何時を過ぎたら翌月へ
 
-    # 体験会フォームの識別子（form-answer/edit/165004）
-    FORM_ID         = (ENV['LME_SEMINAR_FORM_ID'].presence || '165004')  # LME内部のフォームID
-    DATE_FIELD_ID   = ENV['LME_SEMINAR_DATE_FIELD_ID'].presence          # 日程セレクトの項目ID(採取後に設定)
+    # 体験会フォームの識別子（form-answer/edit/<id>）。新規165004・既存168865の2枚。
+    FORM_IDS = (ENV['LME_SEMINAR_FORM_IDS'].presence || '165004,168865').split(',').map(&:strip).reject(&:blank?)
 
     # 毎週木曜20:00に発火するが、フォームが常に「次の第2木曜」を指すよう
     # 毎回 target_date を計算して設定する（第2木曜20:00で翌月へ切替。他の木曜は同値=無害）。
@@ -70,21 +69,26 @@ module Lme
     #   例: 12月11日（木） = 12%E6%9C%8811%E6%97%A5%EF%BC%88%E6%9C%A8%EF%BC%89
     DATE_ENC_RE = /\d+%E6%9C%88\d+%E6%97%A5%EF%BC%88%E6%9C%A8%EF%BC%89/.freeze
 
-    # LMEフォーム(165004)の「日程」セレクトを target(次の第2木曜)へ更新する。
-    # 手順: ①Seleniumログイン ②編集画面で保存XHRを1回発火させ、実UIが送る正確な
-    #       payload と csrf を捕捉 ③日付部分だけ target へ正規表現置換 ④同セッションで再POST。
-    # ブラウザが送る現フォーム全体を使うため、他の設定(help文言/タグ等)は壊さない。
+    # LMEの各体験会フォームの「日程」セレクトを target(次の第2木曜)へ更新する。
+    # ①Seleniumログイン(1回) ②各フォームで保存XHRを発火し実UIが送る正確なpayload+csrfを捕捉
+    # ③日付部分だけ target へ正規表現置換 ④同セッションで save-v3 へ再POST。
+    # ブラウザが送る現フォーム全体を使うため他設定(help/タグ等)を壊さない。
     def update_selectbox!(target)
       ctx = Lme::ApiContext.new(origin: ORIGIN, ua: UA, accept_lang: 'ja', ch_ua: CH_UA, logger: Rails.logger, bot_id: (ENV['LME_BOT_ID'].presence || '17106'))
       ctx.login_with_google!(email: ENV['GOOGLE_EMAIL'], password: ENV['GOOGLE_PASSWORD'], api_key: ENV['API2CAPTCHA_KEY'])
       d = ctx.driver
       raise 'Selenium driver が取得できませんでした' unless d
 
-      edit_url = "#{ORIGIN}/basic/form-answer/edit/#{FORM_ID}?botIdCurrent=#{ctx.bot_id}&isOtherBot=1"
-      d.navigate.to(edit_url)
-      sleep 10
+      results = FORM_IDS.map { |fid| update_one_form!(d, ctx.bot_id, fid, target) }
+      { status: 'done', target: target.to_s, results: results }
+    ensure
+      begin; ctx&.driver&.quit; rescue; end
+    end
 
-      # 保存XHRの body と x-csrf-token を捕捉するフック
+    # 1フォーム分の 捕捉→置換→再POST
+    def update_one_form!(d, bot_id, form_id, target)
+      d.navigate.to("#{ORIGIN}/basic/form-answer/edit/#{form_id}?botIdCurrent=#{bot_id}&isOtherBot=1")
+      sleep 10
       d.execute_script(<<~JS)
         window.__cap=[]; window.__csrf=null;
         var os=XMLHttpRequest.prototype.send, oo=XMLHttpRequest.prototype.open, oh=XMLHttpRequest.prototype.setRequestHeader;
@@ -92,35 +96,31 @@ module Lme
         XMLHttpRequest.prototype.setRequestHeader=function(k,v){try{if((''+k).toLowerCase()=='x-csrf-token')window.__csrf=v;}catch(e){}return oh.apply(this,arguments);};
         XMLHttpRequest.prototype.send=function(b){try{if(this.__u&&(''+this.__u).indexOf('save-v3')>=0){window.__cap.push(b?(''+b):'');}}catch(e){}return os.apply(this,arguments);};
       JS
-
       btn = d.find_elements(css: 'button,a').find { |x| x.text.to_s.strip.include?('保存') }
-      raise '保存ボタンが見つかりません' unless btn
+      raise "[#{form_id}] 保存ボタンが見つかりません" unless btn
       d.execute_script('arguments[0].click();', btn)
       sleep 6
 
       body = d.execute_script('return (window.__cap && window.__cap[0]) || ""').to_s
       csrf = d.execute_script('return window.__csrf').to_s
-      raise '保存payloadを捕捉できませんでした' if body.empty?
-      raise "日程(M月D日（木）)がpayloadに見つかりません" unless body.match?(DATE_ENC_RE)
+      raise "[#{form_id}] 保存payloadを捕捉できませんでした" if body.empty?
+      raise "[#{form_id}] 日程(M月D日（木）)がpayloadに見つかりません" unless body.match?(DATE_ENC_RE)
 
       target_md = "#{target.month}%E6%9C%88#{target.day}%E6%97%A5" # 「M月D日」
-      new_body  = body.gsub(DATE_ENC_RE, "#{target_md}%EF%BC%88%E6%9C%A8%EF%BC%89") # 「M月D日（木）」
-      Rails.logger.info("[SeminarDateUpdate] payload捕捉(#{body.length}B)→日程を #{target.strftime('%-m月%-d日')} へ置換")
+      new_body  = body.gsub(DATE_ENC_RE, "#{target_md}%EF%BC%88%E6%9C%A8%EF%BC%89")
+      Rails.logger.info("[SeminarDateUpdate] form=#{form_id} payload捕捉(#{body.length}B)→日程 #{target.strftime('%-m月%-d日')} へ置換")
 
       d.manage.timeouts.script_timeout = 40
-      res = d.execute_async_script(<<~JS, new_body, csrf)
-        var body=arguments[0], csrf=arguments[1], cb=arguments[arguments.length-1];
-        fetch('/ajax/form-answer/save-v3/#{FORM_ID}',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded; charset=UTF-8','x-csrf-token':csrf,'x-requested-with':'XMLHttpRequest'},body:body,credentials:'same-origin'})
+      res = d.execute_async_script(<<~JS, new_body, csrf, form_id)
+        var body=arguments[0], csrf=arguments[1], fid=arguments[2], cb=arguments[arguments.length-1];
+        fetch('/ajax/form-answer/save-v3/'+fid,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded; charset=UTF-8','x-csrf-token':csrf,'x-requested-with':'XMLHttpRequest'},body:body,credentials:'same-origin'})
           .then(function(r){return r.text().then(function(t){cb({status:r.status,body:t.slice(0,250)});});})
           .catch(function(e){cb({error:''+e});});
       JS
-
       ok = res.is_a?(Hash) && res['status'] == 200 && res['body'].to_s.include?('"status":true')
-      Rails.logger.info("[SeminarDateUpdate] save-v3 result=#{res.inspect} ok=#{ok}")
-      raise "保存APIが失敗: #{res.inspect}" unless ok
-      { status: 'updated', target: target.to_s, response: res }
-    ensure
-      begin; ctx&.driver&.quit; rescue; end
+      Rails.logger.info("[SeminarDateUpdate] form=#{form_id} save-v3 result=#{res.inspect} ok=#{ok}")
+      raise "[#{form_id}] 保存APIが失敗: #{res.inspect}" unless ok
+      { form_id: form_id, status: 'updated', response: res }
     end
   end
 end
