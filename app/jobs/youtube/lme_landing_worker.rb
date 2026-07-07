@@ -91,7 +91,7 @@ class Youtube::LmeLandingWorker
     # ---- 1) ランディング作成（未作成のときだけ）----
     if row["landing_id"].blank?
       created = landing_service.create_landing(
-        name:        title,
+        name:        landing_name_for(title),
         category_id: landing_category_id
       )
       row["landing_id"]  = created[:landing_id].to_s
@@ -242,6 +242,11 @@ class Youtube::LmeLandingWorker
   # 西野の YouTube 用フォルダ「youtube nishino」
   def landing_category_id
     ENV.fetch("LME_YOUTUBE_LANDING_CATEGORY_ID", "5464631")
+  end
+
+  # 他の流入元の命名に合わせ、管理名は「西野　<動画タイトル>」形式にする
+  def landing_name_for(title)
+    "#{ENV.fetch('LME_YOUTUBE_LANDING_NAME_PREFIX', '西野　')}#{title}"
   end
 
   # ====================================================
