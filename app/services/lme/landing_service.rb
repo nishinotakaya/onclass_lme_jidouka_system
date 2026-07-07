@@ -184,7 +184,7 @@ module Lme
     # 編集画面 HTML から https://s.lmes.jp/landing-qr/...?uLand=... を抽出
     def fetch_landing_url(landing_id)
       html, _url = @ctx.http.get_with_cookies(cookie_header, landing_edit_url(landing_id))
-      html.to_s[LANDING_QR_URL_PATTERN]
+      to_utf8(html)[LANDING_QR_URL_PATTERN]
     end
 
     # 指定した名前候補のいずれかと完全一致するランディングが既に存在するか。
@@ -216,7 +216,7 @@ module Lme
       params['category_id'] = category_id.to_s if category_id.present?
 
       body = @ctx.http.get_json(path: PATH_LANDING_LIST_AJAX, referer: landing_list_url, params: params)
-      json = JSON.parse(body.to_s) rescue nil
+      json = JSON.parse(to_utf8(body)) rescue nil
       return [] unless json
 
       rows = json.dig('data', 'data')
@@ -231,7 +231,7 @@ module Lme
 
     def post_urlencoded(path, form, referer:, extra_headers: {}, http_method: :post)
       csrf = ensure_csrf!(referer)
-      @ctx.http.with_loa_retry do
+      body = @ctx.http.with_loa_retry do
         @ctx.http.post_form(
           path:          path,
           form:          form,
@@ -243,11 +243,19 @@ module Lme
           http_method:   http_method
         )
       end
+      # LME レスポンスは ASCII-8BIT で返るため、UTF-8 の日本語(name等)と
+      # 文字列連結するとエンコーディング例外になる。UTF-8 に正規化する。
+      to_utf8(body)
+    end
+
+    # ASCII-8BIT のレスポンスを UTF-8 に正規化（不正バイトは除去）
+    def to_utf8(str)
+      str.to_s.dup.force_encoding('UTF-8').scrub('')
     end
 
     def ensure_csrf!(referer)
       html, _ = @ctx.http.get_with_cookies(cookie_header, referer)
-      meta = (html[/<meta\s+name=["']csrf-token["']\s+content=["']([^"']+)["']/, 1] || '').to_s.strip rescue ''
+      meta = (to_utf8(html)[/<meta\s+name=["']csrf-token["']\s+content=["']([^"']+)["']/, 1] || '').to_s.strip rescue ''
       meta.present? ? meta : @ctx.csrf_meta.to_s
     rescue
       @ctx.csrf_meta.to_s
