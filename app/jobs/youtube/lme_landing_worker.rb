@@ -28,32 +28,34 @@ class Youtube::LmeLandingWorker
   # 差し替え対象は landing-qr URL に限定（form.lmes.jp 等の別種URLは触らない）
   LME_URL_PATTERN = %r{https://s\.lmes\.jp/landing-qr/[A-Za-z0-9\-]+(?:\?uLand=[A-Za-z0-9]+)?}
 
-  # 出演者判定は「タイトルに名前が含まれるか」で行う（YouTube Data API は
-  # 投稿した Google アカウントを返さないため、タイトルが唯一の安定した手掛かり）。
-  # タイトルに 加藤/小松 が無ければ西野（このチャンネルの動画は基本西野出演）。
+  # 出演者判定は「概要欄に貼られた LME URL の uLand コード」だけで行う。
+  # 運用ルール: 動画公開時に出演者ごとの固定 uLand を概要欄に入れる。
+  #   西野 → acSx8R（日常/ショート/Live/TOP 等の西野系コードも西野扱い）
+  #   加藤 → 6HfkXp（ショート 4YnKLB も加藤扱い）
+  #   小松 → 2jTFMb
+  # ★ これらのコードに該当しない動画（専用uLandが既に入っている/LME URLが無い等）は
+  #   対象外としてスルーする（フォールバックで西野にはしない）。
   # 管理名は「<出演者>　<動画タイトル>」、フォルダも出演者ごとに分ける。
-  # フォルダ ID は LME 実在の QRコードアクション用フォルダ（/ajax/get-list-group-landing で確認）:
+  # フォルダ ID は LME 実在フォルダ（/ajax/get-list-group-landing で確認）:
   #   youtube nishino=5464631 / youtube kato=5463814 / youtube komatsu=5464667
   PERFORMERS = [
     {
       name:                "加藤",
-      title_keywords:      %w[加藤],
+      uland_codes:         %w[6HfkXp 4YnKLB],
       category_env:        "LME_YOUTUBE_KATO_CATEGORY_ID",
       default_category_id: "5463814" # youtube kato フォルダ
     },
     {
       name:                "小松",
-      title_keywords:      %w[小松],
+      uland_codes:         %w[2jTFMb],
       category_env:        "LME_YOUTUBE_KOMATSU_CATEGORY_ID",
       default_category_id: "5464667" # youtube komatsu フォルダ
     },
-    # 西野はフォールバック（タイトルに名前が無ければ必ずここにマッチ）
     {
       name:                "西野",
-      title_keywords:      %w[西野],
+      uland_codes:         %w[acSx8R 48vXlm Hsm2mV r3UAhT VmEg4f],
       category_env:        "LME_YOUTUBE_LANDING_CATEGORY_ID",
-      default_category_id: "5464631", # youtube nishino フォルダ
-      fallback:            true
+      default_category_id: "5464631" # youtube nishino フォルダ
     }
   ].freeze
 
@@ -66,6 +68,7 @@ class Youtube::LmeLandingWorker
   STATUS_LANDING_ID_MISSING = "landing_id_missing" # 作成レスポンスから id を特定できず（重複作成防止のため自動リトライしない・要手動対応）
   STATUS_CATEGORY_MISSING   = "category_missing"   # 出演者は判明したがフォルダIDのENVが未設定（要設定→手動再実行）
   STATUS_ALREADY_IN_LME     = "already_in_lme"     # 同名ランディングが LME に既存（手動作成済みとみなしスルー）
+  STATUS_NOT_TARGET         = "not_target"         # 概要欄に既知の出演者uLandが無く対象外（スルー）
 
   # video_id_arg を渡すと、その動画だけを強制的に処理する（done 以外なら再実行）
   def perform(video_id_arg = nil)
@@ -119,6 +122,15 @@ class Youtube::LmeLandingWorker
     title     = video.snippet.title.to_s
     row       = map_rows[video_id] ||= build_row(video, status: "")
     performer = detect_performer(video)
+
+    # 既知の出演者uLandが無ければ対象外としてスルー（西野に寄せない）
+    if performer.nil?
+      row["ステータス"] = STATUS_NOT_TARGET
+      touch_row(row)
+      write_map_rows(sheets, map_rows.values)
+      Rails.logger.info("[YoutubeLmeLanding] video=#{video_id} 既知の出演者uLand無し→対象外スルー")
+      return
+    end
     row["出演者"] = performer[:name]
 
     # ---- 1) ランディング作成（未作成のときだけ）----
@@ -219,9 +231,13 @@ class Youtube::LmeLandingWorker
       return [forced]
     end
 
+    # 未処理 or 作成途中、かつ「既知の出演者uLandを持つ」動画だけを対象にする。
+    # → 対象が無ければ LME ログイン（2Captcha消費）自体を発生させない。
     videos.select do |video|
       row = map_rows[video.id]
-      row.nil? || row["ステータス"] == STATUS_LANDING_CREATED
+      next false unless row.nil? || row["ステータス"] == STATUS_LANDING_CREATED
+
+      detect_performer(video).present?
     end
   end
 
@@ -292,13 +308,13 @@ class Youtube::LmeLandingWorker
     Lme::LandingService.new(ctx: ctx)
   end
 
-  # タイトルに名前が含まれる出演者 → 居なければフォールバック（西野）
+  # 概要欄の LME URL の uLand コードで出演者を判定。
+  # 既知コードに該当しなければ nil（＝対象外）。
   def detect_performer(video)
-    title = video.snippet.title.to_s
+    uland_code = video.snippet.description.to_s[LME_URL_PATTERN].to_s[/uLand=([A-Za-z0-9]+)/, 1]
+    return nil if uland_code.blank?
 
-    PERFORMERS.find do |performer|
-      !performer[:fallback] && performer[:title_keywords].any? { |keyword| title.include?(keyword) }
-    end || PERFORMERS.find { |performer| performer[:fallback] }
+    PERFORMERS.find { |performer| performer[:uland_codes].include?(uland_code) }
   end
 
   def performer_category_id(performer)
