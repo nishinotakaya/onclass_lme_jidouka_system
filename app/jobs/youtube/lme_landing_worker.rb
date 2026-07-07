@@ -135,7 +135,7 @@ class Youtube::LmeLandingWorker
       landing_name = landing_name_for(performer, title)
 
       # すでに LME に同名ランディングがある（手動作成済み等）ならスルー
-      if landing_service.landing_exists?([landing_name, title])
+      if landing_service.landing_exists?([landing_name, title], category_id: category_id)
         row["ステータス"] = STATUS_ALREADY_IN_LME
         touch_row(row)
         write_map_rows(sheets, map_rows.values)

@@ -9,8 +9,9 @@ module Lme
     PATH_SETTING_DETAIL = '/ajax/v2/landing/%<landing_id>s/setting-detail'
     PATH_LANDING_EDIT   = '/basic/landing/v2/edit/%<landing_id>s'
     PATH_LANDING_LIST   = '/basic/landing'
-    # ランディング一覧（QRコードアクション一覧）取得 ajax。UI の検索と同じエンドポイント。
-    PATH_LANDING_LIST_AJAX = '/ajax/get-list-landing-page'
+    # ランディング一覧（QRコードアクション一覧）取得 ajax。UI の一覧描画と同じ GET。
+    # レスポンス: { data: { data: [ {id, name, ...}, ... ], last_page, current_page } }
+    PATH_LANDING_LIST_AJAX = '/ajax/v2/landing'
 
     LANDING_QR_URL_PATTERN = %r{https://s\.lmes\.jp/landing-qr/[A-Za-z0-9\-]+\?uLand=[A-Za-z0-9]+}
 
@@ -62,26 +63,40 @@ module Lme
     end
 
     # 指定した名前候補のいずれかと完全一致するランディングが既に存在するか。
-    # 一覧APIを叩いて name を突き合わせる。API が特定できない/失敗した場合は
-    # 「不明」として false を返す（＝作成に進む。二重作成は管理シートで抑止済み）。
-    def landing_exists?(name_candidates)
+    # 一覧APIを name で検索して突き合わせる。取得失敗時は false（＝作成に進む。
+    # 二重作成は管理シートで抑止済み）。category_id を渡すとそのフォルダ内に絞る。
+    def landing_exists?(name_candidates, category_id: nil)
       wanted = Array(name_candidates).map { |name| normalize_name(name) }.reject(&:blank?)
       return false if wanted.empty?
 
-      existing_names.any? { |name| wanted.include?(normalize_name(name)) }
+      # 最も具体的な候補（動画タイトル想定）をサーバ側 keyword 検索に使って件数を絞る
+      keyword = Array(name_candidates).max_by { |name| name.to_s.length }.to_s
+      existing_names(category_id: category_id, keyword: keyword).any? do |name|
+        wanted.include?(normalize_name(name))
+      end
     end
 
-    # 既存ランディングの name 一覧を取得（取得不能なら空配列）
-    def existing_names
-      body = post_urlencoded(
-        PATH_LANDING_LIST_AJAX,
-        { 'page' => 1, 'keyword' => '', 'limit' => 1000 },
-        referer: landing_list_url
-      )
+    # 既存ランディングの name 一覧を取得（取得不能なら空配列）。
+    # UI の一覧描画と同じ GET /ajax/v2/landing。
+    def existing_names(category_id: nil, keyword: '')
+      params = {
+        'type'               => '',
+        'limit'              => 100,
+        'page'               => 1,
+        'action_with_friend' => 0,
+        'keyword'            => keyword.to_s,
+        'orders[0][column]'  => 'position',
+        'orders[0][dir]'     => 'ASC'
+      }
+      params['category_id'] = category_id.to_s if category_id.present?
+
+      body = @ctx.http.get_json(path: PATH_LANDING_LIST_AJAX, referer: landing_list_url, params: params)
       json = JSON.parse(body.to_s) rescue nil
       return [] unless json
 
-      collect_names(json)
+      rows = json.dig('data', 'data')
+      rows = json['data'] if rows.nil? && json['data'].is_a?(Array)
+      Array(rows).map { |row| row.is_a?(Hash) ? row['name'] : nil }.compact
     rescue => e
       Rails.logger.warn("[LmeLanding] existing_names 取得失敗（作成に進む）: #{e.class} #{e.message}")
       []
@@ -151,20 +166,6 @@ module Lme
     # 全角/半角スペースを吸収して名前比較する
     def normalize_name(name)
       name.to_s.gsub(/[[:space:]　]+/, '').strip
-    end
-
-    # 一覧APIのレスポンスJSONから "name" 値を再帰的に集める
-    def collect_names(node, acc = [])
-      case node
-      when Hash
-        node.each do |key, value|
-          acc << value if key == 'name' && value.is_a?(String)
-          collect_names(value, acc)
-        end
-      when Array
-        node.each { |child| collect_names(child, acc) }
-      end
-      acc
     end
 
     def landing_list_url
