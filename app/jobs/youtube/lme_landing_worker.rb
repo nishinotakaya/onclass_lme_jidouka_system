@@ -28,13 +28,43 @@ class Youtube::LmeLandingWorker
   # 差し替え対象は landing-qr URL に限定（form.lmes.jp 等の別種URLは触らない）
   LME_URL_PATTERN = %r{https://s\.lmes\.jp/landing-qr/[A-Za-z0-9\-]+(?:\?uLand=[A-Za-z0-9]+)?}
 
-  MAP_HEADER = %w[動画ID タイトル 公開日 landing_id landing_url ステータス 更新日時].freeze
+  # 出演者判定は「タイトルに名前が含まれるか」で行う（YouTube Data API は
+  # 投稿した Google アカウントを返さないため、タイトルが唯一の安定した手掛かり）。
+  # タイトルに 加藤/小松 が無ければ西野（このチャンネルの動画は基本西野出演）。
+  # 管理名は「<出演者>　<動画タイトル>」、フォルダも出演者ごとに分ける。
+  # 加藤・小松のフォルダ ID は ENV 未設定のうちは作成せず category_missing で保留する。
+  PERFORMERS = [
+    {
+      name:                "加藤",
+      title_keywords:      %w[加藤],
+      category_env:        "LME_YOUTUBE_KATO_CATEGORY_ID",
+      default_category_id: nil
+    },
+    {
+      name:                "小松",
+      title_keywords:      %w[小松],
+      category_env:        "LME_YOUTUBE_KOMATSU_CATEGORY_ID",
+      default_category_id: nil
+    },
+    # 西野はフォールバック（タイトルに名前が無ければ必ずここにマッチ）
+    {
+      name:                "西野",
+      title_keywords:      %w[西野],
+      category_env:        "LME_YOUTUBE_LANDING_CATEGORY_ID",
+      default_category_id: "5464631", # youtube nishino フォルダ
+      fallback:            true
+    }
+  ].freeze
+
+  MAP_HEADER = %w[動画ID タイトル 公開日 landing_id landing_url ステータス 更新日時 出演者].freeze
 
   STATUS_SEEDED             = "seeded"             # 初回シード（処理対象外）
   STATUS_LANDING_CREATED    = "landing_created"    # ランディング作成済み・概要欄更新が未完（次回リトライ）
   STATUS_DONE               = "done"
   STATUS_NO_LME_URL         = "no_lme_url"         # 概要欄に LME URL が無く差し替え不能（要手動対応）
   STATUS_LANDING_ID_MISSING = "landing_id_missing" # 作成レスポンスから id を特定できず（重複作成防止のため自動リトライしない・要手動対応）
+  STATUS_CATEGORY_MISSING   = "category_missing"   # 出演者は判明したがフォルダIDのENVが未設定（要設定→手動再実行）
+  STATUS_ALREADY_IN_LME     = "already_in_lme"     # 同名ランディングが LME に既存（手動作成済みとみなしスルー）
 
   # video_id_arg を渡すと、その動画だけを強制的に処理する（done 以外なら再実行）
   def perform(video_id_arg = nil)
@@ -84,15 +114,37 @@ class Youtube::LmeLandingWorker
   # メイン処理（1動画）
   # ====================================================
   def process_video(video, map_rows, landing_service, youtube, sheets)
-    video_id = video.id
-    title    = video.snippet.title.to_s
-    row      = map_rows[video_id] ||= build_row(video, status: "")
+    video_id  = video.id
+    title     = video.snippet.title.to_s
+    row       = map_rows[video_id] ||= build_row(video, status: "")
+    performer = detect_performer(video)
+    row["出演者"] = performer[:name]
 
     # ---- 1) ランディング作成（未作成のときだけ）----
     if row["landing_id"].blank?
+      category_id = performer_category_id(performer)
+      if category_id.blank?
+        row["ステータス"] = STATUS_CATEGORY_MISSING
+        touch_row(row)
+        write_map_rows(sheets, map_rows.values)
+        Rails.logger.warn("[YoutubeLmeLanding] video=#{video_id} performer=#{performer[:name]} のフォルダID(#{performer[:category_env]})が未設定。作成を保留。")
+        return
+      end
+
+      landing_name = landing_name_for(performer, title)
+
+      # すでに LME に同名ランディングがある（手動作成済み等）ならスルー
+      if landing_service.landing_exists?([landing_name, title])
+        row["ステータス"] = STATUS_ALREADY_IN_LME
+        touch_row(row)
+        write_map_rows(sheets, map_rows.values)
+        Rails.logger.info("[YoutubeLmeLanding] video=#{video_id} 同名ランディングが既存のためスルー: #{landing_name}")
+        return
+      end
+
       created = landing_service.create_landing(
-        name:        landing_name_for(title),
-        category_id: landing_category_id
+        name:        landing_name,
+        category_id: category_id
       )
       row["landing_id"]  = created[:landing_id].to_s
       row["landing_url"] = created[:landing_url].to_s
@@ -239,14 +291,22 @@ class Youtube::LmeLandingWorker
     Lme::LandingService.new(ctx: ctx)
   end
 
-  # 西野の YouTube 用フォルダ「youtube nishino」
-  def landing_category_id
-    ENV.fetch("LME_YOUTUBE_LANDING_CATEGORY_ID", "5464631")
+  # タイトルに名前が含まれる出演者 → 居なければフォールバック（西野）
+  def detect_performer(video)
+    title = video.snippet.title.to_s
+
+    PERFORMERS.find do |performer|
+      !performer[:fallback] && performer[:title_keywords].any? { |keyword| title.include?(keyword) }
+    end || PERFORMERS.find { |performer| performer[:fallback] }
   end
 
-  # 他の流入元の命名に合わせ、管理名は「西野　<動画タイトル>」形式にする
-  def landing_name_for(title)
-    "#{ENV.fetch('LME_YOUTUBE_LANDING_NAME_PREFIX', '西野　')}#{title}"
+  def performer_category_id(performer)
+    ENV[performer[:category_env]].presence || performer[:default_category_id]
+  end
+
+  # 他の流入元の命名に合わせ、管理名は「<出演者>　<動画タイトル>」形式にする
+  def landing_name_for(performer, title)
+    "#{performer[:name]}　#{title}"
   end
 
   # ====================================================
@@ -268,7 +328,8 @@ class Youtube::LmeLandingWorker
       "landing_id"  => "",
       "landing_url" => "",
       "ステータス"  => status,
-      "更新日時"    => jp_timestamp
+      "更新日時"    => jp_timestamp,
+      "出演者"      => ""
     }
   end
 

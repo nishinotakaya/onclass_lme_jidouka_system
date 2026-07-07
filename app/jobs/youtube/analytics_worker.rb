@@ -74,7 +74,11 @@ class Youtube::AnalyticsWorker
       desc      = snippet.description.to_s
       first_url = desc.scan(%r{https?://\S+}).first
 
-      performer_name = "YouTube概要欄"
+      # 出演者判定:
+      #   1) uLand が既知の共通コードならその名前（日常/ショート/Live 等の区別を維持）
+      #   2) タイトルに 加藤/小松 が含まれていればその人
+      #   3) それ以外は西野（このチャンネルの動画は基本西野出演のため）
+      performer_name = nil
 
       if first_url
         # uLand パラメータを抽出（host が s.lmes.jp / form.lmes.jp どちらでもOK）
@@ -95,6 +99,15 @@ class Youtube::AnalyticsWorker
           performer_name = performer_map[uland]
         end
       end
+
+      performer_name ||=
+        if title.include?("加藤")
+          "加藤"
+        elsif title.include?("小松")
+          "小松"
+        else
+          "西野"
+        end
 
       performer_cell =
         if first_url
