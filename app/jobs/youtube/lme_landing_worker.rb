@@ -32,19 +32,20 @@ class Youtube::LmeLandingWorker
   # 投稿した Google アカウントを返さないため、タイトルが唯一の安定した手掛かり）。
   # タイトルに 加藤/小松 が無ければ西野（このチャンネルの動画は基本西野出演）。
   # 管理名は「<出演者>　<動画タイトル>」、フォルダも出演者ごとに分ける。
-  # 加藤・小松のフォルダ ID は ENV 未設定のうちは作成せず category_missing で保留する。
+  # フォルダ ID は LME 実在の QRコードアクション用フォルダ（/ajax/get-list-group-landing で確認）:
+  #   youtube nishino=5464631 / youtube kato=5463814 / youtube komatsu=5464667
   PERFORMERS = [
     {
       name:                "加藤",
       title_keywords:      %w[加藤],
       category_env:        "LME_YOUTUBE_KATO_CATEGORY_ID",
-      default_category_id: nil
+      default_category_id: "5463814" # youtube kato フォルダ
     },
     {
       name:                "小松",
       title_keywords:      %w[小松],
       category_env:        "LME_YOUTUBE_KOMATSU_CATEGORY_ID",
-      default_category_id: nil
+      default_category_id: "5464667" # youtube komatsu フォルダ
     },
     # 西野はフォールバック（タイトルに名前が無ければ必ずここにマッチ）
     {
