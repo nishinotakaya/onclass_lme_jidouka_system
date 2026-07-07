@@ -155,7 +155,8 @@ class Youtube::LmeLandingWorker
         return
       end
 
-      created = landing_service.create_landing(
+      # landing 作成 → タグ「<landing_name>」作成/紐付け → 名前・フォルダ確定まで一括
+      created = landing_service.create_landing_with_tag(
         name:        landing_name,
         category_id: category_id
       )
@@ -171,12 +172,6 @@ class Youtube::LmeLandingWorker
       if row["landing_id"].blank?
         Rails.logger.error("[YoutubeLmeLanding] video=#{video_id} landing_id not found in response. raw=#{created[:raw_body].to_s[0, 300]}")
         return if row["landing_url"].blank?
-      else
-        begin
-          landing_service.update_setting_detail(landing_id: row["landing_id"])
-        rescue => e
-          Rails.logger.warn("[YoutubeLmeLanding] video=#{video_id} setting-detail failed (continue): #{e.message}")
-        end
       end
     end
 

@@ -89,7 +89,7 @@ module Lme
     end
 
 
-    def post_form(path:, form:, cookie: nil, csrf_meta: nil, xsrf_cookie: nil, referer:, **_)
+    def post_form(path:, form:, cookie: nil, csrf_meta: nil, xsrf_cookie: nil, referer:, extra_headers: {}, http_method: :post, **_)
       uri = URI.join(@origin, path)
 
       headers = {
@@ -111,9 +111,10 @@ module Lme
       headers['x-csrf-token']  = csrf_meta.to_s if csrf_meta.present?
       headers['x-xsrf-token']  = CGI.unescape(xsrf_cookie) if xsrf_cookie.present?
       headers['cookie']        = cookie.to_s if cookie.present?
+      extra_headers.to_h.each { |k, v| headers[k.to_s] = v }
 
       body = URI.encode_www_form(form)
-      do_post(uri, headers, body)
+      do_post(uri, headers, body, http_method: http_method)
     end
 
 
@@ -173,9 +174,9 @@ module Lme
     private
 
     # app/services/lme/http_client.rb （クラス内・privateの所に追加）
-    def do_post(uri, headers, body)
+    def do_post(uri, headers, body, http_method: :post)
       conn = Faraday.new(url: @origin) { |f| f.adapter Faraday.default_adapter }
-      res  = conn.post(uri.request_uri) do |req|
+      res  = conn.public_send(http_method, uri.request_uri) do |req|
         headers.each { |k, v| req.headers[k] = v if v.present? }
         req.body = body.to_s
       end
