@@ -134,7 +134,7 @@ module Lme
         req.headers['pragma'] = 'no-cache'
         req.headers['referer'] = @origin
       end
-      [res.body.to_s, url]
+      [res.body.to_s.dup.force_encoding('UTF-8').scrub(''), url]
     rescue => e
       @logger.debug("[csrf-meta GET] #{e.class}: #{e.message}")
       ['', url]
@@ -180,7 +180,8 @@ module Lme
         headers.each { |k, v| req.headers[k] = v if v.present? }
         req.body = body.to_s
       end
-      resp_body = res.body.to_s
+      # LME は UTF-8 本文を ASCII-8BIT で返すため UTF-8 に正規化（連結時の例外防止）
+      resp_body = res.body.to_s.dup.force_encoding('UTF-8').scrub('')
       @logger.debug("[HTTP] POST #{uri} status=#{res.status} len=#{resp_body.bytesize}")
       if resp_body.lstrip.start_with?('<!DOCTYPE', '<html')
         @logger.warn("[HTTP] HTML returned (unexpected). status=#{res.status} head=#{resp_body[0,120].gsub(/\s+/, ' ')}")
@@ -205,7 +206,7 @@ module Lme
         headers.each { |k, v| req.headers[k] = v if v.present? }
         yield(req) if block_given?
       end
-      body = res.body.to_s
+      body = res.body.to_s.dup.force_encoding('UTF-8').scrub('')
       @logger.debug("[HTTP] #{verb.to_s.upcase} #{url} status=#{res.status} len=#{body.bytesize}")
       if body.lstrip.start_with?('<!DOCTYPE', '<html')
         @logger.warn("[HTTP] HTML returned (unexpected). status=#{res.status} head=#{body[0,120].gsub(/\s+/, ' ')}")
