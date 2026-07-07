@@ -10,6 +10,7 @@
   - [lme_line_counts, 1]
   - [youtube_analytics, 1]
   - [youtube_competitors, 1]
+  - [youtube_lme_landing, 1]
   # default は購読しない（同一Redisを共有する announcement アプリの
   # XPostScheduledJob を拾って uninitialized constant で失敗し続けるため）。
   # onclass 専用の sign_in キューだけ用意する。

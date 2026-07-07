@@ -91,3 +91,11 @@ lme_seminar_date_update:
   queue: lme_seminar
   tz: "Asia/Tokyo"
   description: "体験会フォームの日程セレクトを次の第2木曜へ更新"
+
+# ★ 新規YouTube動画のLMEランディング自動作成＆概要欄URL差し替え（本番）
+youtube_lme_landing_daily:
+  class: "Youtube::LmeLandingWorker"
+  cron: "0 8 * * *"   # 毎日 08:00（Analytics 07:30 のあと）
+  queue: youtube_lme_landing
+  tz: "Asia/Tokyo"
+  description: "新規YouTube動画のLME QRコードアクション作成＆概要欄URL更新"

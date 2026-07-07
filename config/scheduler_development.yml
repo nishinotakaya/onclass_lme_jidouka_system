@@ -71,3 +71,11 @@ youtube_competitors_daily:
   queue: youtube_competitors
   tz: "Asia/Tokyo"
   description: "YouTube競合チャンネルの動画＆コメント収集（開発）"
+
+# ★ 新規YouTube動画のLMEランディング自動作成＆概要欄URL差し替え（開発）
+youtube_lme_landing_daily:
+  class: "Youtube::LmeLandingWorker"
+  cron: "0 8 * * *"   # 毎日 08:00（Analytics 07:30 のあと）
+  queue: youtube_lme_landing
+  tz: "Asia/Tokyo"
+  description: "新規YouTube動画のLME QRコードアクション作成＆概要欄URL更新"

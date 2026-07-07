@@ -38,3 +38,9 @@ youtube_competitors_daily:
   cron: "45 7 * * *"       # 毎日 07:45（自チャンネル集計のあと）
   queue: youtube_competitors
   tz: "Asia/Tokyo"
+
+youtube_lme_landing_daily:
+  class: "Youtube::LmeLandingWorker"
+  cron: "0 8 * * *"       # 毎日 08:00（Analytics のあと）
+  queue: youtube_lme_landing
+  tz: "Asia/Tokyo"
