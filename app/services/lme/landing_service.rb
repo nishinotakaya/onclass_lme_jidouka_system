@@ -21,6 +21,10 @@ module Lme
     # youtube タグをまとめるタグフォルダ（/ajax/get-list-group-tag の group）
     DEFAULT_TAG_FOLDER_ID = '57807'
 
+    # 公開QR URL のドメイン・ベース（全ランディング共通。link_qr_code から導出も可）
+    PUBLIC_QR_HOST  = 's.lmes.jp'
+    LANDING_QR_BASE = '1627543300-4PoDJorL'
+
     LANDING_QR_URL_PATTERN = %r{https://s\.lmes\.jp/landing-qr/[A-Za-z0-9\-]+\?uLand=[A-Za-z0-9]+}
 
     def initialize(ctx:) @ctx = ctx end
@@ -52,7 +56,7 @@ module Lme
 
       {
         landing_id:  landing_id,
-        landing_url: created[:landing_url].presence || fetch_landing_url(landing_id),
+        landing_url: fetch_landing_url(landing_id, category_id: category_id),
         action_id:   action_id,
         tag_id:      tag_id
       }
@@ -181,37 +185,45 @@ module Lme
       post_urlencoded(path, form, referer: landing_edit_url(landing_id))
     end
 
-    # 編集画面 HTML から https://s.lmes.jp/landing-qr/...?uLand=... を抽出
-    def fetch_landing_url(landing_id)
-      html, _url = @ctx.http.get_with_cookies(cookie_header, landing_edit_url(landing_id))
-      to_utf8(html)[LANDING_QR_URL_PATTERN]
+    # 一覧APIで landing_id 一致のレコードを引き、公開QR URL（s.lmes.jp）を返す。
+    # ★ 編集画面HTMLにはプレースホルダしか無いため、一覧APIの link_qr_code / code を使う。
+    def fetch_landing_url(landing_id, category_id: nil)
+      record = fetch_landing_list(category_id: category_id).find { |row| row['id'].to_s == landing_id.to_s }
+      return nil unless record
+
+      link = record['link_qr_code'].to_s
+      # 公開ドメイン s.lmes.jp に寄せる（link_qr_code は step.lme.jp で返る）
+      url = link.sub(%r{\Ahttps?://[^/]+}, "https://#{PUBLIC_QR_HOST}")
+      return url if url =~ %r{\Ahttps://#{Regexp.escape(PUBLIC_QR_HOST)}/landing-qr/}
+
+      code = record['code'].to_s
+      code.present? ? "https://#{PUBLIC_QR_HOST}/landing-qr/#{LANDING_QR_BASE}?uLand=#{code}" : nil
     end
 
     # 指定した名前候補のいずれかと完全一致するランディングが既に存在するか。
-    # 一覧APIを name で検索して突き合わせる。取得失敗時は false（＝作成に進む。
-    # 二重作成は管理シートで抑止済み）。category_id を渡すとそのフォルダ内に絞る。
+    # 取得失敗時は false（＝作成に進む。二重作成は管理シートで抑止済み）。
     def landing_exists?(name_candidates, category_id: nil)
       wanted = Array(name_candidates).map { |name| normalize_name(name) }.reject(&:blank?)
       return false if wanted.empty?
 
-      # 最も具体的な候補（動画タイトル想定）をサーバ側 keyword 検索に使って件数を絞る
-      keyword = Array(name_candidates).max_by { |name| name.to_s.length }.to_s
-      existing_names(category_id: category_id, keyword: keyword).any? do |name|
-        wanted.include?(normalize_name(name))
-      end
+      existing_names(category_id: category_id).any? { |name| wanted.include?(normalize_name(name)) }
     end
 
     # 既存ランディングの name 一覧を取得（取得不能なら空配列）。
-    # UI の一覧描画と同じ GET /ajax/v2/landing。
-    def existing_names(category_id: nil, keyword: '')
+    def existing_names(category_id: nil)
+      fetch_landing_list(category_id: category_id).map { |row| row['name'] }.compact
+    end
+
+    # ランディング一覧を取得（取得不能なら空配列）。UI の一覧描画と同じ GET /ajax/v2/landing。
+    # ★ orders パラメータを付けると 500（Undefined index: dir）になるため付けない。
+    # 返却レコード: { id, name, code(uLand), link_qr_code(フルURL), category_id, ... }
+    def fetch_landing_list(category_id: nil)
       params = {
         'type'               => '',
-        'limit'              => 100,
+        'limit'              => 500,
         'page'               => 1,
         'action_with_friend' => 0,
-        'keyword'            => keyword.to_s,
-        'orders[0][column]'  => 'position',
-        'orders[0][dir]'     => 'ASC'
+        'keyword'            => ''
       }
       params['category_id'] = category_id.to_s if category_id.present?
 
@@ -221,9 +233,9 @@ module Lme
 
       rows = json.dig('data', 'data')
       rows = json['data'] if rows.nil? && json['data'].is_a?(Array)
-      Array(rows).map { |row| row.is_a?(Hash) ? row['name'] : nil }.compact
+      Array(rows).select { |row| row.is_a?(Hash) }
     rescue => e
-      Rails.logger.warn("[LmeLanding] existing_names 取得失敗（作成に進む）: #{e.class} #{e.message}")
+      Rails.logger.warn("[LmeLanding] fetch_landing_list 取得失敗: #{e.class} #{e.message}")
       []
     end
 

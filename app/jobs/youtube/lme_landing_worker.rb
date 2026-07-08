@@ -132,18 +132,17 @@ class Youtube::LmeLandingWorker
       return
     end
     row["出演者"] = performer[:name]
+    category_id = performer_category_id(performer)
+    if category_id.blank?
+      row["ステータス"] = STATUS_CATEGORY_MISSING
+      touch_row(row)
+      write_map_rows(sheets, map_rows.values)
+      Rails.logger.warn("[YoutubeLmeLanding] video=#{video_id} performer=#{performer[:name]} のフォルダID(#{performer[:category_env]})が未設定。作成を保留。")
+      return
+    end
 
     # ---- 1) ランディング作成（未作成のときだけ）----
     if row["landing_id"].blank?
-      category_id = performer_category_id(performer)
-      if category_id.blank?
-        row["ステータス"] = STATUS_CATEGORY_MISSING
-        touch_row(row)
-        write_map_rows(sheets, map_rows.values)
-        Rails.logger.warn("[YoutubeLmeLanding] video=#{video_id} performer=#{performer[:name]} のフォルダID(#{performer[:category_env]})が未設定。作成を保留。")
-        return
-      end
-
       landing_name = landing_name_for(performer, title)
 
       # すでに LME に同名ランディングがある（手動作成済み等）ならスルー
@@ -181,7 +180,7 @@ class Youtube::LmeLandingWorker
       return
     end
     if row["landing_url"].blank?
-      row["landing_url"] = landing_service.fetch_landing_url(row["landing_id"]).to_s
+      row["landing_url"] = landing_service.fetch_landing_url(row["landing_id"], category_id: category_id).to_s
       if row["landing_url"].blank?
         touch_row(row)
         write_map_rows(sheets, map_rows.values)
