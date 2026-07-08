@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 require 'json'
+require 'uri'
+require 'faraday'
 
 module Lme
   # QRコードアクション（ランディング）の作成・設定・URL取得
@@ -24,6 +26,7 @@ module Lme
     # 公開QR URL のドメイン・ベース（全ランディング共通。link_qr_code から導出も可）
     PUBLIC_QR_HOST  = 's.lmes.jp'
     LANDING_QR_BASE = '1627543300-4PoDJorL'
+    LME_USER_AGENT  = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
 
     LANDING_QR_URL_PATTERN = %r{https://s\.lmes\.jp/landing-qr/[A-Za-z0-9\-]+\?uLand=[A-Za-z0-9]+}
 
@@ -216,19 +219,29 @@ module Lme
 
     # ランディング一覧を取得（取得不能なら空配列）。UI の一覧描画と同じ GET /ajax/v2/landing。
     # ★ orders パラメータを付けると 500（Undefined index: dir）になるため付けない。
+    # ★ Cookie は login_cookies 優先の cookie_header を使う（ctx.cookie_header だと認証不足で失敗）。
     # 返却レコード: { id, name, code(uLand), link_qr_code(フルURL), category_id, ... }
     def fetch_landing_list(category_id: nil)
-      params = {
+      query = {
         'type'               => '',
         'limit'              => 500,
         'page'               => 1,
         'action_with_friend' => 0,
         'keyword'            => ''
       }
-      params['category_id'] = category_id.to_s if category_id.present?
+      query['category_id'] = category_id.to_s if category_id.present?
 
-      body = @ctx.http.get_json(path: PATH_LANDING_LIST_AJAX, referer: landing_list_url, params: params)
-      json = JSON.parse(to_utf8(body)) rescue nil
+      csrf = ensure_csrf!(landing_list_url)
+      conn = Faraday.new(url: @ctx.origin) { |f| f.adapter Faraday.default_adapter }
+      res = conn.get("#{PATH_LANDING_LIST_AJAX}?#{URI.encode_www_form(query)}") do |req|
+        req.headers['accept']           = 'application/json, text/plain, */*'
+        req.headers['user-agent']       = LME_USER_AGENT
+        req.headers['x-requested-with'] = 'XMLHttpRequest'
+        req.headers['x-csrf-token']     = csrf.to_s
+        req.headers['cookie']           = cookie_header
+        req.headers['referer']          = landing_list_url
+      end
+      json = JSON.parse(to_utf8(res.body)) rescue nil
       return [] unless json
 
       rows = json.dig('data', 'data')
