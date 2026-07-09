@@ -76,8 +76,9 @@ class Youtube::AnalyticsWorker
 
       # 出演者判定:
       #   1) uLand が既知の共通コードならその名前（日常/ショート/Live 等の区別を維持）
-      #   2) タイトルに 加藤/小松 が含まれていればその人
-      #   3) それ以外は西野（このチャンネルの動画は基本西野出演のため）
+      #   2) タイトルに 加藤/小松/西野 が含まれていればその人
+      #   3) それ以外は判定不能なので中立ラベル（無理に西野へ寄せない）
+      #      ※ 多くの動画は uLand=mDTukc の汎用ランディングで出演者を特定できないため。
       performer_name = nil
 
       if first_url
@@ -105,8 +106,10 @@ class Youtube::AnalyticsWorker
           "加藤"
         elsif title.include?("小松")
           "小松"
-        else
+        elsif title.include?("西野")
           "西野"
+        else
+          "YouTube概要欄"
         end
 
       performer_cell =
