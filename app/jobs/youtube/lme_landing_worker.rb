@@ -98,6 +98,7 @@ class Youtube::LmeLandingWorker
     Rails.logger.info("[YoutubeLmeLanding] targets=#{targets.map(&:id).join(',')}")
 
     landing_service = build_landing_service
+    sync_landings_to_db(landing_service) # LMEログインしたついでにランディング一覧をDBへ同期（失敗しても本処理は継続）
 
     targets.each do |video|
       process_video(video, map_rows, landing_service, youtube, sheets)
@@ -315,9 +316,9 @@ class Youtube::LmeLandingWorker
     ENV[performer[:category_env]].presence || performer[:default_category_id]
   end
 
-  # 他の流入元の命名に合わせ、管理名は「<出演者>　<動画タイトル>」形式にする
+  # 他の流入元の命名に合わせ、管理名は「<出演者>- <動画タイトル>」形式にする
   def landing_name_for(performer, title)
-    "#{performer[:name]}　#{title}"
+    "#{performer[:name]}- #{title}"
   end
 
   # ====================================================
@@ -370,6 +371,58 @@ class Youtube::LmeLandingWorker
       Google::Apis::SheetsV4::ValueRange.new(values: values),
       value_input_option: "RAW"
     )
+    sync_videos_to_db(rows)
+  end
+
+  # ====================================================
+  # DB並行書き込み（Supabase）。失敗しても本処理（シート運用）には影響させない。
+  # ====================================================
+  def sync_videos_to_db(rows)
+    records = rows.map do |row|
+      video_id = row["動画ID"].to_s.strip
+      next if video_id.blank?
+
+      {
+        video_id:     video_id,
+        title:        row["タイトル"].presence,
+        published_on: (Date.parse(row["公開日"].to_s) rescue nil),
+        landing_id:   row["landing_id"].presence,
+        landing_url:  row["landing_url"].presence,
+        uland_code:   row["landing_url"].to_s[/uLand=([A-Za-z0-9]+)/, 1],
+        status:       row["ステータス"].presence,
+        performer:    row["出演者"].presence
+      }
+    end.compact
+    return if records.empty?
+
+    YoutubeVideo.upsert_all(records, unique_by: :video_id, record_timestamps: true)
+  rescue => e
+    Rails.logger.warn("[YoutubeLmeLanding] DB同期(videos)失敗（シート運用は継続）: #{e.class} #{e.message}")
+  end
+
+  def sync_landings_to_db(landing_service)
+    records = PERFORMERS.flat_map do |performer|
+      category_id = performer_category_id(performer)
+      next [] if category_id.blank?
+
+      landing_service.fetch_landing_list(category_id: category_id).map do |row|
+        {
+          landing_id:        row["id"].to_s,
+          name:              row["name"],
+          code:              row["code"],
+          category_id:       row["category_id"].to_s,
+          link_qr_code:      row["link_qr_code"],
+          total_user_click:  row["total_user_click"],
+          total_user_friend: row["total_user_friend"]
+        }
+      end
+    end.reject { |record| record[:landing_id].blank? }
+    return if records.empty?
+
+    LmeLanding.upsert_all(records, unique_by: :landing_id, record_timestamps: true)
+    Rails.logger.info("[YoutubeLmeLanding] DB同期(landings)=#{records.size}件")
+  rescue => e
+    Rails.logger.warn("[YoutubeLmeLanding] DB同期(landings)失敗（本処理は継続）: #{e.class} #{e.message}")
   end
 
   # ====================================================
