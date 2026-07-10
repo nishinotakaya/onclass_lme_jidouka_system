@@ -223,6 +223,9 @@ module Onclass
         kato_maps:      kato_maps
       )
 
+      # DB(Supabase)へ差分書き込み（新規INSERT/変化行だけUPDATE。失敗してもシート運用は継続）
+      sync_students_to_db(rows, course_id)
+
       # tmp削除（デフォルトON）
       if ENV.fetch('ONCLASS_CLEAN_TMP', '1') == '1'
         cleanup_tmp_files!(created_paths)
@@ -242,6 +245,43 @@ module Onclass
 
     # ================ Private =================
     private
+
+    # DB(Supabase)へ受講生データを差分書き込み。
+    # 新規はINSERT・値が変わった行だけUPDATE・同じ行はスキップ（シート運用には影響しない）。
+    def sync_students_to_db(rows, course_id)
+      records = rows.map do |row|
+        user_id = row['id'].to_s.strip
+        next if user_id.blank?
+
+        {
+          user_id:                       user_id,
+          course_id:                     course_id.to_s,
+          name:                          row['name'].presence,
+          email:                         row['email'].presence,
+          motivation:                    row['motivation'].presence,
+          status:                        row['status'].presence,
+          course_join_date:              (Date.parse(row['course_join_date'].to_s) rescue nil),
+          latest_login_at:               row['latest_login_at'].presence.to_s.presence,
+          course_login_rate:             row['course_login_rate'].presence.to_s.presence,
+          current_category:              row['current_category'].presence,
+          current_block:                 row['current_block'].presence,
+          current_category_started_at:   row['current_category_started_at'].presence.to_s.presence,
+          current_category_scheduled_at: row['current_category_scheduled_at'].presence.to_s.presence,
+          extension_study_date:          row['extension_study_date'].presence.to_s.presence,
+          pdca_url:                      row['pdca_url'].presence,
+          new_pdca_url:                  row['new_pdca_url'].presence,
+          pdca_latest_report:            row['pdca_latest_report'].presence.to_s.presence,
+          line_url:                      row['line_url'].presence,
+          nishino_mentions_count:        row['nishino_mentions_count'].to_i,
+          kato_mentions_count:           row['kato_mentions_count'].to_i
+        }
+      end.compact
+
+      written = DbSync.diff_upsert(OnclassStudent, records, key: [:user_id, :course_id])
+      Rails.logger.info("[Onclass::StudentsDataWorker] DB同期 変更#{written}/#{records.size}件") if written.positive?
+    rescue => e
+      Rails.logger.warn("[Onclass::StudentsDataWorker] DB同期失敗（シート運用は継続）: #{e.class} #{e.message}")
+    end
 
     def normalize_motivation(v)
       (v || '').to_s.strip.downcase
