@@ -376,6 +376,7 @@ class Youtube::LmeLandingWorker
 
   # ====================================================
   # DB並行書き込み（Supabase）。失敗しても本処理（シート運用）には影響させない。
+  # 既存と比較して「新規 or 変化があった行だけ」書く（updated_at=実際に変わった日時）。
   # ====================================================
   def sync_videos_to_db(rows)
     records = rows.map do |row|
@@ -393,9 +394,12 @@ class Youtube::LmeLandingWorker
         performer:    row["出演者"].presence
       }
     end.compact
-    return if records.empty?
 
-    YoutubeVideo.upsert_all(records, unique_by: :video_id, record_timestamps: true)
+    changed = changed_records(YoutubeVideo, records, key: :video_id)
+    return if changed.empty?
+
+    YoutubeVideo.upsert_all(changed, unique_by: :video_id, record_timestamps: true)
+    Rails.logger.info("[YoutubeLmeLanding] DB同期(videos) 変更#{changed.size}/#{records.size}件")
   rescue => e
     Rails.logger.warn("[YoutubeLmeLanding] DB同期(videos)失敗（シート運用は継続）: #{e.class} #{e.message}")
   end
@@ -417,12 +421,37 @@ class Youtube::LmeLandingWorker
         }
       end
     end.reject { |record| record[:landing_id].blank? }
-    return if records.empty?
 
-    LmeLanding.upsert_all(records, unique_by: :landing_id, record_timestamps: true)
-    Rails.logger.info("[YoutubeLmeLanding] DB同期(landings)=#{records.size}件")
+    changed = changed_records(LmeLanding, records, key: :landing_id)
+    return if changed.empty?
+
+    LmeLanding.upsert_all(changed, unique_by: :landing_id, record_timestamps: true)
+    Rails.logger.info("[YoutubeLmeLanding] DB同期(landings) 変更#{changed.size}/#{records.size}件")
   rescue => e
     Rails.logger.warn("[YoutubeLmeLanding] DB同期(landings)失敗（本処理は継続）: #{e.class} #{e.message}")
+  end
+
+  # 既存レコードと属性を比較し、新規 or 値が変わった行だけ返す
+  def changed_records(model, records, key:)
+    return [] if records.empty?
+
+    existing = model.where(key => records.map { |record| record[key] })
+                    .index_by { |db_row| db_row.public_send(key) }
+    records.select do |record|
+      db_row = existing[record[key]]
+      next true if db_row.nil? # 新規
+
+      record.any? { |column, value| normalize_db_value(db_row.public_send(column)) != normalize_db_value(value) }
+    end
+  end
+
+  # DB値と比較用の正規化（Date/数値/nil空文字の揺れを吸収）
+  def normalize_db_value(value)
+    case value
+    when Date then value.to_s
+    when Numeric then value.to_s
+    else value.presence.to_s.presence
+    end
   end
 
   # ====================================================
