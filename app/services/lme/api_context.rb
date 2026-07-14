@@ -24,10 +24,16 @@ module Lme
       @basic_url = nil
     end
 
+    # 保存済みLMEセッションの有効期限。過ぎたらキャッシュ削除（使用前に必ずHTTPで有効性検証もする）。
+    LME_SESSION_TTL = 12.hours
+
     # --- ログイン & /basic の Cookie/XSRF 確立（LoginUserService = Selenium） ------
-    # LoginUserService#fetch_friend_history が Selenium でログイン完了し、
-    # cookies / cookie_header / basic_xsrf / driver / basic_url を返す前提。
+    # ★ 毎回 Selenium+2Captcha でログインすると 2Captcha 残高を消費するため、
+    #   有効なセッション(Cookie)がキャッシュにあれば再ログインせず再利用する。
+    #   有効性チェックは HTTP のみ（2Captcha/Selenium を使わない）。
     def login_with_google!(email:, password:, api_key:)
+      return self if restore_session_from_cache!
+
       login  = Lme::LoginUserService.new(email: email, password: password, api_key: api_key)
       result = login.fetch_friend_history
 
@@ -49,7 +55,13 @@ module Lme
       raise 'xsrf_cookie missing'   if xsrf_cookie.blank?
 
       @xsrf_header = cookie_service.decode_xsrf(xsrf_cookie)
+      save_session_to_cache!
       self
+    end
+
+    # 有効なセッションが失効/壊れた時に呼ぶ（キャッシュを消して次回フルログインさせる）
+    def invalidate_session_cache!
+      Rails.cache.delete(session_cache_key)
     end
 
     # --- CSRFメタ確立：HTTP→失敗時 Selenium（Playwrightは使わない） -------------
@@ -115,6 +127,59 @@ module Lme
     end
 
     private
+
+    # bot ごとにセッションを1本キャッシュ（同じbotを使う全ワーカーで共有）
+    def session_cache_key
+      "lme_session:#{@bot_id.presence || 'default'}"
+    end
+
+    # キャッシュのセッションを復元し、HTTPで有効性を確認できたら true（＝再ログイン不要）
+    def restore_session_from_cache!
+      data = Rails.cache.read(session_cache_key)
+      return false if data.blank? || data[:cookie_header].blank?
+
+      @login_cookies = data[:login_cookies]
+      @cookie_header = data[:cookie_header]
+      @xsrf_header   = data[:xsrf_header]
+      @csrf_meta     = data[:csrf_meta]
+      @basic_url     = data[:basic_url]
+      @driver        = nil # 再利用時はSeleniumドライバを持たない
+
+      # /basic 系ページから csrf-meta を引けるか＝セッション+LOAが生きているか（HTTPのみ）
+      meta, src = cookie_service.fetch_csrf_meta_with_cookies(
+        @cookie_header, ['/basic/overview', '/admin/home', '/basic/friendlist', '/basic']
+      )
+      if meta.present?
+        @csrf_meta = meta
+        Rails.logger.info("[ApiContext] 保存済みLMEセッションを再利用（再ログイン/2Captchaなし） src=#{src}")
+        return true
+      end
+
+      Rails.logger.info('[ApiContext] 保存済みLMEセッションが無効 → 通常ログインへ')
+      Rails.cache.delete(session_cache_key)
+      false
+    rescue => e
+      Rails.logger.warn("[ApiContext] セッション復元に失敗（通常ログインへ）: #{e.class} #{e.message}")
+      false
+    end
+
+    # ログイン成功時にセッションをキャッシュへ保存
+    def save_session_to_cache!
+      Rails.cache.write(
+        session_cache_key,
+        {
+          login_cookies: @login_cookies,
+          cookie_header: @cookie_header,
+          xsrf_header:   @xsrf_header,
+          csrf_meta:     @csrf_meta,
+          basic_url:     @basic_url
+        },
+        expires_in: LME_SESSION_TTL
+      )
+      Rails.logger.info("[ApiContext] LMEセッションを保存（#{(LME_SESSION_TTL / 3600).to_i}h有効）")
+    rescue => e
+      Rails.logger.warn("[ApiContext] セッション保存に失敗: #{e.class} #{e.message}")
+    end
 
     def close_driver_if_needed!
       return unless ENV['LME_CLOSE_DRIVER_AFTER_META'].to_s == '1'
