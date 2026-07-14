@@ -903,28 +903,31 @@ module Lme
       )
     end
 
+    # ダッシュボードの内容を山田さんスプレッドシートへコピー。
+    # コピー先が未共有(403)等でも本体バッチを落とさないよう保護する。
     def copy_to_yamada_sheet!(service, spreadsheet_id, dashboard_sheet_name)
-      dashboard_range = "'#{dashboard_sheet_name}'!A1:Z100"  # ここでシート名と範囲を指定
+      target_spreadsheet_id = ENV['LME_YAMADA_COUNT_SPREADSHEET_ID']
+      target_sheet_name     = ENV['LME_YAMADA_COUNT_SPREADSHEET_NAME']
+      if target_spreadsheet_id.blank? || target_sheet_name.blank?
+        Rails.logger.warn('[Counts] Yamadaコピー先ENV未設定のためスキップ')
+        return
+      end
 
-      # ダッシュボードシートのデータを取得
-      dashboard_data = service.get_spreadsheet_values(spreadsheet_id, dashboard_range)
+      dashboard_data = service.get_spreadsheet_values(spreadsheet_id, "'#{dashboard_sheet_name}'!A1:Z100")
+      values = dashboard_data.values
+      return if values.blank?
 
-      # 環境変数からスプレッドシートIDを取得
-      target_spreadsheet_id = ENV['LME_YAMADA_COUNT_SPREADSHEET_ID']  # 環境変数からコピー先のIDを取得
-
-      # 環境変数からシート名を取得
-      target_sheet_name = ENV['LME_YAMADA_COUNT_SPREADSHEET_NAME']  # 環境変数からシート名を取得
-
-      # コピー先のシートと範囲を指定
-      target_range = "'#{target_sheet_name}'!A1:Z100"  # シート名と範囲を動的に指定
-
-      # データをコピー先シートに書き込み
+      # 起点セル(A1)のみ指定で実データ分だけ書き込む（固定A1:Z100はデータ数と不一致になりうる）
       service.update_spreadsheet_value(
         target_spreadsheet_id,
-        target_range,
-        Google::Apis::SheetsV4::ValueRange.new(values: dashboard_data.values),
+        "'#{target_sheet_name}'!A1",
+        Google::Apis::SheetsV4::ValueRange.new(values: values),
         value_input_option: 'USER_ENTERED'
       )
+      Rails.logger.info('[Counts] Yamadaシートへコピー完了')
+    rescue Google::Apis::ClientError => e
+      # 403(未共有)や範囲エラーで本体を止めない
+      Rails.logger.warn("[Counts] Yamadaコピーをスキップ（本体は継続）: #{e.message} #{e.body.to_s.gsub(/\s+/, ' ')[0, 200]}")
     end
   end
 end
