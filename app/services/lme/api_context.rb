@@ -24,15 +24,16 @@ module Lme
       @basic_url = nil
     end
 
-    # 保存済みLMEセッションの有効期限。過ぎたらキャッシュ削除（使用前に必ずHTTPで有効性検証もする）。
+    # 保存済みLMEセッションの有効期限。過ぎたら再ログイン（使用前に必ずHTTPで有効性検証もする）。
     LME_SESSION_TTL = 12.hours
 
     # --- ログイン & /basic の Cookie/XSRF 確立（LoginUserService = Selenium） ------
     # ★ 毎回 Selenium+2Captcha でログインすると 2Captcha 残高を消費するため、
-    #   有効なセッション(Cookie)がキャッシュにあれば再ログインせず再利用する。
+    #   有効なセッション(Cookie)を DB(lme_sessions) に保存し、次回は再利用する。
     #   有効性チェックは HTTP のみ（2Captcha/Selenium を使わない）。
+    #   セッションが無効/期限切れの時だけ通常ログイン（＝再ログイン処理）を行う。
     def login_with_google!(email:, password:, api_key:)
-      return self if restore_session_from_cache!
+      return self if restore_session_from_db!
 
       login  = Lme::LoginUserService.new(email: email, password: password, api_key: api_key)
       result = login.fetch_friend_history
@@ -55,13 +56,15 @@ module Lme
       raise 'xsrf_cookie missing'   if xsrf_cookie.blank?
 
       @xsrf_header = cookie_service.decode_xsrf(xsrf_cookie)
-      save_session_to_cache!
+      save_session_to_db!
       self
     end
 
-    # 有効なセッションが失効/壊れた時に呼ぶ（キャッシュを消して次回フルログインさせる）
-    def invalidate_session_cache!
-      Rails.cache.delete(session_cache_key)
+    # 有効なセッションが失効/壊れた時に呼ぶ（DBを消して次回フルログインさせる）
+    def invalidate_session!
+      LmeSession.where(bot_id: @bot_id).delete_all
+    rescue => e
+      Rails.logger.warn("[ApiContext] セッション削除に失敗: #{e.class} #{e.message}")
     end
 
     # --- CSRFメタ確立：HTTP→失敗時 Selenium（Playwrightは使わない） -------------
@@ -128,57 +131,88 @@ module Lme
 
     private
 
-    # bot ごとにセッションを1本キャッシュ（同じbotを使う全ワーカーで共有）
-    def session_cache_key
-      "lme_session:#{@bot_id.presence || 'default'}"
-    end
+    # DBの保存済みセッションを復元し、HTTPで有効性を確認できたら true（＝再ログイン不要）。
+    # 期限切れ・無効なら false を返し、呼び出し側で通常ログイン（再ログイン処理）が走る。
+    def restore_session_from_db!
+      row = LmeSession.find_by(bot_id: @bot_id)
+      return false if row.nil? || row.cookie_header.blank?
 
-    # キャッシュのセッションを復元し、HTTPで有効性を確認できたら true（＝再ログイン不要）
-    def restore_session_from_cache!
-      data = Rails.cache.read(session_cache_key)
-      return false if data.blank? || data[:cookie_header].blank?
+      if row.expired?
+        Rails.logger.info('[ApiContext] DBのLMEセッションが期限切れ → 再ログイン')
+        return false
+      end
 
-      @login_cookies = data[:login_cookies]
-      @cookie_header = data[:cookie_header]
-      @xsrf_header   = data[:xsrf_header]
-      @csrf_meta     = data[:csrf_meta]
-      @basic_url     = data[:basic_url]
+      @login_cookies = symbolize_login_cookies(row.login_cookies)
+      @cookie_header = row.cookie_header
+      @xsrf_header   = row.xsrf_header
+      @csrf_meta     = row.csrf_meta
+      @basic_url     = row.basic_url
       @driver        = nil # 再利用時はSeleniumドライバを持たない
 
-      # /basic 系ページから csrf-meta を引けるか＝セッション+LOAが生きているか（HTTPのみ）
-      meta, src = cookie_service.fetch_csrf_meta_with_cookies(
-        @cookie_header, ['/basic/overview', '/admin/home', '/basic/friendlist', '/basic']
-      )
-      if meta.present?
-        @csrf_meta = meta
-        Rails.logger.info("[ApiContext] 保存済みLMEセッションを再利用（再ログイン/2Captchaなし） src=#{src}")
+      # 認証済みでしか成功しないAJAXでセッションの生死を判定（HTTPのみ・2Captcha/Selenium不要）
+      if session_alive?
+        Rails.logger.info('[ApiContext] DBのLMEセッションを再利用（再ログイン/2Captchaなし）')
         return true
       end
 
-      Rails.logger.info('[ApiContext] 保存済みLMEセッションが無効 → 通常ログインへ')
-      Rails.cache.delete(session_cache_key)
+      Rails.logger.info('[ApiContext] DBのLMEセッションが無効 → 再ログイン')
       false
     rescue => e
-      Rails.logger.warn("[ApiContext] セッション復元に失敗（通常ログインへ）: #{e.class} #{e.message}")
+      Rails.logger.warn("[ApiContext] セッション復元に失敗（再ログインへ）: #{e.class} #{e.message}")
       false
     end
 
-    # ログイン成功時にセッションをキャッシュへ保存
-    def save_session_to_cache!
-      Rails.cache.write(
-        session_cache_key,
-        {
-          login_cookies: @login_cookies,
-          cookie_header: @cookie_header,
-          xsrf_header:   @xsrf_header,
-          csrf_meta:     @csrf_meta,
-          basic_url:     @basic_url
-        },
-        expires_in: LME_SESSION_TTL
-      )
-      Rails.logger.info("[ApiContext] LMEセッションを保存（#{(LME_SESSION_TTL / 3600).to_i}h有効）")
+    # 認証済みでしか {status:true, groups:[...]} を返さないAJAXで、セッションの生死を判定
+    def session_alive?
+      conn = Faraday.new(url: origin) { |f| f.adapter Faraday.default_adapter }
+      res = conn.post('/ajax/get-list-group-landing') do |req|
+        req.headers['accept']           = 'application/json, text/plain, */*'
+        req.headers['content-type']     = 'application/x-www-form-urlencoded; charset=UTF-8'
+        req.headers['x-requested-with'] = 'XMLHttpRequest'
+        req.headers['x-csrf-token']     = @csrf_meta.to_s
+        req.headers['cookie']           = effective_cookie_header
+        req.headers['referer']          = "#{origin}/basic/landing"
+        req.body = ''
+      end
+      body = res.body.to_s
+      res.status == 200 && body.lstrip.start_with?('{') && body.include?('"groups"')
     rescue => e
-      Rails.logger.warn("[ApiContext] セッション保存に失敗: #{e.class} #{e.message}")
+      Rails.logger.debug("[ApiContext] session_alive? 判定失敗: #{e.class} #{e.message}")
+      false
+    end
+
+    # AJAX認証用の完全なCookie（login_cookiesがあれば優先、無ければ sanitized cookie_header）
+    def effective_cookie_header
+      if @login_cookies.is_a?(Array) && @login_cookies.any?
+        return @login_cookies.map { |c| "#{c[:name]}=#{c[:value]}" }.join('; ')
+      end
+
+      @cookie_header.to_s
+    end
+
+    # ログイン成功時にセッションを DB(lme_sessions) へ保存（bot単位でupsert）
+    def save_session_to_db!
+      row = LmeSession.find_or_initialize_by(bot_id: @bot_id)
+      row.assign_attributes(
+        cookie_header: @cookie_header,
+        xsrf_header:   @xsrf_header,
+        csrf_meta:     @csrf_meta,
+        basic_url:     @basic_url,
+        login_cookies: @login_cookies,
+        last_login_at: Time.current,
+        expires_at:    Time.current + LME_SESSION_TTL
+      )
+      row.save!
+      Rails.logger.info("[ApiContext] LMEセッションをDB保存（#{(LME_SESSION_TTL / 3600).to_i}h有効）")
+    rescue => e
+      Rails.logger.warn("[ApiContext] セッションDB保存に失敗（本処理は継続）: #{e.class} #{e.message}")
+    end
+
+    # jsonb から読んだ login_cookies を [{name:, value:}] のシンボルキーに戻す
+    def symbolize_login_cookies(cookies)
+      return cookies unless cookies.is_a?(Array)
+
+      cookies.map { |c| c.is_a?(Hash) ? c.transform_keys(&:to_sym) : c }
     end
 
     def close_driver_if_needed!
