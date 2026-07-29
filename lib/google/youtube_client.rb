@@ -11,9 +11,9 @@ class Google::YoutubeClient
   # ------------------------------------------------------
   SCOPE = [
     Google::Apis::YoutubeV3::AUTH_YOUTUBE_READONLY,
-    Google::Apis::YoutubeV3::AUTH_YOUTUBE_FORCE_SSL
-    # 必要なら Analytics 用もここに追加
-    # Google::Apis::YoutubeAnalyticsV2::AUTH_YT_ANALYTICS_READONLY,
+    Google::Apis::YoutubeV3::AUTH_YOUTUBE_FORCE_SSL,
+    # インプレッション数/CTR など reports.query の取得に必要
+    Google::Apis::YoutubeAnalyticsV2::AUTH_YT_ANALYTICS_READONLY
   ].freeze
 
   # ------------------------------------------------------

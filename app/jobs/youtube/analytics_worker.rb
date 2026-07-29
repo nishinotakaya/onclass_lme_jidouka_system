@@ -1,5 +1,6 @@
 # app/jobs/youtube/analytics_worker.rb
 require "google/apis/youtube_v3"
+require "google/apis/youtube_analytics_v2"
 require "google/apis/sheets_v4"
 require "googleauth"
 require "json"
@@ -7,6 +8,9 @@ require "json"
 class Youtube::AnalyticsWorker
   include Sidekiq::Worker
   sidekiq_options queue: "youtube_analytics"
+
+  # v2 Analytics のサムネイルインプレッション系メトリクス（2026-01-15 に API へ追加）
+  THUMBNAIL_IMPRESSION_METRICS = "videoThumbnailImpressions,videoThumbnailImpressionsClickRate".freeze
 
   # 引数:
   #   spreadsheet_url_arg : 出力先スプレッドシート URL / ID（nil なら ENV）
@@ -29,6 +33,12 @@ class Youtube::AnalyticsWorker
     videos = fetch_all_public_videos(youtube)
     Rails.logger.info("[YouTubeAnalytics] public_videos_count=#{videos.size}")
 
+    # v2 Analytics: サムネイルのインプレッション数 / CTR（動画ID => [インプレッション数, CTR%]）
+    analytics = Google::Apis::YoutubeAnalyticsV2::YouTubeAnalyticsService.new
+    analytics.authorization = auth
+    impressions_by_video_id = fetch_thumbnail_impressions_by_video_id(analytics, videos.map(&:id))
+    Rails.logger.info("[YouTubeAnalytics] impressions_rows=#{impressions_by_video_id.size}")
+
     # 1動画あたり取得するコメントの最大件数
     max_comments_per_video = 20
 
@@ -42,6 +52,8 @@ class Youtube::AnalyticsWorker
       "公開日",
       "視聴回数",
       "高評価数",
+      "インプレッション数",
+      "インプレッションCTR(%)",
       "アナリティクスURL"
     ] + (1..max_comments_per_video).map { |i| "コメント#{i}" }
 
@@ -69,6 +81,9 @@ class Youtube::AnalyticsWorker
 
       view_count    = (stats&.view_count || 0).to_i
       like_count    = (stats&.like_count || 0).to_i
+
+      impressions, impressions_click_rate_percent =
+        impressions_by_video_id[vid] || [nil, nil]
 
       # ---------- 出演者判定（description 内の最初の URL） ----------
       desc      = snippet.description.to_s
@@ -154,6 +169,8 @@ class Youtube::AnalyticsWorker
         publish_date,
         view_count,
         like_count,
+        impressions,
+        impressions_click_rate_percent,
         analytics_link_cell,
         *comment_cells
       ]
@@ -173,7 +190,7 @@ class Youtube::AnalyticsWorker
     sheets = build_sheets_service
     ensure_sheet_exists!(sheets, spreadsheet_id, sheet_name)
 
-    # 列はコメント含めると AA 列まで使うので、少し余裕を見てクリア
+    # 列はコメント含めると AC 列（固定9列＋コメント20列）まで使うので、少し余裕を見てクリア
     clear_req   = Google::Apis::SheetsV4::ClearValuesRequest.new
     clear_range = "#{sheet_name}!A:AZ"
 
@@ -284,6 +301,42 @@ class Youtube::AnalyticsWorker
     end
 
     videos
+  end
+
+  # --------------------------------
+  # v2 Analytics: サムネイルのインプレッション数 / CTR
+  # 失敗しても本体のシート書き込みは続行する（該当列が空になるだけ）。
+  # ただしスコープ不足(403)やメトリクス名誤り(400)は恒久失敗なので error で可視化する。
+  # --------------------------------
+  def fetch_thumbnail_impressions_by_video_id(analytics, video_ids)
+    channel_id    = ENV["YOUTUBE_CHANNEL_ID"].to_s.strip
+    analytics_ids = channel_id.present? ? "channel==#{channel_id}" : "channel==MINE"
+    end_date      = Time.current.in_time_zone("Asia/Tokyo").to_date.to_s
+
+    impressions_by_video_id = {}
+    video_ids.each_slice(200) do |ids|
+      response = analytics.query_report(
+        ids:         analytics_ids,
+        start_date:  "2012-01-01",
+        end_date:    end_date,
+        metrics:     THUMBNAIL_IMPRESSION_METRICS,
+        dimensions:  "video",
+        filters:     "video==#{ids.join(',')}",
+        max_results: 200
+      )
+      (response.rows || []).each do |video_id, impressions, click_rate|
+        # click_rate は 0〜1 の比率で返る想定なので % 表記へ変換
+        impressions_by_video_id[video_id] = [impressions.to_i, (click_rate.to_f * 100).round(2)]
+      end
+    rescue Google::Apis::ClientError => e
+      # 400=メトリクス名誤り / 403=yt-analytics.readonly スコープ未付与（要・再OAuth同意）
+      Rails.logger.error("[YouTubeAnalytics] impressions query failed (#{ids.first}..#{ids.last}): #{e.status_code} #{e.message}")
+    end
+
+    if impressions_by_video_id.empty? && video_ids.any?
+      Rails.logger.error("[YouTubeAnalytics] impressions が全件取得できていません。スコープ/メトリクス名を確認してください（インプレッション2列は空のまま書き込まれます）")
+    end
+    impressions_by_video_id
   end
 
   # --------------------------------
