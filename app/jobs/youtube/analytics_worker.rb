@@ -1,6 +1,5 @@
 # app/jobs/youtube/analytics_worker.rb
 require "google/apis/youtube_v3"
-require "google/apis/youtube_analytics_v2"
 require "google/apis/sheets_v4"
 require "googleauth"
 require "json"
@@ -9,8 +8,8 @@ class Youtube::AnalyticsWorker
   include Sidekiq::Worker
   sidekiq_options queue: "youtube_analytics"
 
-  # v2 Analytics のサムネイルインプレッション系メトリクス（2026-01-15 に API へ追加）
-  THUMBNAIL_IMPRESSION_METRICS = "videoThumbnailImpressions,videoThumbnailImpressionsClickRate".freeze
+  # インプレッション集計の対象期間（Reporting API の日次リーチレポートを合算する日数）
+  IMPRESSION_AGGREGATION_DAYS = 30
 
   # 引数:
   #   spreadsheet_url_arg : 出力先スプレッドシート URL / ID（nil なら ENV）
@@ -33,10 +32,8 @@ class Youtube::AnalyticsWorker
     videos = fetch_all_public_videos(youtube)
     Rails.logger.info("[YouTubeAnalytics] public_videos_count=#{videos.size}")
 
-    # v2 Analytics: サムネイルのインプレッション数 / CTR（動画ID => [インプレッション数, CTR%]）
-    analytics = Google::Apis::YoutubeAnalyticsV2::YouTubeAnalyticsService.new
-    analytics.authorization = auth
-    impressions_by_video_id = fetch_thumbnail_impressions_by_video_id(analytics, videos.map(&:id))
+    # Reporting API: サムネイルのインプレッション数 / CTR（動画ID => [インプレッション数, CTR%]）
+    impressions_by_video_id = fetch_thumbnail_impressions_by_video_id(auth)
     Rails.logger.info("[YouTubeAnalytics] impressions_rows=#{impressions_by_video_id.size}")
 
     # 1動画あたり取得するコメントの最大件数
@@ -52,8 +49,8 @@ class Youtube::AnalyticsWorker
       "公開日",
       "視聴回数",
       "高評価数",
-      "インプレッション数",
-      "インプレッションCTR(%)",
+      "インプレッション数(直近30日)",
+      "インプレッションCTR%(直近30日)",
       "アナリティクスURL"
     ] + (1..max_comments_per_video).map { |i| "コメント#{i}" }
 
@@ -304,39 +301,39 @@ class Youtube::AnalyticsWorker
   end
 
   # --------------------------------
-  # v2 Analytics: サムネイルのインプレッション数 / CTR
-  # 失敗しても本体のシート書き込みは続行する（該当列が空になるだけ）。
-  # ただしスコープ不足(403)やメトリクス名誤り(400)は恒久失敗なので error で可視化する。
+  # Reporting API: サムネイルのインプレッション数 / CTR
+  # 日次の channel_reach_basic_a1 レポートを直近30日分合算する。
+  # レポートはジョブ作成の約2日後から生成されるため、未生成の間は空Hashを返し、
+  # インプレッション2列は空のままシート書き込みを続行する。
   # --------------------------------
-  def fetch_thumbnail_impressions_by_video_id(analytics, video_ids)
-    channel_id    = ENV["YOUTUBE_CHANNEL_ID"].to_s.strip
-    analytics_ids = channel_id.present? ? "channel==#{channel_id}" : "channel==MINE"
-    end_date      = Time.current.in_time_zone("Asia/Tokyo").to_date.to_s
+  def fetch_thumbnail_impressions_by_video_id(authorization)
+    reporting  = Google::YoutubeReportingClient.new(authorization)
+    daily_rows = reporting.recent_reach_rows(days: IMPRESSION_AGGREGATION_DAYS)
 
-    impressions_by_video_id = {}
-    video_ids.each_slice(200) do |ids|
-      response = analytics.query_report(
-        ids:         analytics_ids,
-        start_date:  "2012-01-01",
-        end_date:    end_date,
-        metrics:     THUMBNAIL_IMPRESSION_METRICS,
-        dimensions:  "video",
-        filters:     "video==#{ids.join(',')}",
-        max_results: 200
-      )
-      (response.rows || []).each do |video_id, impressions, click_rate|
-        # click_rate は 0〜1 の比率で返る想定なので % 表記へ変換
-        impressions_by_video_id[video_id] = [impressions.to_i, (click_rate.to_f * 100).round(2)]
-      end
-    rescue Google::Apis::ClientError => e
-      # 400=メトリクス名誤り / 403=yt-analytics.readonly スコープ未付与（要・再OAuth同意）
-      Rails.logger.error("[YouTubeAnalytics] impressions query failed (#{ids.first}..#{ids.last}): #{e.status_code} #{e.message}")
+    if daily_rows.empty?
+      Rails.logger.info("[YouTubeAnalytics] reachレポート未生成（ジョブ作成〜約2日はデータなし）。インプレッション2列は空で続行")
+      return {}
     end
 
-    if impressions_by_video_id.empty? && video_ids.any?
-      Rails.logger.error("[YouTubeAnalytics] impressions が全件取得できていません。スコープ/メトリクス名を確認してください（インプレッション2列は空のまま書き込まれます）")
+    impressions_and_clicks = Hash.new { |totals, video_id| totals[video_id] = { impressions: 0, clicks: 0.0 } }
+    daily_rows.each do |daily_row|
+      video_id = daily_row["video_id"].to_s
+      next if video_id.empty?
+
+      impressions = daily_row["video_thumbnail_impressions"].to_i
+      click_rate  = daily_row["video_thumbnail_impressions_ctr"].to_f # 0〜1 の比率想定（初回データ到着時に要実測確認）
+      impressions_and_clicks[video_id][:impressions] += impressions
+      impressions_and_clicks[video_id][:clicks]      += impressions * click_rate
     end
-    impressions_by_video_id
+
+    impressions_and_clicks.transform_values do |total|
+      impressions        = total[:impressions]
+      click_rate_percent = impressions.positive? ? (total[:clicks] / impressions * 100).round(2) : nil
+      [impressions, click_rate_percent]
+    end
+  rescue Google::YoutubeReportingClient::ApiError => e
+    Rails.logger.error("[YouTubeAnalytics] impressions(reachレポート)取得失敗: #{e.message}")
+    {}
   end
 
   # --------------------------------
