@@ -1,5 +1,6 @@
 # app/jobs/youtube/analytics_worker.rb
 require "google/apis/youtube_v3"
+require "google/apis/youtube_analytics_v2"
 require "google/apis/sheets_v4"
 require "googleauth"
 require "json"
@@ -10,6 +11,12 @@ class Youtube::AnalyticsWorker
 
   # インプレッション集計の対象期間（Reporting API の日次リーチレポートを合算する日数）
   IMPRESSION_AGGREGATION_DAYS = 30
+
+  # チャンネル登録増加数の「直近」集計期間（インプレッションと揃える）
+  SUBSCRIBERS_RECENT_DAYS = IMPRESSION_AGGREGATION_DAYS
+
+  # 「累計」クエリの開始日（YouTube 開設以前ならいつでもよい）
+  ANALYTICS_LIFETIME_START_DATE = "2005-02-01".freeze
 
   # 引数:
   #   spreadsheet_url_arg : 出力先スプレッドシート URL / ID（nil なら ENV）
@@ -36,6 +43,11 @@ class Youtube::AnalyticsWorker
     impressions_by_video_id = fetch_thumbnail_impressions_by_video_id(auth)
     Rails.logger.info("[YouTubeAnalytics] impressions_rows=#{impressions_by_video_id.size}")
 
+    # Analytics API: 動画をきっかけにしたチャンネル登録増加数（動画ID => [累計, 直近30日]）
+    subscribers_gained_by_video_id =
+      fetch_subscribers_gained_by_video_id(auth, videos.map(&:id))
+    Rails.logger.info("[YouTubeAnalytics] subscribers_gained_rows=#{subscribers_gained_by_video_id.size}")
+
     # 1動画あたり取得するコメントの最大件数
     max_comments_per_video = 20
 
@@ -49,6 +61,8 @@ class Youtube::AnalyticsWorker
       "公開日",
       "視聴回数",
       "高評価数",
+      "チャンネル登録増加数(累計)",
+      "チャンネル登録増加数(直近30日)",
       "インプレッション数(直近30日)",
       "インプレッションCTR%(直近30日)",
       "アナリティクスURL"
@@ -81,6 +95,9 @@ class Youtube::AnalyticsWorker
 
       impressions, impressions_click_rate_percent =
         impressions_by_video_id[vid] || [nil, nil]
+
+      subscribers_gained_lifetime, subscribers_gained_recent =
+        subscribers_gained_by_video_id[vid] || [nil, nil]
 
       # ---------- 出演者判定（description 内の最初の URL） ----------
       desc      = snippet.description.to_s
@@ -166,6 +183,8 @@ class Youtube::AnalyticsWorker
         publish_date,
         view_count,
         like_count,
+        subscribers_gained_lifetime,
+        subscribers_gained_recent,
         impressions,
         impressions_click_rate_percent,
         analytics_link_cell,
@@ -187,7 +206,7 @@ class Youtube::AnalyticsWorker
     sheets = build_sheets_service
     ensure_sheet_exists!(sheets, spreadsheet_id, sheet_name)
 
-    # 列はコメント含めると AC 列（固定9列＋コメント20列）まで使うので、少し余裕を見てクリア
+    # 列はコメント含めると AE 列（固定11列＋コメント20列）まで使うので、少し余裕を見てクリア
     clear_req   = Google::Apis::SheetsV4::ClearValuesRequest.new
     clear_range = "#{sheet_name}!A:AZ"
 
@@ -334,6 +353,62 @@ class Youtube::AnalyticsWorker
   rescue Google::YoutubeReportingClient::ApiError => e
     Rails.logger.error("[YouTubeAnalytics] impressions(reachレポート)取得失敗: #{e.message}")
     {}
+  end
+
+  # --------------------------------
+  # Analytics API: 動画をきっかけにしたチャンネル登録増加数（subscribersGained）
+  # 動画ID => [累計, 直近30日] の Hash を返す。取得失敗時は空Hash
+  # （＝該当2列は空のままシート書き込みを続行する）。
+  # --------------------------------
+  def fetch_subscribers_gained_by_video_id(authorization, video_ids)
+    return {} if video_ids.empty?
+
+    analytics = Google::Apis::YoutubeAnalyticsV2::YouTubeAnalyticsService.new
+    analytics.authorization = authorization
+
+    today_jp = Time.current.in_time_zone("Asia/Tokyo").to_date
+
+    lifetime_by_video_id = query_subscribers_gained(
+      analytics, video_ids,
+      start_date: ANALYTICS_LIFETIME_START_DATE,
+      end_date:   today_jp.to_s
+    )
+    recent_by_video_id = query_subscribers_gained(
+      analytics, video_ids,
+      start_date: (today_jp - SUBSCRIBERS_RECENT_DAYS).to_s,
+      end_date:   today_jp.to_s
+    )
+
+    # クエリ成功時、レポートに行が無い動画は登録増 0 とみなす
+    video_ids.index_with do |video_id|
+      [lifetime_by_video_id.fetch(video_id, 0), recent_by_video_id.fetch(video_id, 0)]
+    end
+  rescue Google::Apis::ClientError, Google::Apis::AuthorizationError => e
+    Rails.logger.error("[YouTubeAnalytics] subscribersGained取得失敗: #{e.message}")
+    {}
+  end
+
+  # reports.query は video フィルタを1回あたり最大500件までしか受け付けないため分割して合算
+  def query_subscribers_gained(analytics, video_ids, start_date:, end_date:)
+    gained_by_video_id = {}
+
+    video_ids.each_slice(500) do |sliced_video_ids|
+      response = analytics.query_report(
+        ids:         "channel==MINE",
+        start_date:  start_date,
+        end_date:    end_date,
+        metrics:     "subscribersGained",
+        dimensions:  "video",
+        filters:     "video==#{sliced_video_ids.join(',')}",
+        max_results: sliced_video_ids.size
+      )
+
+      (response.rows || []).each do |video_id, gained|
+        gained_by_video_id[video_id.to_s] = gained.to_i
+      end
+    end
+
+    gained_by_video_id
   end
 
   # --------------------------------
