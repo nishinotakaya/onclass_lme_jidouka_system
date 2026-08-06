@@ -29,7 +29,37 @@ class Youtube::CompetitorWorker
     { name: "いまにゅのAIプログラミング塾",          url: "https://www.youtube.com/@imanyu_programming" },
     { name: "プログラミングチュートリアル",          url: "https://www.youtube.com/@programming_tutorial_youtube" },
     { name: "PythonプログラミングVTuber サプー",     url: "https://www.youtube.com/@pythonvtuber9917" },
-    { name: "IT菩薩モロー",                          url: "https://www.youtube.com/@it_bosatsu_moro" }
+    { name: "IT菩薩モロー",                          url: "https://www.youtube.com/@it_bosatsu_moro" },
+    # ---- 2026-08-06 リサーチ追加分（スクール・サービス公式）----
+    { name: "侍エンジニア",                          url: "https://www.youtube.com/@samuraiengineer" },
+    { name: "デイトラ",                              url: "https://www.youtube.com/@daily-trial" },
+    { name: "RaiseTech公式",                         url: "https://www.youtube.com/@raisetech-official" },
+    { name: "Winスクール",                           url: "https://www.youtube.com/@-win1293" },
+    { name: "シーライクスTV",                        url: "https://www.youtube.com/@sheofficial0411" },
+    { name: "paiza公式",                             url: "https://www.youtube.com/@paiza_official" },
+    { name: "レバテック",                            url: "https://www.youtube.com/@levtech_official" },
+    { name: "ポテパン はじめてのプログラミング",     url: "https://www.youtube.com/@potepanda" },
+    # ---- 2026-08-06 リサーチ追加分（エンジニア転職・キャリア）----
+    { name: "だれでもエンジニア / 山浦清透",         url: "https://www.youtube.com/@KiyotoUniv" },
+    { name: "エンジニアファースト",                  url: "https://www.youtube.com/@engineer_first" },
+    { name: "SESチャンネル",                         url: "https://www.youtube.com/@SES_CH" },
+    { name: "エンジニアの裏話",                      url: "https://www.youtube.com/@Engineer_InsideStory" },
+    { name: "せお丸@AI駆動開発",                     url: "https://www.youtube.com/@seomaru" },
+    # ---- 2026-08-06 リサーチ追加分（プログラミング学習・IT教育）----
+    { name: "ITすきま教室",                          url: "https://www.youtube.com/@itsukima" },
+    { name: "ともすた",                              url: "https://www.youtube.com/@tomosta" },
+    { name: "ムーザルちゃんねる",                    url: "https://www.youtube.com/@moozaru" },
+    # ---- 2026-08-06 リサーチ追加分（AI活用・生成AI教育）----
+    { name: "KEITO【AI&WEB ch】",                    url: "https://www.youtube.com/@keitoaiweb" },
+    { name: "いけともch",                            url: "https://www.youtube.com/@iketomo-ch" },
+    { name: "mikimiki web スクール",                 url: "https://www.youtube.com/@mikimikiweb" },
+    { name: "にゃんたのAIチャンネル",                url: "https://www.youtube.com/@aivtuber2866" },
+    { name: "さきのAIでええやん",                    url: "https://www.youtube.com/@saki_AI_eyan" },
+    { name: "ここなのAI大学",                        url: "https://www.youtube.com/@cocona_ai_school" },
+    { name: "チャエン【AI研究所】",                  url: "https://www.youtube.com/@chaen-ai-lab" },
+    { name: "AI大学【AI&ChatGPT最新情報】",          url: "https://www.youtube.com/@AIAIChatGPT-cj4sh" },
+    { name: "ジェネトピ | AIラジオ",                 url: "https://www.youtube.com/@genAI-topic" },
+    { name: "AI FREAK",                              url: "https://www.youtube.com/@aifreak_ch" }
   ].freeze
 
   MAX_COMMENTS_PER_VIDEO        = 20
