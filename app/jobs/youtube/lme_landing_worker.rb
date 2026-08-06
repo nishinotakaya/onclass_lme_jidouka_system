@@ -78,6 +78,19 @@ class Youtube::LmeLandingWorker
     videos  = fetch_public_videos(youtube)
     Rails.logger.info("[YoutubeLmeLanding] public_videos_count=#{videos.size}")
 
+    # 動画ID指定の強制実行時は、公開前（限定公開）の動画も対象にする
+    # （公開後に旧URLが露出しないよう、限定公開のうちに差し替えを済ませる運用のため）
+    if video_id_arg.present? && videos.none? { |video| video.id == video_id_arg }
+      forced_video = youtube.list_videos("snippet,status", id: video_id_arg).items.first
+      raise "video not found: #{video_id_arg}" unless forced_video
+
+      privacy_status = forced_video.status&.privacy_status
+      raise "video is private: #{video_id_arg}" if privacy_status == "private"
+
+      Rails.logger.info("[YoutubeLmeLanding] forced video #{video_id_arg} (privacy=#{privacy_status}) を対象に追加")
+      videos << forced_video
+    end
+
     sheets = build_sheets_service
     ensure_sheet_exists!(sheets, spreadsheet_id, map_sheet_name)
     map_rows = load_map_rows(sheets)
