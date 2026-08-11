@@ -20,6 +20,7 @@ Rails.application.routes.draw do
     get  "oauth/authorize", to: "oauth#authorize"
     post "oauth/run_analytics",   to: "oauth#run_analytics"
     post "oauth/run_competitors", to: "oauth#run_competitors"
+    post "oauth/run_love_self_help", to: "oauth#run_love_self_help"
   end
 
   # リダイレクトURI

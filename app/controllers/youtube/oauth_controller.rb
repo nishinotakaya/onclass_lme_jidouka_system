@@ -29,6 +29,15 @@ class Youtube::OauthController < ApplicationController
     else
       @competitors_text_default = ""
     end
+
+    # 恋愛系・自己啓発系リサーチ用：デフォルト値
+    @love_self_help_sheet_id_default   = ENV["YOUTUBE_LOVE_SELF_HELP_SPREADSHEET_ID"]
+    @love_self_help_sheet_name_default = ENV["YOUTUBE_LOVE_SELF_HELP_SHEET_NAME"] || "恋愛系_自己啓発系"
+
+    @love_self_help_text_default =
+      Youtube::LoveSelfHelpWorker::CHANNELS
+        .map { |channel| "#{channel[:name]},#{channel[:url]}" }
+        .join("\n")
   end
 
   # GET /youtube/oauth/authorize
@@ -104,5 +113,23 @@ class Youtube::OauthController < ApplicationController
 
     redirect_to youtube_oauth_path,
                 notice: "競合チャンネル同期（CompetitorWorker）をキューに積みました。"
+  end
+
+  # POST /youtube/oauth/run_love_self_help
+  def run_love_self_help
+    channels_text          = params[:competitors_text].to_s
+    max_videos_per_channel = params[:max_videos_per_channel].to_s
+    spreadsheet_url        = params[:spreadsheet_url].to_s.strip
+    sheet_name             = params[:sheet_name].to_s.strip
+
+    Youtube::LoveSelfHelpWorker.perform_async(
+      channels_text.presence,
+      max_videos_per_channel.presence,
+      spreadsheet_url.presence,
+      sheet_name.presence
+    )
+
+    redirect_to youtube_oauth_path,
+                notice: "恋愛系・自己啓発系リサーチ（LoveSelfHelpWorker）をキューに積みました。"
   end
 end

@@ -83,6 +83,16 @@ youtube_competitors_daily:
   tz: "Asia/Tokyo"
   description: "YouTube競合チャンネルの動画＆コメント収集"
 
+# ★ 恋愛系・自己啓発系チャンネルのリサーチ（本番）
+#   競合(07:45)と同日に走ると YouTube Data API の日次クォータ(10,000)を圧迫するため、
+#   曜日をずらして週1回だけ回す
+youtube_love_self_help_weekly:
+  class: "Youtube::LoveSelfHelpWorker"
+  cron: "0 9 * * 1"   # 毎週月曜 09:00
+  queue: youtube_competitors
+  tz: "Asia/Tokyo"
+  description: "恋愛系・自己啓発系チャンネルの動画＆コメント収集"
+
 # ★ アプリ体験会フォームの日程更新（本番）
 #   毎週木曜20:00に発火→「今日が第2木曜か」を判定し、第2木曜だけ翌月の第2木曜へ更新
 lme_seminar_date_update:

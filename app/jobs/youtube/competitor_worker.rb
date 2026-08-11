@@ -89,7 +89,7 @@ class Youtube::CompetitorWorker
       if competitors_text.present?
         parse_competitors_text(competitors_text)
       else
-        COMPETITORS
+        default_competitors
       end
 
     # 1ch あたりの動画数
@@ -102,15 +102,10 @@ class Youtube::CompetitorWorker
       if spreadsheet_url_arg.present?
         extract_spreadsheet_id_from_url(spreadsheet_url_arg)
       else
-        ENV["YOUTUBE_COMPETITORS_SPREADSHEET_ID"] ||
-          ENV["YOUTUBE_ANALYTICS_SPREADSHEET_ID"] ||
-          raise("YOUTUBE_COMPETITORS_SPREADSHEET_ID も YOUTUBE_ANALYTICS_SPREADSHEET_ID も設定されていません")
+        default_spreadsheet_id
       end
 
-    sheet_name =
-      sheet_name_arg.presence ||
-      ENV["YOUTUBE_COMPETITORS_SHEET_NAME"] ||
-      "YouTube競合"
+    sheet_name = sheet_name_arg.presence || default_sheet_name
 
     Rails.logger.info("[YouTubeCompetitors] channels=#{competitors.size}, max_videos=#{max_videos}, spreadsheet_id=#{spreadsheet_id}, sheet_name=#{sheet_name}")
 
@@ -229,6 +224,21 @@ class Youtube::CompetitorWorker
 
   # ===================== private =====================
   private
+
+  # ---- サブクラスで差し替える既定値（対象リストと出力先だけを変えて再利用する）----
+  def default_competitors
+    COMPETITORS
+  end
+
+  def default_spreadsheet_id
+    ENV["YOUTUBE_COMPETITORS_SPREADSHEET_ID"] ||
+      ENV["YOUTUBE_ANALYTICS_SPREADSHEET_ID"] ||
+      raise("YOUTUBE_COMPETITORS_SPREADSHEET_ID も YOUTUBE_ANALYTICS_SPREADSHEET_ID も設定されていません")
+  end
+
+  def default_sheet_name
+    ENV["YOUTUBE_COMPETITORS_SHEET_NAME"] || "YouTube競合"
+  end
 
   # 画面から渡されたテキスト → [{name:, url:}, ...] に変換
   def parse_competitors_text(text)

@@ -297,6 +297,74 @@
         </div>
       <% end %>
     </div>
+
+    <!-- 恋愛系・自己啓発系リサーチ -->
+    <div class="yt-card">
+      <h2>
+        <span class="icon">💗</span>
+        恋愛系・自己啓発系リサーチ
+        <span class="yt-badge-small">LoveSelfHelpWorker</span>
+      </h2>
+      <p class="desc">
+        恋愛・婚活・自己啓発・メンタル系チャンネルの最新動画とコメントを、競合シートと同じ形式で収集します。
+      </p>
+
+      <%= form_with url: youtube_oauth_run_love_self_help_path, method: :post, local: true do %>
+        <div class="yt-field-group">
+          <label class="yt-label">
+            1チャンネルあたり取得する動画数
+            <span class="yt-tag-pill">デフォルト 50 件</span>
+          </label>
+          <%= select_tag :max_videos_per_channel,
+                         options_for_select([10, 20, 30, 50, 100], 50),
+                         class: "yt-select" %>
+        </div>
+
+        <div class="yt-field-group">
+          <label class="yt-label">
+            出力先スプレッドシート URL（オプション）
+          </label>
+          <small style="color:#6b7280;">未入力なら ENV YOUTUBE_LOVE_SELF_HELP_SPREADSHEET_ID を使用</small>
+          <%= text_field_tag :spreadsheet_url,
+                            nil,
+                            class: "yt-input",
+                            placeholder: (
+                              if @love_self_help_sheet_id_default.present?
+                                "https://docs.google.com/spreadsheets/d/#{@love_self_help_sheet_id_default}/edit"
+                              else
+                                "https://docs.google.com/spreadsheets/d/XXXXXXXXXXXX/edit"
+                              end
+                            ) %>
+        </div>
+
+        <div class="yt-field-group">
+          <label class="yt-label">
+            シート名（タブ名）
+          </label>
+          <%= text_field_tag :sheet_name, @love_self_help_sheet_name_default, class: "yt-input" %>
+        </div>
+
+        <div class="yt-field-group">
+          <label class="yt-label">
+            チャンネル一覧（1行1チャンネル）
+          </label>
+          <small style="color:#6b7280;">
+            形式：<code>名前,URL</code> または <code>URLのみ</code>（空ならデフォルトの一覧を使用）
+          </small>
+          <%= text_area_tag :competitors_text,
+                            nil,
+                            class: "yt-textarea",
+                            placeholder: @love_self_help_text_default %>
+        </div>
+
+        <div style="display:flex; gap:8px; align-items:center; margin-top:6px;">
+          <%= submit_tag "恋愛系・自己啓発系リサーチを実行", class: "yt-button" %>
+          <% unless @authorized %>
+            <%= link_to "YouTube と連携する", youtube_oauth_authorize_path, class: "yt-button yt-button-secondary" %>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
   </div>
 
   <div class="yt-footer-note">
