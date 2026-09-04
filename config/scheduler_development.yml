@@ -87,3 +87,11 @@ youtube_lme_landing_daily:
   queue: youtube_lme_landing
   tz: "Asia/Tokyo"
   description: "新規YouTube動画のLME QRコードアクション作成＆概要欄URL更新"
+
+# ★ 副業案件リサーチ（HTML/CSS・Excel）— 朝だけ実行、メール通知なし（開発）
+freelance_jobs_research_morning:
+  class: "FreelanceJobs::ResearchWorker"
+  cron: "0 6 * * *"   # 毎朝 06:00 のみ
+  queue: freelance_jobs_research
+  tz: "Asia/Tokyo"
+  description: "副業案件（HTML/CSS・Excel）を6サイトから取得しスプレッドシート更新（毎朝6時・メール通知なし・開発）"

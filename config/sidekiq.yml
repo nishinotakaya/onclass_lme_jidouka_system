@@ -16,3 +16,4 @@
   # onclass 専用の sign_in キューだけ用意する。
   - [onclass_sign_in, 1]
   - [lme_seminar, 1]
+  - [freelance_jobs_research, 1]
