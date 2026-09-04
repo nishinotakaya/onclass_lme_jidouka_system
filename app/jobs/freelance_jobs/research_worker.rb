@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # app/jobs/freelance_jobs/research_worker.rb
 #
-# 副業案件リサーチバッチ（未経験向け HTML/CSS・Excel 案件を6サイトから取得し、
+# 副業案件リサーチバッチ（未経験向け HTML/CSS・Excel 案件を各サイトから取得し、
 # Googleスプレッドシートを更新する）。毎朝1回だけ実行、メール通知は行わない。
 
 require "json"

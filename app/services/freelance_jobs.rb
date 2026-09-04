@@ -8,6 +8,9 @@ require "logger"
 module FreelanceJobs
   class FetchError < StandardError; end
 
+  # WAF等のCAPTCHA/チャレンジ応答でアクセス元IPが拒否された場合。リトライしても解消しない。
+  class AccessBlockedError < FetchError; end
+
   def self.logger
     @logger ||= if defined?(::Rails) && ::Rails.respond_to?(:logger) && ::Rails.logger
                   ::Rails.logger

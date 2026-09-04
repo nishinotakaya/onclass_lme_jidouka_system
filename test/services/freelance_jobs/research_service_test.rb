@@ -201,4 +201,82 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     updated_existing_row = written_rows.find { |row| row[5] == existing_url }
     assert_equal "既存の案件名(手入力保持)", updated_existing_row[3], "D列(手入力)は保持される"
   end
+
+  # === D1: ランサーズ本番対象外（WAF CAPTCHA）対応: excluded_sites ===
+
+  def real_fixture_routes_excluding_lancers
+    real_fixture_routes.reject { |host, _| host == "lancers.jp" }
+  end
+
+  def test_call_with_excluded_sites_never_requests_the_excluded_site
+    fetcher = RoutingFakeFetcher.new(routes: real_fixture_routes_excluding_lancers)
+    sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
+
+    service = FreelanceJobs::ResearchService.new(run_window_label: "毎朝 06:00〜06:30（日本時間）",
+                                                  excluded_sites: ["ランサーズ"],
+                                                  fetcher: fetcher, sheets_client: sheets_client, now: NOW)
+    summary = service.call
+
+    refute summary[:aborted]
+    refute fetcher.requested_urls.any? { |requested_url| requested_url.include?("lancers.jp") },
+           "対象外サイトへのリクエストは1件も発生しない想定"
+    assert_equal 5, summary[:succeeded_sites].size
+    assert_equal ["ランサーズ"], summary[:excluded_sites]
+  end
+
+  def test_call_with_excluded_sites_banner_shows_source_count_and_excluded_notice
+    fetcher = RoutingFakeFetcher.new(routes: real_fixture_routes_excluding_lancers)
+    sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
+
+    service = FreelanceJobs::ResearchService.new(run_window_label: "毎朝 06:00〜06:30（日本時間）",
+                                                  excluded_sites: ["ランサーズ"],
+                                                  fetcher: fetcher, sheets_client: sheets_client, now: NOW)
+    summary = service.call
+
+    refute summary[:aborted]
+    banner_text = sheets_client.replace_sheet_calls.first[:banner_text]
+    assert_includes banner_text, "取得元 5サイト（成功 5/5）"
+    assert_includes banner_text, "対象外: ランサーズ（アクセス制限のため自動取得できません）"
+  end
+
+  def test_excluded_sites_from_env_splits_on_full_width_and_half_width_comma_and_trims_whitespace
+    parsed = FreelanceJobs::ResearchService.excluded_sites_from_env("ランサーズ、 ココナラ（公開依頼）")
+
+    assert_equal 2, parsed.size
+    assert_equal ["ランサーズ", "ココナラ（公開依頼）"], parsed
+  end
+
+  def test_excluded_sites_from_env_returns_empty_array_for_blank_value
+    assert_equal [], FreelanceJobs::ResearchService.excluded_sites_from_env("")
+  end
+
+  def test_call_failure_message_omits_error_class_name
+    fetcher = RoutingFakeFetcher.new(routes: real_fixture_routes, raising_hosts: ["craudia.com"])
+    sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
+
+    service = FreelanceJobs::ResearchService.new(run_window_label: "毎朝 06:00〜06:30（日本時間）",
+                                                  fetcher: fetcher, sheets_client: sheets_client, now: NOW)
+    summary = service.call
+
+    assert_equal 1, summary[:failures].size
+    failure_message = summary[:failures].first
+    assert failure_message.start_with?("クラウディア（"), "「サイト名（メッセージ）」形式である想定: #{failure_message}"
+    assert failure_message.end_with?("）"), "全角カッコで閉じる想定: #{failure_message}"
+    refute_includes failure_message, "FetchError", "クラス名はバナーの失敗メッセージに出さない設計"
+  end
+
+  def test_call_continues_when_excluded_sites_has_unknown_site_name
+    fetcher = RoutingFakeFetcher.new(routes: real_fixture_routes)
+    sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
+
+    service = FreelanceJobs::ResearchService.new(run_window_label: "毎朝 06:00〜06:30（日本時間）",
+                                                  excluded_sites: ["存在しないサイト"],
+                                                  fetcher: fetcher, sheets_client: sheets_client, now: NOW)
+    summary = service.call
+
+    refute summary[:aborted]
+    assert_equal 6, summary[:succeeded_sites].size, "未知のサイト名は実在するどのサイトも除外しない"
+    assert_equal [], summary[:excluded_sites], "実在しないサイト名は対象外一覧に含めない"
+    refute_includes sheets_client.replace_sheet_calls.last[:banner_text], "存在しないサイト"
+  end
 end

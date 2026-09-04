@@ -333,4 +333,49 @@ class FreelanceJobsSheetMergerTest < Minitest::Test
       "https://crowdworks.jp/public/jobs/existing-unknown" # 締切不明は最後
     ], ordered_urls
   end
+
+  # === D1: ランサーズ本番対象外（WAF CAPTCHA）対応: excluded_sites ===
+
+  def test_excluded_site_row_with_expired_deadline_is_removed
+    expired_deadline_text = (TODAY - 1).strftime("%Y-%m-%d")
+    lancers_row = row(site: "ランサーズ", url: "https://www.lancers.jp/work/detail/1", deadline_text: expired_deadline_text)
+
+    result = FreelanceJobs::SheetMerger.merge(existing_rows: [lancers_row], new_rows: [],
+                                               succeeded_sites: [], excluded_sites: ["ランサーズ"], today: TODAY)
+
+    assert_equal 1, result.removed
+    assert_equal 0, result.rows.size
+  end
+
+  def test_excluded_site_row_with_future_deadline_is_kept_but_auto_update_columns_stay_unchanged
+    future_deadline_text = (TODAY + 30).strftime("%Y-%m-%d")
+    lancers_row = row(site: "ランサーズ", url: "https://www.lancers.jp/work/detail/2", reward: "OLD_J",
+                       work_format: "OLD_K", application_status: "OLD_L", deadline_text: future_deadline_text,
+                       fetched_on: "OLD_O")
+
+    result = FreelanceJobs::SheetMerger.merge(existing_rows: [lancers_row], new_rows: [],
+                                               succeeded_sites: [], excluded_sites: ["ランサーズ"], today: TODAY)
+
+    assert_equal 0, result.removed
+    assert_equal 0, result.updated
+    assert_equal 1, result.rows.size
+    kept_row = result.rows.first
+    assert_equal "OLD_J", kept_row[9], "J列(報酬)は対象外サイトなら更新されない"
+    assert_equal "OLD_K", kept_row[10], "K列(形式)は対象外サイトなら更新されない"
+    assert_equal "OLD_L", kept_row[11], "L列(応募状況)は対象外サイトなら更新されない"
+    assert_equal future_deadline_text, kept_row[12], "M列(締切)は対象外サイトなら更新されない"
+    assert_equal "OLD_O", kept_row[14], "O列(取得日時)は対象外サイトなら更新されない"
+  end
+
+  def test_row_of_a_site_neither_succeeded_nor_excluded_is_kept_even_when_expired
+    expired_deadline_text = (TODAY - 1).strftime("%Y-%m-%d")
+    shufti_row = row(site: "シュフティ", url: "https://www.shufti.jp/works/detail/1", deadline_text: expired_deadline_text)
+
+    result = FreelanceJobs::SheetMerger.merge(existing_rows: [shufti_row], new_rows: [],
+                                               succeeded_sites: [], excluded_sites: ["ランサーズ"], today: TODAY)
+
+    assert_equal 0, result.removed, "取得失敗サイト(succeededにもexcludedにも無い)の行は締切超過でも削除されない"
+    assert_equal 1, result.rows.size
+    assert_equal "https://www.shufti.jp/works/detail/1", result.rows.first[5]
+  end
 end

@@ -30,9 +30,11 @@ module FreelanceJobs
     Result = Struct.new(:rows, :added, :updated, :removed, :total, keyword_init: true)
 
     # succeeded_sites: 今回取得に成功したサイト表示名の配列。
-    # 失敗したサイトの既存行は、更新も期限切れ削除もせずそのまま残す（A1）。
+    # excluded_sites: 環境変数等で取得対象外にしたサイト表示名の配列（新規行は来ない）。
+    # 取得に失敗したサイトの既存行は、更新も期限切れ削除もせずそのまま残す（A1）。
+    # 対象外サイトの既存行は更新されない（新規行が来ないため）が、期限切れ削除（should_remove?）は適用する。
     # 取得日時（O列）はRowBuilderが構築時点で書き込み済みのため、ここでは受け取らない。
-    def self.merge(existing_rows:, new_rows:, succeeded_sites:, today:)
+    def self.merge(existing_rows:, new_rows:, succeeded_sites:, today:, excluded_sites: [])
       normalized_existing_rows = existing_rows.map { |row| normalize_row(row) }
       deduped_new_rows = dedupe_by_url(new_rows)
       new_rows_by_url = index_by_url(deduped_new_rows)
@@ -64,7 +66,8 @@ module FreelanceJobs
           next
         end
 
-        unless succeeded_sites.include?(row[SITE_COLUMN_INDEX])
+        site_name = row[SITE_COLUMN_INDEX]
+        unless succeeded_sites.include?(site_name) || excluded_sites.include?(site_name)
           surviving_existing_rows << row # 取得失敗サイトの行は触らない
           next
         end

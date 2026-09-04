@@ -4,7 +4,7 @@ require "date"
 require "time"
 
 module FreelanceJobs
-  # 6サイトの取得→分類→整形→既存シートとのマージ→書き込みを束ねるオーケストレーション。
+  # 各サイトの取得→分類→整形→既存シートとのマージ→書き込みを束ねるオーケストレーション。
   class ResearchService
     DEFAULT_SPREADSHEET_ID = "1kuMNWceZzUHHn6zi9fcW8dUczHcquZlvjr3BEPcNRxM"
     DEFAULT_SHEET_NAME = "シート1"
@@ -20,15 +20,27 @@ module FreelanceJobs
 
     HEADER_LABEL = "🌟おすすめ"
 
+    # 環境変数FREELANCE_JOBS_EXCLUDED_SITES（サイト表示名を「,」または「、」区切り）を
+    # 取得対象外サイト名の配列に変換する。前後の空白は除き、空要素は取り除く。
+    def self.excluded_sites_from_env(value = ENV.fetch("FREELANCE_JOBS_EXCLUDED_SITES", ""))
+      value.split(/[,、]/).map(&:strip).reject(&:empty?)
+    end
+
     def initialize(run_window_label:,
                     spreadsheet_id: ENV.fetch("FREELANCE_JOBS_SPREADSHEET_ID", DEFAULT_SPREADSHEET_ID),
                     sheet_name: ENV.fetch("FREELANCE_JOBS_SHEET_NAME", DEFAULT_SHEET_NAME),
+                    excluded_sites: self.class.excluded_sites_from_env,
                     fetcher: nil,
                     sheets_client: nil,
                     now: Time.now.getlocal("+09:00"))
       @run_window_label = run_window_label
       @spreadsheet_id = spreadsheet_id
       @sheet_name = sheet_name
+      # 実在するサイト名だけを対象外として扱う（typoはバナーに出さず、callの冒頭でログ警告する）。
+      known_site_names = SOURCES.map { |source_class| source_class::SITE_NAME }
+      @excluded_sites = excluded_sites.uniq & known_site_names
+      @unknown_excluded_sites = excluded_sites.uniq - known_site_names
+      @sources = SOURCES.reject { |source_class| @excluded_sites.include?(source_class::SITE_NAME) }
       @shared_fetcher = fetcher
       @sheets_client = sheets_client
       @now = now
@@ -36,21 +48,23 @@ module FreelanceJobs
     end
 
     def call
+      warn_about_unknown_excluded_sites
+
       fetched_counts = {}
       succeeded_sites = []
       failures = []
       postings = []
 
-      SOURCES.each do |source_class|
+      @sources.each do |source_class|
+        site_name = source_class::SITE_NAME
         begin
           source_postings = fetch_from(source_class)
-          fetched_counts[source_class::SITE_NAME] = source_postings.size
-          succeeded_sites << source_class::SITE_NAME
+          fetched_counts[site_name] = source_postings.size
+          succeeded_sites << site_name
           postings.concat(source_postings)
         rescue StandardError => error
-          message = "#{source_class::SITE_NAME}（#{error.class}: #{error.message[0, 60]}）"
-          failures << message
-          FreelanceJobs.logger.error("[FreelanceJobs::ResearchService] #{message}")
+          failures << "#{site_name}（#{error.message[0, 60]}）"
+          FreelanceJobs.logger.error("[FreelanceJobs::ResearchService] #{site_name} #{error.class}: #{error.message}")
         end
       end
 
@@ -81,13 +95,14 @@ module FreelanceJobs
         existing_rows: existing_rows,
         new_rows: rows_for_merge,
         succeeded_sites: succeeded_sites,
+        excluded_sites: @excluded_sites,
         today: @today
       )
 
       starred_row_indexes = merge_result.rows.each_index.select { |index| merge_result.rows[index][0].to_s.include?("🌟") }
 
       sheets_client.replace_sheet(
-        banner_text: build_banner_text(merge_result, failures),
+        banner_text: build_banner_text(merge_result, failures, succeeded_sites),
         header: FreelanceJobs::RowBuilder::HEADER,
         rows: merge_result.rows,
         starred_row_indexes: starred_row_indexes,
@@ -106,11 +121,22 @@ module FreelanceJobs
         total: merge_result.total,
         failures: failures,
         succeeded_sites: succeeded_sites,
+        excluded_sites: @excluded_sites,
         backup_sheet: FreelanceJobs::SheetsClient::BACKUP_SHEET_NAME
       }
     end
 
     private
+
+    # excluded_sites指定のtypo検知。SOURCESのSITE_NAMEに一つも一致しない指定はログ警告する。
+    def warn_about_unknown_excluded_sites
+      return if @unknown_excluded_sites.empty?
+
+      FreelanceJobs.logger.warn(
+        "[FreelanceJobs::ResearchService] FREELANCE_JOBS_EXCLUDED_SITESに未知のサイト名があります: " \
+        "#{@unknown_excluded_sites.join("、")}"
+      )
+    end
 
     def fetch_from(source_class)
       fetcher = @shared_fetcher || FreelanceJobs::HttpFetcher.new(interval: source_class::REQUEST_INTERVAL,
@@ -166,12 +192,14 @@ module FreelanceJobs
       @sheets_client ||= FreelanceJobs::SheetsClient.new(spreadsheet_id: @spreadsheet_id, sheet_name: @sheet_name)
     end
 
-    def build_banner_text(merge_result, failures)
-      success_count = SOURCES.size - failures.size
+    def build_banner_text(merge_result, failures, succeeded_sites)
       text = "⏰ 自動更新バッチ：#{@run_window_label} に自動実行（Sidekiq）｜" \
              "最終実行 #{@now.strftime("%Y-%m-%d %H:%M")}｜" \
-             "取得元 #{SOURCES.size}サイト（成功 #{success_count}/#{SOURCES.size}）｜" \
+             "取得元 #{@sources.size}サイト（成功 #{succeeded_sites.size}/#{@sources.size}）｜" \
              "掲載 #{merge_result.total}件（新規 +#{merge_result.added}／期限切れ削除 −#{merge_result.removed}）"
+      unless @excluded_sites.empty?
+        text += "｜対象外: #{@excluded_sites.join("、")}（アクセス制限のため自動取得できません）"
+      end
       text += "｜⚠ 取得失敗: #{failures.join("、")}" unless failures.empty?
       text
     end
@@ -191,6 +219,7 @@ module FreelanceJobs
         total: 0,
         failures: failures,
         succeeded_sites: succeeded_sites,
+        excluded_sites: @excluded_sites,
         backup_sheet: nil
       }
     end

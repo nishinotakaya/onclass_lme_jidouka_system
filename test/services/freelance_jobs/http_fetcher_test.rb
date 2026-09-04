@@ -61,6 +61,59 @@ class FreelanceJobsHttpFetcherTest < Minitest::Test
     stubs.verify_stubbed_calls
   end
 
+  # === D1: ランサーズ本番対象外（WAF CAPTCHA）対応 ===
+
+  def test_get_raises_access_blocked_error_on_405_with_waf_action_header
+    stubs = Faraday::Adapter::Test::Stubs.new
+    stubs.get("https://www.lancers.jp/work/search/system?vid=0&open=1") do
+      [405, { "x-amzn-waf-action" => "captcha" }, "Human Verification"]
+    end
+
+    fetcher = build_fetcher(stubs)
+    stub_sleep_on(fetcher)
+
+    error = assert_raises(FreelanceJobs::AccessBlockedError) do
+      fetcher.get("https://www.lancers.jp/work/search/system?vid=0&open=1")
+    end
+    assert_includes error.message, "アクセス制限"
+    assert_includes error.message, "HTTP 405"
+    stubs.verify_stubbed_calls
+  end
+
+  def test_access_blocked_error_can_be_rescued_as_fetch_error
+    stubs = Faraday::Adapter::Test::Stubs.new
+    stubs.get("https://www.lancers.jp/work/search/system?vid=0&open=1") do
+      [405, { "x-amzn-waf-action" => "captcha" }, "Human Verification"]
+    end
+
+    fetcher = build_fetcher(stubs)
+    stub_sleep_on(fetcher)
+
+    rescued_error = nil
+    begin
+      fetcher.get("https://www.lancers.jp/work/search/system?vid=0&open=1")
+    rescue FreelanceJobs::FetchError => error
+      rescued_error = error
+    end
+
+    assert_kind_of FreelanceJobs::AccessBlockedError, rescued_error,
+                   "AccessBlockedErrorはFetchErrorとしてもrescueできる想定"
+  end
+
+  def test_get_raises_plain_fetch_error_on_405_without_waf_action_header
+    stubs = Faraday::Adapter::Test::Stubs.new
+    stubs.get("https://example.com/method-not-allowed") { [405, {}, "method not allowed"] }
+
+    fetcher = build_fetcher(stubs)
+    stub_sleep_on(fetcher)
+
+    error = assert_raises(FreelanceJobs::FetchError) { fetcher.get("https://example.com/method-not-allowed") }
+    refute_kind_of FreelanceJobs::AccessBlockedError, error,
+                   "WAFのチャレンジ応答ヘッダが無ければ405でも通常のFetchErrorになる想定"
+    assert_includes error.message, "HTTP 405"
+    stubs.verify_stubbed_calls
+  end
+
   def test_get_sends_default_headers_and_merges_custom_headers
     stubs = Faraday::Adapter::Test::Stubs.new
     seen_headers = nil

@@ -11,6 +11,7 @@ module FreelanceJobs
                  "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"
     ACCEPT_LANGUAGE = "ja,en;q=0.8"
     RETRY_WAIT_SECONDS = 2
+    WAF_ACTION_HEADER = "x-amzn-waf-action"
 
     def initialize(interval: 1.5, timeout: 20, open_timeout: 10, logger: FreelanceJobs.logger)
       @interval = interval
@@ -27,12 +28,23 @@ module FreelanceJobs
       @requested_once = true
 
       response = request_with_retry(url, headers)
-      raise FreelanceJobs::FetchError, "HTTP #{response.status} #{url}" unless response.status == 200
+      raise_for_failure!(response, url) unless response.status == 200
 
       response.body
     end
 
     private
+
+    # 非200時のエラー分岐。WAFのチャレンジ応答ヘッダがあればAccessBlockedError（リトライ不可）、
+    # 無ければ従来どおりFetchErrorにする。
+    def raise_for_failure!(response, url)
+      waf_action = response.headers[WAF_ACTION_HEADER]
+      if waf_action
+        raise FreelanceJobs::AccessBlockedError, "アクセス制限（WAF #{waf_action}）HTTP #{response.status} #{url}"
+      end
+
+      raise FreelanceJobs::FetchError, "HTTP #{response.status} #{url}"
+    end
 
     def request_with_retry(url, headers)
       perform_request(url, headers)
