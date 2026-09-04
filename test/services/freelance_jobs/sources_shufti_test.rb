@@ -98,4 +98,73 @@ class FreelanceJobsSourcesShuftiTest < Minitest::Test
 
     assert_equal [], postings
   end
+
+  # === D2: keywords による初期化・fetch（keyword=は1ページ目のみ） ===
+
+  # urlをそのままキーに本文を返すFakeフェッチャー（呼び出されたURLを記録する）。
+  class RecordingFetcher
+    def initialize(body_by_url:)
+      @body_by_url = body_by_url
+      @requested_urls = []
+    end
+
+    attr_reader :requested_urls
+
+    def get(url, headers: {})
+      @requested_urls << url
+      @body_by_url.fetch(url) { raise "no fixture stubbed for #{url}" }
+    end
+  end
+
+  def test_fetch_with_keywords_and_no_tag_ids_requests_only_the_keyword_url_once
+    expected_url = "https://internal.shufti.jp/api/v1/guest/jobs?page=1&sort=start_date%7Cdesc&" \
+                   "recruiting=all&continuous_order=all&keyword=#{CGI.escape("データ")}"
+    fetcher = RecordingFetcher.new(body_by_url: { expected_url => read_fixture("shufti_api_keyword.json") })
+    source = FreelanceJobs::Sources::Shufti.new(fetcher: fetcher, today: TODAY, tag_ids: [], keywords: ["データ"])
+
+    postings = source.fetch
+
+    assert_equal [expected_url], fetcher.requested_urls,
+                 "tag_idsが空ならタグ巡回は発生せず、keywordは1ページ目のみ（ページングしない）"
+    assert_equal 20, postings.size
+  end
+
+  def test_fetch_with_multiple_keywords_requests_one_url_per_keyword
+    empty_body = build_body([])
+    url_a = "https://internal.shufti.jp/api/v1/guest/jobs?page=1&sort=start_date%7Cdesc&recruiting=all&continuous_order=all&keyword=Ruby"
+    url_b = "https://internal.shufti.jp/api/v1/guest/jobs?page=1&sort=start_date%7Cdesc&recruiting=all&continuous_order=all&keyword=React"
+    fetcher = RecordingFetcher.new(body_by_url: { url_a => empty_body, url_b => empty_body })
+    source = FreelanceJobs::Sources::Shufti.new(fetcher: fetcher, today: TODAY, tag_ids: [], keywords: %w[Ruby React])
+
+    source.fetch
+
+    assert_equal [url_a, url_b], fetcher.requested_urls
+  end
+
+  # どのURLに対しても同じ本文を返すFakeフェッチャー（リクエストされたURLを記録する）。
+  class UniformFetcher
+    def initialize(body:)
+      @body = body
+      @requested_urls = []
+    end
+
+    attr_reader :requested_urls
+
+    def get(url, headers: {})
+      @requested_urls << url
+      @body
+    end
+  end
+
+  def test_fetch_with_default_tag_ids_still_paginates_up_to_max_page
+    fetcher = UniformFetcher.new(body: build_body([]))
+    source = FreelanceJobs::Sources::Shufti.new(fetcher: fetcher, today: TODAY)
+
+    source.fetch
+
+    expected_request_count = FreelanceJobs::Sources::Shufti::TAG_IDS.size * FreelanceJobs::Sources::Shufti::MAX_PAGE
+    assert_equal expected_request_count, fetcher.requested_urls.size,
+                 "keywords省略時は既定のtag_ids(4件)×MAX_PAGE(2)のタグ巡回のみ行われる想定"
+    refute(fetcher.requested_urls.any? { |url| url.include?("keyword=") }, "keywords省略時はkeyword=リクエストが発生しない")
+  end
 end

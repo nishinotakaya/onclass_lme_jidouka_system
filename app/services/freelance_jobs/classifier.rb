@@ -106,10 +106,18 @@ module FreelanceJobs
       judgement_text.match?(BEGINNER_RE)
     end
 
-    # reward文字列から先頭の金額を取り出す（3桁区切りカンマは除去）。数値が無ければnil。
+    # 先頭金額が「30万」「50万円」「1.5万」のような万表記の場合に数値×10,000として読み取るための
+    # 正規表現。万表記が無ければ通常の数値（group2）にフォールバックする。
+    MAN_UNIT_RE = /(\d+(?:\.\d+)?)\s*万|(\d+)/
+
+    # reward文字列から先頭の金額を取り出す（3桁区切りカンマは除去）。
+    # 「30万」「50万円」のような万表記は数値×10,000として扱う。数値が無ければnil。
     def self.first_reward_amount(reward_text)
-      match = reward_text.delete(",").match(/\d+/)
-      match ? match[0].to_i : nil
+      match = reward_text.delete(",").match(MAN_UNIT_RE)
+      return nil unless match
+
+      man_amount, plain_amount = match.captures
+      man_amount ? (man_amount.to_f * 10_000).to_i : plain_amount.to_i
     end
 
     def self.build_memo(posting, difficulty, suspicious, high_reward_data_entry_suspicious, today)

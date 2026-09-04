@@ -378,4 +378,33 @@ class FreelanceJobsSheetMergerTest < Minitest::Test
     assert_equal 1, result.rows.size
     assert_equal "https://www.shufti.jp/works/detail/1", result.rows.first[5]
   end
+
+  # === D2: category_order パラメータ（engineerプロファイルの並び順） ===
+
+  def test_merge_orders_rows_by_custom_category_order_parameter
+    react_row = row(category: "React", url: "https://crowdworks.jp/public/jobs/react-1")
+    ruby_row = row(category: "Ruby", url: "https://crowdworks.jp/public/jobs/ruby-1")
+    typescript_row = row(category: "TypeScript", url: "https://crowdworks.jp/public/jobs/ts-1")
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: [react_row, ruby_row, typescript_row], new_rows: [],
+      succeeded_sites: ["CrowdWorks"], today: TODAY,
+      category_order: ["Ruby", "TypeScript", "React"]
+    )
+
+    assert_equal ["Ruby", "TypeScript", "React"], result.rows.map { |merged_row| merged_row[2] }
+  end
+
+  def test_merge_uses_default_category_order_constant_when_parameter_omitted
+    excel_row = row(category: "Excel・スプレッドシート", url: "https://crowdworks.jp/public/jobs/excel-1")
+    html_row = row(category: "HTML/CSS", url: "https://crowdworks.jp/public/jobs/html-1")
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: [excel_row, html_row], new_rows: [],
+      succeeded_sites: ["CrowdWorks"], today: TODAY
+    )
+
+    assert_equal ["HTML/CSS", "Excel・スプレッドシート"], result.rows.map { |merged_row| merged_row[2] },
+                 "category_order省略時は既存のCATEGORY_ORDER（HTML/CSS→Excel）のまま変わらない想定"
+  end
 end

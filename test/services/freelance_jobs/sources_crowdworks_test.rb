@@ -117,4 +117,74 @@ class FreelanceJobsSourcesCrowdworksTest < Minitest::Test
 
     assert_equal "要相談", posting.reward
   end
+
+  # === D2: search_targets（キーワード検索）による初期化・fetch ===
+
+  # urlをそのままキーに本文を返すFakeフェッチャー（呼び出されたURLを記録する）。
+  class RecordingFetcher
+    def initialize(body_by_url:)
+      @body_by_url = body_by_url
+      @requested_urls = []
+    end
+
+    attr_reader :requested_urls
+
+    def get(url, headers: {})
+      @requested_urls << url
+      @body_by_url.fetch(url) { raise "no fixture stubbed for #{url}" }
+    end
+  end
+
+  def test_fetch_with_keyword_target_requests_search_url_and_parses_fixture
+    expected_url = "https://crowdworks.jp/public/jobs/search?search%5Bkeywords%5D=Ruby&order=new&hide_expired=true&page=1"
+    fetcher = RecordingFetcher.new(body_by_url: { expected_url => read_fixture("cw_search_ruby.html") })
+    source = FreelanceJobs::Sources::Crowdworks.new(fetcher: fetcher, today: TODAY,
+                                                     search_targets: [{ keyword: "Ruby", hint: "Ruby", max_page: 2 }])
+
+    postings = source.fetch
+
+    assert_equal [expected_url], fetcher.requested_urls,
+                 "total_page=1のfixtureなので2ページ目は要求されない（max_page:2でも打ち切られる）"
+    assert_equal 14, postings.size
+  end
+
+  def test_fetch_with_keyword_target_sets_category_hint_from_target_hint_not_from_categories_table
+    expected_url = "https://crowdworks.jp/public/jobs/search?search%5Bkeywords%5D=Ruby&order=new&hide_expired=true&page=1"
+    fetcher = RecordingFetcher.new(body_by_url: { expected_url => read_fixture("cw_search_ruby.html") })
+    source = FreelanceJobs::Sources::Crowdworks.new(fetcher: fetcher, today: TODAY,
+                                                     search_targets: [{ keyword: "Ruby", hint: "Ruby", max_page: 2 }])
+
+    postings = source.fetch
+
+    refute_empty postings
+    assert(postings.all? { |posting| posting.category_hint == "Ruby" },
+           "fixtureのcategory_idはCATEGORIESに存在しないため、target由来のhintにフォールバックする想定")
+  end
+
+  def test_fetch_with_multiple_keyword_targets_requests_each_keywords_url
+    ruby_url = "https://crowdworks.jp/public/jobs/search?search%5Bkeywords%5D=Ruby&order=new&hide_expired=true&page=1"
+    typescript_url = "https://crowdworks.jp/public/jobs/search?search%5Bkeywords%5D=TypeScript&order=new&hide_expired=true&page=1"
+    empty_body = build_crowdworks_body({ "job_offers" => [], "page" => { "total_page" => 1 } })
+    fetcher = RecordingFetcher.new(body_by_url: { ruby_url => empty_body, typescript_url => empty_body })
+    source = FreelanceJobs::Sources::Crowdworks.new(
+      fetcher: fetcher, today: TODAY,
+      search_targets: [{ keyword: "Ruby", hint: "Ruby", max_page: 1 }, { keyword: "TypeScript", hint: "TypeScript", max_page: 1 }]
+    )
+
+    source.fetch
+
+    assert_equal [ruby_url, typescript_url], fetcher.requested_urls
+  end
+
+  def test_fetch_with_category_target_requests_category_url_as_before
+    category_url = "https://crowdworks.jp/public/jobs/category/16?order=new&hide_expired=true&page=1"
+    fetcher = RecordingFetcher.new(body_by_url: { category_url => read_fixture("cw_cat16.html") })
+    source = FreelanceJobs::Sources::Crowdworks.new(fetcher: fetcher, today: TODAY,
+                                                     search_targets: [{ category_id: 16, hint: "HTML/CSS", max_page: 1 }])
+
+    postings = source.fetch
+
+    assert_equal [category_url], fetcher.requested_urls, "category_idを持つtargetは従来通りカテゴリURLを組み立てる"
+    assert_equal 14, postings.size
+  end
 end

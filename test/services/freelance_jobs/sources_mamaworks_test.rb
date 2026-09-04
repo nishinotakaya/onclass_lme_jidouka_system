@@ -83,4 +83,72 @@ class FreelanceJobsSourcesMamaworksTest < Minitest::Test
 
     assert_equal [], postings
   end
+
+  # === D2: engineeringカテゴリfixture + keyword_filter オプション ===
+
+  def test_parse_engineering_fixture_with_default_keyword_filter_matches_20_cards
+    body = read_fixture("mama_engineering.html")
+    postings = FreelanceJobs::Sources::Mamaworks.parse(body, today: TODAY)
+
+    assert_equal 20, postings.size, "既定のKEYWORD_FILTER_RE（未経験向けキーワード）は変更されていない想定"
+  end
+
+  def test_parse_engineering_fixture_with_nil_keyword_filter_returns_all_cards_with_valid_links
+    body = read_fixture("mama_engineering.html")
+
+    with_filter = FreelanceJobs::Sources::Mamaworks.parse(body, today: TODAY)
+    without_filter = FreelanceJobs::Sources::Mamaworks.parse(body, today: TODAY, keyword_filter: nil)
+
+    assert_operator without_filter.size, :>, with_filter.size,
+                     "keyword_filter: nilは事前フィルタを行わないため既定より多くの案件が残る想定"
+    assert_equal 38, without_filter.size
+  end
+
+  # === D2: initialize のオプション（category_paths / keyword_filter）が fetch に反映される ===
+
+  # urlをそのままキーに本文を返すFakeフェッチャー（呼び出されたURLを記録する）。
+  class RecordingFetcher
+    def initialize(body_by_url:)
+      @body_by_url = body_by_url
+      @requested_urls = []
+    end
+
+    attr_reader :requested_urls
+
+    def get(url, headers: {})
+      @requested_urls << url
+      @body_by_url.fetch(url) { raise "no fixture stubbed for #{url}" }
+    end
+  end
+
+  def test_fetch_with_custom_category_paths_requests_only_those_paths
+    expected_url = "https://mamaworks.jp/jobs/engineering"
+    fetcher = RecordingFetcher.new(body_by_url: { expected_url => read_fixture("mama_engineering.html") })
+    source = FreelanceJobs::Sources::Mamaworks.new(fetcher: fetcher, today: TODAY, category_paths: ["/jobs/engineering"])
+
+    source.fetch
+
+    assert_equal [expected_url], fetcher.requested_urls, "category_pathsを1件に絞ればそのURLだけがリクエストされる想定"
+  end
+
+  def test_fetch_with_keyword_filter_nil_skips_pre_filtering_and_leaves_it_to_the_classifier
+    url = "https://mamaworks.jp/jobs/engineering"
+    fetcher = RecordingFetcher.new(body_by_url: { url => read_fixture("mama_engineering.html") })
+    source = FreelanceJobs::Sources::Mamaworks.new(fetcher: fetcher, today: TODAY,
+                                                     category_paths: ["/jobs/engineering"], keyword_filter: nil)
+
+    postings = source.fetch
+
+    assert_equal 38, postings.size, "keyword_filter: nilをinitializeで渡した場合もfetch内のparseへ引き継がれる想定"
+  end
+
+  def test_fetch_with_default_options_behaves_like_existing_behavior
+    url = "https://mamaworks.jp/jobs/engineering"
+    fetcher = RecordingFetcher.new(body_by_url: { url => read_fixture("mama_engineering.html") })
+    source = FreelanceJobs::Sources::Mamaworks.new(fetcher: fetcher, today: TODAY, category_paths: ["/jobs/engineering"])
+
+    postings = source.fetch
+
+    assert_equal 20, postings.size, "keyword_filterを省略すれば既定のKEYWORD_FILTER_REで従来通り絞り込まれる想定"
+  end
 end

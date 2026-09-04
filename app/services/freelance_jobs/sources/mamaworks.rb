@@ -15,31 +15,36 @@ module FreelanceJobs
 
       KEYWORD_FILTER_RE = /HTML|CSS|コーディング|Web|ホームページ|Excel|エクセル|スプレッドシート|データ入力|事務|入力/i
 
-      def initialize(fetcher:, today:)
+      # keyword_filter: タイトル＋説明の事前フィルタ（nil なら全件を返し、分類器に委ねる）。
+      def initialize(fetcher:, today:, category_paths: CATEGORY_PATHS, keyword_filter: KEYWORD_FILTER_RE)
         @fetcher = fetcher
         @today = today
+        @category_paths = category_paths
+        @keyword_filter = keyword_filter
       end
 
       # 通信あり。カテゴリ一覧を巡回する（各カテゴリ50件程度）。
       def fetch
         postings = {}
 
-        CATEGORY_PATHS.each do |path|
+        @category_paths.each do |path|
           body = @fetcher.get("#{BASE_URL}#{path}")
-          self.class.parse(body, today: @today).each { |posting| postings[posting.url] ||= posting }
+          self.class.parse(body, today: @today, keyword_filter: @keyword_filter).each do |posting|
+            postings[posting.url] ||= posting
+          end
         end
 
         postings.values
       end
 
       # 通信なし（テスト用）。カテゴリ一覧1ページ分のHTML本文から求人一覧を作る。
-      # タイトル＋説明がKEYWORD_FILTER_REに一致するものだけ残す。
-      def self.parse(body, today:, source_url: nil)
+      # タイトル＋説明が keyword_filter に一致するものだけ残す（nil なら全件）。
+      def self.parse(body, today:, source_url: nil, keyword_filter: KEYWORD_FILTER_RE)
         document = Nokogiri::HTML(body)
         postings = {}
 
         document.css("li.p-recruit-index__result-box").each do |card|
-          posting = build_posting(card)
+          posting = build_posting(card, keyword_filter)
           next unless posting
 
           postings[posting.url] ||= posting
@@ -48,13 +53,13 @@ module FreelanceJobs
         postings.values
       end
 
-      def self.build_posting(card)
+      def self.build_posting(card, keyword_filter)
         href = job_href(card)
         return nil unless href
 
         title = card.at_css("h2.p-recruit-index__result-ttl")&.text&.gsub(/\s+/, " ")&.strip || ""
         description_raw = card.at_css(".p-recruit-index__result-description")&.text
-        return nil unless "#{title} #{description_raw}" =~ KEYWORD_FILTER_RE
+        return nil if keyword_filter && "#{title} #{description_raw}" !~ keyword_filter
 
         FreelanceJobs::JobPosting.new(
           site: SITE_NAME,

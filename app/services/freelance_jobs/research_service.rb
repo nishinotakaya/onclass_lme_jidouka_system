@@ -7,16 +7,6 @@ module FreelanceJobs
   # 各サイトの取得→分類→整形→既存シートとのマージ→書き込みを束ねるオーケストレーション。
   class ResearchService
     DEFAULT_SPREADSHEET_ID = "1kuMNWceZzUHHn6zi9fcW8dUczHcquZlvjr3BEPcNRxM"
-    DEFAULT_SHEET_NAME = "シート1"
-
-    SOURCES = [
-      FreelanceJobs::Sources::Crowdworks,
-      FreelanceJobs::Sources::Lancers,
-      FreelanceJobs::Sources::Coconala,
-      FreelanceJobs::Sources::Shufti,
-      FreelanceJobs::Sources::Mamaworks,
-      FreelanceJobs::Sources::Craudia
-    ].freeze
 
     HEADER_LABEL = "🌟おすすめ"
 
@@ -26,21 +16,21 @@ module FreelanceJobs
       value.split(/[,、]/).map(&:strip).reject(&:empty?)
     end
 
-    def initialize(run_window_label:,
+    def initialize(profile:,
+                    run_window_label:,
                     spreadsheet_id: ENV.fetch("FREELANCE_JOBS_SPREADSHEET_ID", DEFAULT_SPREADSHEET_ID),
-                    sheet_name: ENV.fetch("FREELANCE_JOBS_SHEET_NAME", DEFAULT_SHEET_NAME),
                     excluded_sites: self.class.excluded_sites_from_env,
                     fetcher: nil,
                     sheets_client: nil,
                     now: Time.now.getlocal("+09:00"))
+      @profile = profile
       @run_window_label = run_window_label
       @spreadsheet_id = spreadsheet_id
-      @sheet_name = sheet_name
       # 実在するサイト名だけを対象外として扱う（typoはバナーに出さず、callの冒頭でログ警告する）。
-      known_site_names = SOURCES.map { |source_class| source_class::SITE_NAME }
+      known_site_names = @profile.source_specs.map { |source_class, _options| source_class::SITE_NAME }
       @excluded_sites = excluded_sites.uniq & known_site_names
       @unknown_excluded_sites = excluded_sites.uniq - known_site_names
-      @sources = SOURCES.reject { |source_class| @excluded_sites.include?(source_class::SITE_NAME) }
+      @sources = @profile.source_specs.reject { |source_class, _options| @excluded_sites.include?(source_class::SITE_NAME) }
       @shared_fetcher = fetcher
       @sheets_client = sheets_client
       @now = now
@@ -55,10 +45,10 @@ module FreelanceJobs
       failures = []
       postings = []
 
-      @sources.each do |source_class|
+      @sources.each do |source_class, options|
         site_name = source_class::SITE_NAME
         begin
-          source_postings = fetch_from(source_class)
+          source_postings = fetch_from(source_class, options)
           fetched_counts[site_name] = source_postings.size
           succeeded_sites << site_name
           postings.concat(source_postings)
@@ -87,15 +77,16 @@ module FreelanceJobs
                                 rows.size, starred_candidates)
       end
 
-      # C2: 新規行(既存シートにURLが無いもの)は🌟付きだけをマージ対象にする。
+      # C2: 新規行(既存シートにURLが無いもの)は🌟付きだけをマージ対象にする（profile.new_rows_require_starがtrueの時だけ）。
       # 既存行にURLが一致する行はJ/K/L/M/O更新のため🌟の有無に関わらず対象にする。
-      rows_for_merge = filter_new_rows_for_merge(rows, existing_rows)
+      rows_for_merge = @profile.new_rows_require_star ? filter_new_rows_for_merge(rows, existing_rows) : rows
 
       merge_result = FreelanceJobs::SheetMerger.merge(
         existing_rows: existing_rows,
         new_rows: rows_for_merge,
         succeeded_sites: succeeded_sites,
         excluded_sites: @excluded_sites,
+        category_order: @profile.category_order,
         today: @today
       )
 
@@ -103,7 +94,7 @@ module FreelanceJobs
 
       sheets_client.replace_sheet(
         banner_text: build_banner_text(merge_result, failures, succeeded_sites),
-        header: FreelanceJobs::RowBuilder::HEADER,
+        header: @profile.header,
         rows: merge_result.rows,
         starred_row_indexes: starred_row_indexes,
         backup_values: raw_values
@@ -122,13 +113,15 @@ module FreelanceJobs
         failures: failures,
         succeeded_sites: succeeded_sites,
         excluded_sites: @excluded_sites,
-        backup_sheet: FreelanceJobs::SheetsClient::BACKUP_SHEET_NAME
+        profile: @profile.key,
+        sheet_gid: @profile.sheet_gid,
+        backup_sheet: sheets_client.backup_sheet_name
       }
     end
 
     private
 
-    # excluded_sites指定のtypo検知。SOURCESのSITE_NAMEに一つも一致しない指定はログ警告する。
+    # excluded_sites指定のtypo検知。source_specsのSITE_NAMEに一つも一致しない指定はログ警告する。
     def warn_about_unknown_excluded_sites
       return if @unknown_excluded_sites.empty?
 
@@ -138,10 +131,10 @@ module FreelanceJobs
       )
     end
 
-    def fetch_from(source_class)
+    def fetch_from(source_class, options)
       fetcher = @shared_fetcher || FreelanceJobs::HttpFetcher.new(interval: source_class::REQUEST_INTERVAL,
                                                                     logger: FreelanceJobs.logger)
-      source_class.new(fetcher: fetcher, today: @today).fetch
+      source_class.new(fetcher: fetcher, today: @today, **options).fetch
     end
 
     # 分類 → 対象外(category nil)を除外 → 行に整形 → URLで重複除去。
@@ -149,7 +142,7 @@ module FreelanceJobs
       rows_by_url = {}
 
       postings.each do |posting|
-        classification = FreelanceJobs::Classifier.classify(posting, today: @today)
+        classification = @profile.classifier.classify(posting, today: @today)
         next if classification.category.nil?
 
         row = FreelanceJobs::RowBuilder.build(posting, classification, now: @now)
@@ -189,7 +182,7 @@ module FreelanceJobs
     end
 
     def sheets_client
-      @sheets_client ||= FreelanceJobs::SheetsClient.new(spreadsheet_id: @spreadsheet_id, sheet_name: @sheet_name)
+      @sheets_client ||= FreelanceJobs::SheetsClient.new(spreadsheet_id: @spreadsheet_id, sheet_gid: @profile.sheet_gid)
     end
 
     def build_banner_text(merge_result, failures, succeeded_sites)
@@ -220,6 +213,8 @@ module FreelanceJobs
         failures: failures,
         succeeded_sites: succeeded_sites,
         excluded_sites: @excluded_sites,
+        profile: @profile.key,
+        sheet_gid: @profile.sheet_gid,
         backup_sheet: nil
       }
     end

@@ -94,4 +94,4 @@ freelance_jobs_research_morning:
   cron: "0 6 * * *"   # 毎朝 06:00 のみ
   queue: freelance_jobs_research
   tz: "Asia/Tokyo"
-  description: "副業案件（HTML/CSS・Excel）を6サイトから取得しスプレッドシート更新（毎朝6時・メール通知なし・開発）"
+  description: "副業案件（HTML/CSS・Excel、Ruby・TypeScript・React）を各サイトから取得し2シートを更新（毎朝6時・メール通知なし）"

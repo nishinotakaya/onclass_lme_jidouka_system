@@ -58,6 +58,10 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     def replace_sheet(**kwargs)
       @replace_sheet_calls << kwargs
     end
+
+    def backup_sheet_name
+      "_backup_gid0"
+    end
   end
 
   def real_fixture_routes
@@ -81,7 +85,8 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     fetcher = RoutingFakeFetcher.new(routes: real_fixture_routes)
     sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
 
-    service = FreelanceJobs::ResearchService.new(run_window_label: "毎朝 06:00〜06:30（日本時間）",
+    service = FreelanceJobs::ResearchService.new(profile: FreelanceJobs::Profile::BEGINNER,
+                                                  run_window_label: "毎朝 06:00〜06:30（日本時間）",
                                                   fetcher: fetcher, sheets_client: sheets_client, now: NOW)
     summary = service.call
 
@@ -100,7 +105,8 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
 
   def test_call_aborts_when_all_sources_fail
     sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
-    service = FreelanceJobs::ResearchService.new(run_window_label: "毎朝 06:00〜06:30（日本時間）",
+    service = FreelanceJobs::ResearchService.new(profile: FreelanceJobs::Profile::BEGINNER,
+                                                  run_window_label: "毎朝 06:00〜06:30（日本時間）",
                                                   fetcher: AlwaysFailingFetcher.new, sheets_client: sheets_client, now: NOW)
 
     summary = service.call
@@ -118,7 +124,8 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     fetcher = RoutingFakeFetcher.new(routes: real_fixture_routes)
     sheets_client = FakeSheetsClient.new(existing_values: [["古いA列", "古いB列"], ["データ", "データ"]])
 
-    service = FreelanceJobs::ResearchService.new(run_window_label: "毎朝 06:00〜06:30（日本時間）",
+    service = FreelanceJobs::ResearchService.new(profile: FreelanceJobs::Profile::BEGINNER,
+                                                  run_window_label: "毎朝 06:00〜06:30（日本時間）",
                                                   fetcher: fetcher, sheets_client: sheets_client, now: NOW)
     summary = service.call
 
@@ -133,7 +140,8 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     fetcher = RoutingFakeFetcher.new(routes: real_fixture_routes, raising_hosts: ["craudia.com"])
     sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
 
-    service = FreelanceJobs::ResearchService.new(run_window_label: "毎朝 06:00〜06:30（日本時間）",
+    service = FreelanceJobs::ResearchService.new(profile: FreelanceJobs::Profile::BEGINNER,
+                                                  run_window_label: "毎朝 06:00〜06:30（日本時間）",
                                                   fetcher: fetcher, sheets_client: sheets_client, now: NOW)
     summary = service.call
 
@@ -182,7 +190,8 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     existing_row[14] = "2026-08-01 00:00" # O: 取得日時(更新される想定)
     sheets_client = FakeSheetsClient.new(existing_values: [FreelanceJobs::RowBuilder::HEADER, existing_row])
 
-    service = FreelanceJobs::ResearchService.new(run_window_label: "毎朝 06:00〜06:30（日本時間）",
+    service = FreelanceJobs::ResearchService.new(profile: FreelanceJobs::Profile::BEGINNER,
+                                                  run_window_label: "毎朝 06:00〜06:30（日本時間）",
                                                   fetcher: fetcher, sheets_client: sheets_client, now: NOW)
     summary = service.call
 
@@ -212,7 +221,8 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     fetcher = RoutingFakeFetcher.new(routes: real_fixture_routes_excluding_lancers)
     sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
 
-    service = FreelanceJobs::ResearchService.new(run_window_label: "毎朝 06:00〜06:30（日本時間）",
+    service = FreelanceJobs::ResearchService.new(profile: FreelanceJobs::Profile::BEGINNER,
+                                                  run_window_label: "毎朝 06:00〜06:30（日本時間）",
                                                   excluded_sites: ["ランサーズ"],
                                                   fetcher: fetcher, sheets_client: sheets_client, now: NOW)
     summary = service.call
@@ -228,7 +238,8 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     fetcher = RoutingFakeFetcher.new(routes: real_fixture_routes_excluding_lancers)
     sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
 
-    service = FreelanceJobs::ResearchService.new(run_window_label: "毎朝 06:00〜06:30（日本時間）",
+    service = FreelanceJobs::ResearchService.new(profile: FreelanceJobs::Profile::BEGINNER,
+                                                  run_window_label: "毎朝 06:00〜06:30（日本時間）",
                                                   excluded_sites: ["ランサーズ"],
                                                   fetcher: fetcher, sheets_client: sheets_client, now: NOW)
     summary = service.call
@@ -254,7 +265,8 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     fetcher = RoutingFakeFetcher.new(routes: real_fixture_routes, raising_hosts: ["craudia.com"])
     sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
 
-    service = FreelanceJobs::ResearchService.new(run_window_label: "毎朝 06:00〜06:30（日本時間）",
+    service = FreelanceJobs::ResearchService.new(profile: FreelanceJobs::Profile::BEGINNER,
+                                                  run_window_label: "毎朝 06:00〜06:30（日本時間）",
                                                   fetcher: fetcher, sheets_client: sheets_client, now: NOW)
     summary = service.call
 
@@ -269,7 +281,8 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     fetcher = RoutingFakeFetcher.new(routes: real_fixture_routes)
     sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
 
-    service = FreelanceJobs::ResearchService.new(run_window_label: "毎朝 06:00〜06:30（日本時間）",
+    service = FreelanceJobs::ResearchService.new(profile: FreelanceJobs::Profile::BEGINNER,
+                                                  run_window_label: "毎朝 06:00〜06:30（日本時間）",
                                                   excluded_sites: ["存在しないサイト"],
                                                   fetcher: fetcher, sheets_client: sheets_client, now: NOW)
     summary = service.call
@@ -278,5 +291,64 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     assert_equal 6, summary[:succeeded_sites].size, "未知のサイト名は実在するどのサイトも除外しない"
     assert_equal [], summary[:excluded_sites], "実在しないサイト名は対象外一覧に含めない"
     refute_includes sheets_client.replace_sheet_calls.last[:banner_text], "存在しないサイト"
+  end
+
+  # === D2: engineerプロファイル ===
+
+  # CrowdWorksだけ実データfixture（cw_search_ruby.html）を返し、他5サイトは空データを返す。
+  # cw_search_ruby.htmlの14件中13件がRubyに分類され、うち1件は🌟が付かない（recommend=""）。
+  # new_rows_require_star:falseのengineerではこの🌟無し行も新規追加される想定。
+  def engineer_fixture_routes
+    {
+      "crowdworks.jp" => read_fixture("cw_search_ruby.html"),
+      "lancers.jp" => "<html><body></body></html>",
+      "coconala.com" => "<html><body></body></html>",
+      "shufti.jp" => '{"data":[],"meta":{}}',
+      "mamaworks.jp" => "<html><body></body></html>",
+      "craudia.com" => "<html><body></body></html>"
+    }
+  end
+
+  def test_call_with_engineer_profile_keeps_unstarred_classified_rows_and_reports_profile_summary
+    fetcher = RoutingFakeFetcher.new(routes: engineer_fixture_routes)
+    sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
+
+    service = FreelanceJobs::ResearchService.new(profile: FreelanceJobs::Profile::ENGINEER,
+                                                  run_window_label: "毎朝 06:00〜06:30（日本時間）",
+                                                  fetcher: fetcher, sheets_client: sheets_client, now: NOW)
+    summary = service.call
+
+    refute summary[:aborted]
+    assert_equal "engineer", summary[:profile]
+    assert_equal 1_065_736_587, summary[:sheet_gid]
+    assert_equal 13, summary[:candidates], "CrowdWorks14件中「WEBデザイナー案件」の1件だけがcategory nilで除外される"
+    assert_equal 12, summary[:starred_candidates]
+    assert_equal 13, summary[:added], "new_rows_require_star:falseのため🌟無し行も含めて13件とも新規追加される"
+
+    written_rows = sheets_client.replace_sheet_calls.first[:rows]
+    assert_equal 13, written_rows.size
+
+    unstarred_row = written_rows.find { |written_row| written_row[3].include?("不動産SaaS開発") }
+    refute_nil unstarred_row, "🌟が付かない分類済み行も新規追加される想定（new_rows_require_star: false）"
+    assert_equal "", unstarred_row[0], "この行にはおすすめの🌟が付いていない想定"
+
+    refute(written_rows.any? { |written_row| written_row[3].include?("WEBデザイナー") },
+           "category nilと分類された行は除外される")
+  end
+
+  def test_call_with_engineer_profile_writes_engineer_header_not_beginner_header
+    fetcher = RoutingFakeFetcher.new(routes: engineer_fixture_routes)
+    sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
+
+    service = FreelanceJobs::ResearchService.new(profile: FreelanceJobs::Profile::ENGINEER,
+                                                  run_window_label: "毎朝 06:00〜06:30（日本時間）",
+                                                  fetcher: fetcher, sheets_client: sheets_client, now: NOW)
+    service.call
+
+    written_header = sheets_client.replace_sheet_calls.first[:header]
+    assert_equal FreelanceJobs::Profile::ENGINEER.header, written_header
+    assert_includes written_header, "レベル（求められる経験）"
+    assert_includes written_header, "一言メモ（条件・注意点）"
+    refute_includes written_header, "難易度"
   end
 end

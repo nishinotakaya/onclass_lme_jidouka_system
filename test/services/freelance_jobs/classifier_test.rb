@@ -289,4 +289,40 @@ class FreelanceJobsClassifierTest < Minitest::Test
     assert_equal "★★☆ 基礎があれば可", result.difficulty
     refute_includes result.memo.to_s, "⚠ 未経験向けなのに高額固定報酬のデータ入力募集"
   end
+
+  # === D2: first_reward_amount の「万」表記対応 ===
+
+  def test_first_reward_amount_parses_man_notation_without_unit
+    assert_equal 300_000, FreelanceJobs::Classifier.first_reward_amount("30万")
+  end
+
+  def test_first_reward_amount_parses_man_notation_with_yen_unit
+    assert_equal 500_000, FreelanceJobs::Classifier.first_reward_amount("50万円")
+  end
+
+  def test_first_reward_amount_parses_decimal_man_notation
+    assert_equal 15_000, FreelanceJobs::Classifier.first_reward_amount("1.5万")
+  end
+
+  def test_first_reward_amount_still_parses_plain_comma_separated_numbers
+    assert_equal 150_000, FreelanceJobs::Classifier.first_reward_amount("150,000円")
+  end
+
+  def test_first_reward_amount_picks_first_number_in_range_text_without_man_unit
+    assert_equal 10_000, FreelanceJobs::Classifier.first_reward_amount("10,000〜30,000円")
+  end
+
+  def test_first_reward_amount_returns_nil_when_no_digits_present
+    assert_nil FreelanceJobs::Classifier.first_reward_amount("要相談")
+  end
+
+  # 既存のbeginner判定（固定報酬10万円以上）が「30万円」のような万表記でも変わらず動くこと
+  # （D2で拡張したfirst_reward_amountの結果を使う経路の回帰確認）。
+  def test_high_reward_data_entry_suspicious_also_triggers_for_man_notation_reward
+    posting = build_posting(title: "データ入力スタッフ大募集（未経験歓迎・スキル不要）", reward: "30万円")
+    result = FreelanceJobs::Classifier.classify(posting, today: TODAY)
+
+    assert_equal "", result.recommend, "「30万円」表記でも10万円以上として高額判定される想定"
+    assert_includes result.memo, "⚠ 未経験向けなのに高額固定報酬のデータ入力募集。テンプレ/誘導系の可能性、詳細と発注者評価を要確認"
+  end
 end

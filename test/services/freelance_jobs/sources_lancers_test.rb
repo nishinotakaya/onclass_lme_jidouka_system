@@ -91,4 +91,49 @@ class FreelanceJobsSourcesLancersTest < Minitest::Test
     assert_equal TODAY, posting.deadline_on
     assert_equal "本日締切（2026-09-04）", posting.deadline_text
   end
+
+  # === D2: initialize のオプション（fixed_paths / keywords）が fetch に反映される ===
+
+  # urlをそのままキーに本文を返すFakeフェッチャー（呼び出されたURLを記録する）。
+  class RecordingFetcher
+    def initialize(body_by_url:)
+      @body_by_url = body_by_url
+      @requested_urls = []
+    end
+
+    attr_reader :requested_urls
+
+    def get(url, headers: {})
+      @requested_urls << url
+      @body_by_url.fetch(url) { raise "no fixture stubbed for #{url}" }
+    end
+  end
+
+  def test_fetch_with_empty_fixed_paths_and_custom_keywords_requests_only_keyword_urls
+    empty_body = "<html><body></body></html>"
+    expected_urls = ["Ruby", "TypeScript", "React"].map { |keyword| "https://www.lancers.jp/work/search?keyword=#{CGI.escape(keyword)}&open=1&sort=started" }
+    fetcher = RecordingFetcher.new(body_by_url: expected_urls.to_h { |url| [url, empty_body] })
+    source = FreelanceJobs::Sources::Lancers.new(fetcher: fetcher, today: TODAY, fixed_paths: [],
+                                                  keywords: ["Ruby", "TypeScript", "React"])
+
+    source.fetch
+
+    assert_equal expected_urls, fetcher.requested_urls, "fixed_paths: []なら固定パスへのリクエストは発生しない"
+  end
+
+  def test_fetch_with_default_options_requests_fixed_paths_then_default_keywords
+    fixed_url_1 = "https://www.lancers.jp/work/search/task/input?open=1&sort=started"
+    fixed_url_2 = "https://www.lancers.jp/work/search/task?open=1&sort=started"
+    keyword_urls = FreelanceJobs::Sources::Lancers::KEYWORDS.map do |keyword|
+      "https://www.lancers.jp/work/search?keyword=#{CGI.escape(keyword)}&open=1&sort=started"
+    end
+    empty_body = "<html><body></body></html>"
+    all_urls = [fixed_url_1, fixed_url_2] + keyword_urls
+    fetcher = RecordingFetcher.new(body_by_url: all_urls.to_h { |url| [url, empty_body] })
+    source = FreelanceJobs::Sources::Lancers.new(fetcher: fetcher, today: TODAY)
+
+    source.fetch
+
+    assert_equal all_urls, fetcher.requested_urls, "オプション省略時は既定のFIXED_PATHS→KEYWORDSの順で従来通りリクエストする"
+  end
 end

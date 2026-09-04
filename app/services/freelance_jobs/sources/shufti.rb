@@ -2,6 +2,7 @@
 
 require "json"
 require "date"
+require "cgi"
 
 module FreelanceJobs
   module Sources
@@ -22,20 +23,27 @@ module FreelanceJobs
       TAG_IDS = [1, 2, 5, 9].freeze
       MAX_PAGE = 2 # 20件/ページ
 
-      def initialize(fetcher:, today:)
+      def initialize(fetcher:, today:, tag_ids: TAG_IDS, keywords: [])
         @fetcher = fetcher
         @today = today
+        @tag_ids = tag_ids
+        @keywords = keywords
       end
 
-      # 通信あり。タグごとに最大2ページ取得する。
+      # 通信あり。タグごとに最大2ページ、キーワードごとに1ページ目のみ取得する。
       def fetch
         postings = {}
 
-        TAG_IDS.each do |tag_id|
+        @tag_ids.each do |tag_id|
           (1..MAX_PAGE).each do |page|
             body = @fetcher.get(tag_page_url(tag_id, page), headers: REQUEST_HEADERS)
             self.class.parse(body, today: @today).each { |posting| postings[posting.url] ||= posting }
           end
+        end
+
+        @keywords.each do |keyword|
+          body = @fetcher.get(keyword_page_url(keyword), headers: REQUEST_HEADERS)
+          self.class.parse(body, today: @today).each { |posting| postings[posting.url] ||= posting }
         end
 
         postings.values
@@ -116,6 +124,12 @@ module FreelanceJobs
         "#{API_URL}?page=#{page}&sort=start_date%7Cdesc&recruiting=all&continuous_order=all&job_tag_id=#{tag_id}"
       end
       private :tag_page_url
+
+      # keyword=はページングせず1ページ目のみ取得する。
+      def keyword_page_url(keyword)
+        "#{API_URL}?page=1&sort=start_date%7Cdesc&recruiting=all&continuous_order=all&keyword=#{CGI.escape(keyword)}"
+      end
+      private :keyword_page_url
     end
   end
 end

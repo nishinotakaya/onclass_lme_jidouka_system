@@ -4,6 +4,7 @@ require "nokogiri"
 require "json"
 require "date"
 require "time"
+require "cgi"
 
 module FreelanceJobs
   module Sources
@@ -25,27 +26,33 @@ module FreelanceJobs
         101 => { hint: "Excel・スプレッドシート", max_page: 1 }  # 文書作成
       }.freeze
 
-      def initialize(fetcher:, today:)
+      # キーワード検索対象を指定しない場合の既定値。CATEGORIESの全カテゴリを巡回する（現行の挙動）。
+      DEFAULT_SEARCH_TARGETS = CATEGORIES.map { |category_id, category_attributes|
+        { category_id: category_id, hint: category_attributes[:hint], max_page: category_attributes[:max_page] }
+      }.freeze
+
+      def initialize(fetcher:, today:, search_targets: DEFAULT_SEARCH_TARGETS)
         @fetcher = fetcher
         @today = today
+        @search_targets = search_targets
       end
 
-      # 通信あり。カテゴリごとに total_page を見ながら上限ページまで取得する。
+      # 通信あり。検索対象（カテゴリ or キーワード）ごとに total_page を見ながら上限ページまで取得する。
       def fetch
         postings = {}
 
-        CATEGORIES.each_key do |category_id|
-          max_page = CATEGORIES[category_id][:max_page]
+        @search_targets.each do |target|
+          max_page = target[:max_page]
           total_page = 1
           page = 1
 
           while page <= max_page && page <= total_page
-            body = @fetcher.get(category_page_url(category_id, page))
+            body = @fetcher.get(target_page_url(target, page))
             search_result = self.class.extract_search_result(body)
             total_page = search_result.dig("page", "total_page") || 1
 
             self.class.job_offer_entries(search_result).each do |entry, is_pr|
-              posting = self.class.build_posting(entry, is_pr)
+              posting = self.class.build_posting(entry, is_pr, fallback_hint: target[:hint])
               postings[posting.url] ||= posting
             end
 
@@ -88,7 +95,8 @@ module FreelanceJobs
         entries
       end
 
-      def self.build_posting(entry, is_pr)
+      # fallback_hint: JSONのcategory_idがCATEGORIESに無い場合に使うヒント（検索対象targetのhint）。
+      def self.build_posting(entry, is_pr, fallback_hint: nil)
         job_offer = entry["job_offer"] || {}
         client = entry["client"] || {}
         reward, work_format = reward_and_work_format(entry["payment"] || {})
@@ -101,7 +109,7 @@ module FreelanceJobs
           url: FreelanceJobs::JobPosting.normalize_url("#{BASE_URL}/public/jobs/#{job_offer["id"]}"),
           title: job_offer["title"].to_s.strip,
           description: FreelanceJobs::JobPosting.normalize_description(job_offer["description_digest"]),
-          category_hint: CATEGORIES.dig(job_offer["category_id"], :hint),
+          category_hint: CATEGORIES.dig(job_offer["category_id"], :hint) || fallback_hint,
           reward: reward,
           work_format: work_format,
           application_status: application_status_text(entry["entry"] || {}),
@@ -167,6 +175,21 @@ module FreelanceJobs
           end
         end
       end
+
+      # targetがkeywordを持つ場合はキーワード検索URL、持たない場合はカテゴリ一覧URLを組み立てる。
+      def target_page_url(target, page)
+        if target[:keyword]
+          keyword_search_url(target[:keyword], page)
+        else
+          category_page_url(target[:category_id], page)
+        end
+      end
+      private :target_page_url
+
+      def keyword_search_url(keyword, page)
+        "#{BASE_URL}/public/jobs/search?search%5Bkeywords%5D=#{CGI.escape(keyword)}&order=new&hide_expired=true&page=#{page}"
+      end
+      private :keyword_search_url
 
       def category_page_url(category_id, page)
         "#{BASE_URL}/public/jobs/category/#{category_id}?order=new&hide_expired=true&page=#{page}"

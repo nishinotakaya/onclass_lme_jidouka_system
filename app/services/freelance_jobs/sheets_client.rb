@@ -10,7 +10,6 @@ module FreelanceJobs
   # （サービスアカウントJSON鍵、ENV["GOOGLE_APPLICATION_CREDENTIALS"]）。
   class SheetsClient
     COLUMN_COUNT = 15
-    BACKUP_SHEET_NAME = "_backup_シート1"
 
     COLUMN_WIDTHS = [90, 45, 130, 300, 95, 230, 130, 400, 260, 130, 80, 130, 120, 330, 120].freeze
 
@@ -20,26 +19,26 @@ module FreelanceJobs
     WHITE_BACKGROUND_COLOR = { red: 1.0, green: 1.0, blue: 1.0 }.freeze
     FORMULA_TRIGGER_CHARS = ["=", "+", "-", "@"].freeze
 
-    def initialize(spreadsheet_id:, sheet_name:)
+    def initialize(spreadsheet_id:, sheet_gid:)
       @spreadsheet_id = spreadsheet_id
-      @sheet_name = sheet_name
+      @sheet_gid = sheet_gid
       @service = build_service
     end
 
     def read_values(range)
-      response = @service.get_spreadsheet_values(@spreadsheet_id, "'#{@sheet_name}'!#{range}")
+      response = @service.get_spreadsheet_values(@spreadsheet_id, "'#{sheet_name}'!#{range}")
       response.values || []
     end
 
     # 書き込み手順（空になる瞬間を作らない）:
-    # 1. 隠しシート_backup_シート1へ現在値(backup_values)を退避
+    # 1. 隠しシート（backup_sheet_name）へ現在値(backup_values)を退避
     # 2. A1:O(n)を上書き（数式化しうる文字列は'を付けてガード）
     # 3. 余った行だけclear
     # 4. 書式（既存merge/basic_filterを取得してから安全に張り替え）
     def replace_sheet(banner_text:, header:, rows:, starred_row_indexes:, backup_values:, column_widths: COLUMN_WIDTHS)
       metadata = fetch_metadata
-      main_sheet = find_sheet(metadata, @sheet_name)
-      raise FreelanceJobs::FetchError, "Sheet not found: #{@sheet_name}" unless main_sheet
+      main_sheet = resolve_main_sheet!(metadata)
+      @sheet_name = main_sheet.properties.title
 
       backup_existing_values!(metadata, backup_values)
 
@@ -47,6 +46,11 @@ module FreelanceJobs
       write_values!(values)
       clear_leftover_rows!(main_sheet, values.size)
       apply_formatting!(main_sheet, values.size, starred_row_indexes, column_widths)
+    end
+
+    # バックアップ用の隠しシート名。gidごとに一意にする（例: "_backup_gid0"）。
+    def backup_sheet_name
+      "_backup_gid#{@sheet_gid}"
     end
 
     private
@@ -79,25 +83,42 @@ module FreelanceJobs
       @service.get_spreadsheet(@spreadsheet_id, include_grid_data: false)
     end
 
+    # gidからシート名を解決する（遅延・メモ化）。replace_sheetは自前で取得済みのmetadataから
+    # resolve_main_sheet!を直接呼ぶため二重にAPIを叩かない。read_values単独呼び出し用の経路。
+    def sheet_name
+      @sheet_name ||= resolve_main_sheet!(fetch_metadata).properties.title
+    end
+
+    def resolve_main_sheet!(metadata)
+      main_sheet = find_sheet_by_gid(metadata, @sheet_gid)
+      raise FreelanceJobs::FetchError, "Sheet gid not found: #{@sheet_gid}" unless main_sheet
+
+      main_sheet
+    end
+
+    def find_sheet_by_gid(metadata, sheet_gid)
+      metadata.sheets&.find { |sheet| sheet.properties&.sheet_id == sheet_gid }
+    end
+
     def find_sheet(metadata, title)
       metadata.sheets&.find { |sheet| sheet.properties&.title == title }
     end
 
     def backup_existing_values!(metadata, backup_values)
       ensure_backup_sheet_exists!(metadata)
-      clear_range!("'#{BACKUP_SHEET_NAME}'!A1:Z2000")
+      clear_range!("'#{backup_sheet_name}'!A1:Z2000")
       return if backup_values.nil? || backup_values.empty?
 
-      write_range!("'#{BACKUP_SHEET_NAME}'!A1", backup_values, value_input_option: "RAW")
+      write_range!("'#{backup_sheet_name}'!A1", backup_values, value_input_option: "RAW")
     end
 
     def ensure_backup_sheet_exists!(metadata)
-      return if find_sheet(metadata, BACKUP_SHEET_NAME)
+      return if find_sheet(metadata, backup_sheet_name)
 
       batch_update!([{
         add_sheet: {
           properties: {
-            title: BACKUP_SHEET_NAME,
+            title: backup_sheet_name,
             hidden: true,
             grid_properties: { row_count: 2000, column_count: COLUMN_COUNT }
           }

@@ -127,4 +127,114 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
 
     assert_nil client.send(:find_sheet, metadata, "存在しないシート")
   end
+
+  # === D2: gidによるシート名解決 ===
+  # initializeを経由せずに@service/@spreadsheet_id/@sheet_gidを注入し、
+  # 認証不要なフェイクGoogle Sheets APIサービスで read_values / backup_sheet_name を検証する。
+
+  GidFakeSheetProperties = Struct.new(:sheet_id, :title)
+  GidFakeSheet = Struct.new(:properties)
+  GidFakeMetadata = Struct.new(:sheets)
+  GidFakeValuesResponse = Struct.new(:values)
+
+  class GidFakeGoogleSheetsService
+    attr_reader :get_spreadsheet_calls, :get_spreadsheet_values_calls
+
+    def initialize(metadata:, values_response: nil)
+      @metadata = metadata
+      @values_response = values_response
+      @get_spreadsheet_calls = []
+      @get_spreadsheet_values_calls = []
+    end
+
+    def get_spreadsheet(spreadsheet_id, include_grid_data:)
+      @get_spreadsheet_calls << { spreadsheet_id: spreadsheet_id, include_grid_data: include_grid_data }
+      @metadata
+    end
+
+    def get_spreadsheet_values(spreadsheet_id, range)
+      @get_spreadsheet_values_calls << { spreadsheet_id: spreadsheet_id, range: range }
+      @values_response
+    end
+  end
+
+  def build_client_with_fake_service(spreadsheet_id:, sheet_gid:, service:)
+    client_instance = FreelanceJobs::SheetsClient.allocate
+    client_instance.instance_variable_set(:@spreadsheet_id, spreadsheet_id)
+    client_instance.instance_variable_set(:@sheet_gid, sheet_gid)
+    client_instance.instance_variable_set(:@service, service)
+    client_instance
+  end
+
+  def test_read_values_resolves_sheet_name_by_gid_and_returns_values
+    metadata = GidFakeMetadata.new([
+      GidFakeSheet.new(GidFakeSheetProperties.new(0, "HTML CSS求人")),
+      GidFakeSheet.new(GidFakeSheetProperties.new(1_065_736_587, "Ruby TypeScript 求人"))
+    ])
+    service = GidFakeGoogleSheetsService.new(metadata: metadata, values_response: GidFakeValuesResponse.new([["a", "b"]]))
+    client_instance = build_client_with_fake_service(spreadsheet_id: "SHEET_ID", sheet_gid: 1_065_736_587, service: service)
+
+    result = client_instance.read_values("A1:O2000")
+
+    assert_equal [["a", "b"]], result
+    assert_equal "SHEET_ID", service.get_spreadsheet_values_calls.first[:spreadsheet_id]
+    assert_equal "'Ruby TypeScript 求人'!A1:O2000", service.get_spreadsheet_values_calls.first[:range],
+                 "gid 1065736587 に対応するシート名で範囲文字列を組み立てる想定"
+  end
+
+  def test_read_values_resolves_gid_zero_to_its_own_sheet_name_not_the_first_sheet
+    metadata = GidFakeMetadata.new([
+      GidFakeSheet.new(GidFakeSheetProperties.new(1_065_736_587, "Ruby TypeScript 求人")),
+      GidFakeSheet.new(GidFakeSheetProperties.new(0, "HTML CSS求人"))
+    ])
+    service = GidFakeGoogleSheetsService.new(metadata: metadata, values_response: GidFakeValuesResponse.new([]))
+    client_instance = build_client_with_fake_service(spreadsheet_id: "SHEET_ID", sheet_gid: 0, service: service)
+
+    client_instance.read_values("A1:O10")
+
+    assert_equal "'HTML CSS求人'!A1:O10", service.get_spreadsheet_values_calls.first[:range],
+                 "gid=0はsheets配列内の並び順ではなくsheet_idの一致で解決する想定"
+  end
+
+  def test_read_values_returns_empty_array_when_response_values_is_nil
+    metadata = GidFakeMetadata.new([GidFakeSheet.new(GidFakeSheetProperties.new(0, "HTML CSS求人"))])
+    service = GidFakeGoogleSheetsService.new(metadata: metadata, values_response: GidFakeValuesResponse.new(nil))
+    client_instance = build_client_with_fake_service(spreadsheet_id: "SHEET_ID", sheet_gid: 0, service: service)
+
+    assert_equal [], client_instance.read_values("A1:O2000")
+  end
+
+  def test_read_values_raises_fetch_error_when_gid_not_found
+    metadata = GidFakeMetadata.new([GidFakeSheet.new(GidFakeSheetProperties.new(0, "HTML CSS求人"))])
+    service = GidFakeGoogleSheetsService.new(metadata: metadata)
+    client_instance = build_client_with_fake_service(spreadsheet_id: "SHEET_ID", sheet_gid: 999_999, service: service)
+
+    error = assert_raises(FreelanceJobs::FetchError) { client_instance.read_values("A1:O2000") }
+    assert_equal "Sheet gid not found: 999999", error.message
+  end
+
+  def test_sheet_name_resolution_is_memoized_across_multiple_read_values_calls
+    metadata = GidFakeMetadata.new([GidFakeSheet.new(GidFakeSheetProperties.new(0, "HTML CSS求人"))])
+    service = GidFakeGoogleSheetsService.new(metadata: metadata, values_response: GidFakeValuesResponse.new([]))
+    client_instance = build_client_with_fake_service(spreadsheet_id: "SHEET_ID", sheet_gid: 0, service: service)
+
+    client_instance.read_values("A1:O10")
+    client_instance.read_values("A1:O20")
+
+    assert_equal 1, service.get_spreadsheet_calls.size, "gid解決のためのメタデータ取得は初回の1回だけの想定"
+  end
+
+  # --- backup_sheet_name（gidごとに一意。@serviceに依存しない純粋メソッド） ---
+
+  def test_backup_sheet_name_includes_gid_for_beginner_sheet
+    client_instance = build_client_with_fake_service(spreadsheet_id: "SHEET_ID", sheet_gid: 0, service: nil)
+
+    assert_equal "_backup_gid0", client_instance.backup_sheet_name
+  end
+
+  def test_backup_sheet_name_includes_gid_for_engineer_sheet
+    client_instance = build_client_with_fake_service(spreadsheet_id: "SHEET_ID", sheet_gid: 1_065_736_587, service: nil)
+
+    assert_equal "_backup_gid1065736587", client_instance.backup_sheet_name
+  end
 end

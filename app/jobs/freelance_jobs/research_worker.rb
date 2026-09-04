@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 # app/jobs/freelance_jobs/research_worker.rb
 #
-# 副業案件リサーチバッチ（未経験向け HTML/CSS・Excel 案件を各サイトから取得し、
-# Googleスプレッドシートを更新する）。毎朝1回だけ実行、メール通知は行わない。
+# 副業案件リサーチバッチ（未経験向け HTML/CSS・Excel、エンジニア向け Ruby・TypeScript・React の
+# 案件を各サイトから取得し、Googleスプレッドシートを更新する）。毎朝1回だけ実行、メール通知は行わない。
 
 require "json"
 
@@ -12,8 +12,24 @@ class FreelanceJobs::ResearchWorker
 
   RUN_WINDOW_LABEL = "毎朝 06:00〜06:30（日本時間）" # scheduler の cron と一致させる（バナー1行目に表示）
 
-  def perform
-    summary = FreelanceJobs::ResearchService.new(run_window_label: RUN_WINDOW_LABEL).call
-    logger.info("[FreelanceJobs::ResearchWorker] #{summary.to_json}")
+  # profile_keyがあればそのプロファイルだけ、無ければ全プロファイルを順に実行する。
+  # 1プロファイルの失敗が他プロファイルの実行を止めないようそれぞれrescueしてログに記録し、
+  # 全プロファイルを終えた後、失敗があれば最初の例外を再raiseしてSidekiqのretryに任せる
+  # （成功済みプロファイルの再実行はマージが冪等なので無害）。
+  def perform(profile_key = nil)
+    profiles = profile_key ? [FreelanceJobs::Profile.find(profile_key)] : FreelanceJobs::Profile.all
+    first_error = nil
+
+    profiles.each do |profile|
+      begin
+        summary = FreelanceJobs::ResearchService.new(profile: profile, run_window_label: RUN_WINDOW_LABEL).call
+        logger.info("[FreelanceJobs::ResearchWorker] profile=#{profile.key} #{summary.to_json}")
+      rescue StandardError => error
+        first_error ||= error
+        logger.error("[FreelanceJobs::ResearchWorker] profile=#{profile.key} #{error.class}: #{error.message}")
+      end
+    end
+
+    raise first_error if first_error
   end
 end

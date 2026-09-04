@@ -57,4 +57,43 @@ class FreelanceJobsSourcesCoconalaTest < Minitest::Test
 
     assert_equal [], postings
   end
+
+  # === D2: initialize のオプション（keywords）が fetch に反映される ===
+
+  # urlをそのままキーに本文を返すFakeフェッチャー（呼び出されたURLを記録する）。
+  class RecordingFetcher
+    def initialize(body_by_url:)
+      @body_by_url = body_by_url
+      @requested_urls = []
+    end
+
+    attr_reader :requested_urls
+
+    def get(url, headers: {})
+      @requested_urls << url
+      @body_by_url.fetch(url) { raise "no fixture stubbed for #{url}" }
+    end
+  end
+
+  def test_fetch_with_custom_keywords_requests_one_page_per_keyword_in_order
+    empty_body = "<html><body></body></html>"
+    expected_urls = ["Ruby", "TypeScript", "React"].map { |keyword| "https://coconala.com/requests?keyword=#{CGI.escape(keyword)}&page=1" }
+    fetcher = RecordingFetcher.new(body_by_url: expected_urls.to_h { |url| [url, empty_body] })
+    source = FreelanceJobs::Sources::Coconala.new(fetcher: fetcher, today: TODAY, keywords: ["Ruby", "TypeScript", "React"])
+
+    source.fetch
+
+    assert_equal expected_urls, fetcher.requested_urls
+  end
+
+  def test_fetch_with_default_keywords_requests_the_default_keyword_list
+    empty_body = "<html><body></body></html>"
+    expected_urls = FreelanceJobs::Sources::Coconala::KEYWORDS.map { |keyword| "https://coconala.com/requests?keyword=#{CGI.escape(keyword)}&page=1" }
+    fetcher = RecordingFetcher.new(body_by_url: expected_urls.to_h { |url| [url, empty_body] })
+    source = FreelanceJobs::Sources::Coconala.new(fetcher: fetcher, today: TODAY)
+
+    source.fetch
+
+    assert_equal expected_urls, fetcher.requested_urls, "keywords省略時は既定のKEYWORDS定数の順で従来通りリクエストする"
+  end
 end

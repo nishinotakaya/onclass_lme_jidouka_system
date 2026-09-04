@@ -14,16 +14,17 @@ module FreelanceJobs
 
       KEYWORDS = ["HTML", "CSS", "コーディング", "Excel", "エクセル", "スプレッドシート", "データ入力"].freeze
 
-      def initialize(fetcher:, today:)
+      def initialize(fetcher:, today:, keywords: KEYWORDS)
         @fetcher = fetcher
         @today = today
+        @keywords = keywords
       end
 
       # 通信あり。キーワードごとに1ページ目のみ取得する。
       def fetch
         postings = {}
 
-        KEYWORDS.each do |keyword|
+        @keywords.each do |keyword|
           url = "#{BASE_URL}/requests?keyword=#{CGI.escape(keyword)}&page=1"
           body = @fetcher.get(url)
           self.class.parse(body, today: @today).each { |posting| postings[posting.url] ||= posting }

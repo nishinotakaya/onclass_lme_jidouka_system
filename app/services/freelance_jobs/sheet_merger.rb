@@ -34,7 +34,7 @@ module FreelanceJobs
     # 取得に失敗したサイトの既存行は、更新も期限切れ削除もせずそのまま残す（A1）。
     # 対象外サイトの既存行は更新されない（新規行が来ないため）が、期限切れ削除（should_remove?）は適用する。
     # 取得日時（O列）はRowBuilderが構築時点で書き込み済みのため、ここでは受け取らない。
-    def self.merge(existing_rows:, new_rows:, succeeded_sites:, today:, excluded_sites: [])
+    def self.merge(existing_rows:, new_rows:, succeeded_sites:, today:, excluded_sites: [], category_order: CATEGORY_ORDER)
       normalized_existing_rows = existing_rows.map { |row| normalize_row(row) }
       deduped_new_rows = dedupe_by_url(new_rows)
       new_rows_by_url = index_by_url(deduped_new_rows)
@@ -86,7 +86,7 @@ module FreelanceJobs
       brand_new_rows = cap_new_rows_per_run(brand_new_rows_all)
       brand_new_object_ids = brand_new_rows.each_with_object({}) { |row, memo| memo[row.object_id] = true }
 
-      ordered_rows = order_rows(brand_new_rows, surviving_existing_rows)
+      ordered_rows = order_rows(brand_new_rows, surviving_existing_rows, category_order)
       capped_rows = cap_rows(ordered_rows, brand_new_rows)
       renumbered_rows = renumber(capped_rows)
 
@@ -164,10 +164,10 @@ module FreelanceJobs
 
     # 分類(C列)ごとにグルーピングし、分類内は新規行・既存行を区別せず統一キーで並べ直す
     # （毎回全行を並べ直す。ラウンド2 C10。優先順位はrow_priority_keyを参照）。
-    def self.order_rows(brand_new_rows, surviving_existing_rows)
+    def self.order_rows(brand_new_rows, surviving_existing_rows, category_order)
       all_rows = brand_new_rows + surviving_existing_rows
       categories = all_rows.map { |row| row[CATEGORY_COLUMN_INDEX] }.each_with_index.uniq { |category, _| category }
-      categories = categories.sort_by { |category, index| [category_rank(category), index] }.map(&:first)
+      categories = categories.sort_by { |category, index| [category_rank(category, category_order), index] }.map(&:first)
 
       new_row_object_ids = brand_new_rows.each_with_object({}) { |row, memo| memo[row.object_id] = true }
       existing_original_index = surviving_existing_rows.each_with_index.each_with_object({}) do |(row, index), memo|
@@ -180,9 +180,9 @@ module FreelanceJobs
       end
     end
 
-    def self.category_rank(category)
-      index = CATEGORY_ORDER.index(category)
-      index.nil? ? CATEGORY_ORDER.size : index
+    def self.category_rank(category, category_order)
+      index = category_order.index(category)
+      index.nil? ? category_order.size : index
     end
 
     def self.star_count(recommend_value)

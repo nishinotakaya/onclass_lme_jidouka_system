@@ -20,16 +20,18 @@ module FreelanceJobs
       # robots.txt配慮でキーワードは最小限に絞る（2026-09-04時点）
       KEYWORDS = ["Excel", "スプレッドシート", "HTML", "コーディング"].freeze
 
-      def initialize(fetcher:, today:)
+      def initialize(fetcher:, today:, fixed_paths: FIXED_PATHS, keywords: KEYWORDS)
         @fetcher = fetcher
         @today = today
+        @fixed_paths = fixed_paths
+        @keywords = keywords
       end
 
-      # 通信あり。固定2URL＋キーワード検索を巡回する。
+      # 通信あり。固定URL＋キーワード検索を巡回する。
       def fetch
         postings = {}
 
-        (FIXED_PATHS.map { |path| "#{BASE_URL}#{path}" } + keyword_urls).each do |url|
+        (@fixed_paths.map { |path| "#{BASE_URL}#{path}" } + keyword_urls).each do |url|
           body = @fetcher.get(url)
           self.class.parse(body, today: @today).each { |posting| postings[posting.url] ||= posting }
         end
@@ -151,7 +153,7 @@ module FreelanceJobs
       end
 
       def keyword_urls
-        KEYWORDS.map { |keyword| "#{BASE_URL}/work/search?keyword=#{CGI.escape(keyword)}&open=1&sort=started" }
+        @keywords.map { |keyword| "#{BASE_URL}/work/search?keyword=#{CGI.escape(keyword)}&open=1&sort=started" }
       end
       private :keyword_urls
     end

@@ -15,6 +15,7 @@ else
   %w[
     http_fetcher job_posting classifier row_builder sheet_merger sheets_client
     sources/crowdworks sources/lancers sources/coconala sources/shufti sources/mamaworks sources/craudia
+    engineer_classifier profile
     research_service
   ].each { |name| require "#{root}/services/freelance_jobs/#{name}" }
 end
