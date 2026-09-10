@@ -270,54 +270,49 @@ module Lme
       }
     end
 
-    def seminar_map_from_categories(categories)
-      cat = Array(categories).find { |c| (c['id'] || c[:id]).to_i == PROAKA_SEMINAR_CATEGORY }
-      return {} unless cat
-      tag_list = Array(cat['tags'] || cat[:tags])
+    # セミナー/体験会タグ名から (種別, 日付) を取り出す。
+    # 対応形式:
+    #   "参加希望 2025/10/09" / "参加 2025-10-09" / "参加希望2025年10月9日（木）"
+    #   "2026年9月10日 体験会参加希望" / "2026/9/10 体験会参加" / "9月10日 体験会参加希望"（年省略は当年）
+    SEMINAR_KIND_PATTERN = '(?:体験会|セミナー)?\\s*(参加希望|参加)'
+    SEMINAR_DATE_PATTERN = '(?:([0-9]{4})[\\/\\-\\.\\s年])?([0-9]{1,2})[\\/\\-\\.\\s月]([0-9]{1,2})日?(?:\\s*[（(][^）)]*[）)])?'
+    # 種別が先: 日付の後ろに補足文（「19時〜」等）が付いていてもよい
+    SEMINAR_KIND_FIRST   = /\A\s*#{SEMINAR_KIND_PATTERN}\s*#{SEMINAR_DATE_PATTERN}(?:[^0-9].*)?\z/
+    # 日付が先: 前置きは数字を含まない語のみ許可（年を前置きに食われないため）
+    SEMINAR_DATE_FIRST   = /\A[^0-9]*#{SEMINAR_DATE_PATTERN}\s*#{SEMINAR_KIND_PATTERN}\s*\z/
 
+    def parse_seminar_tag_name(raw_name)
+      name = raw_name.to_s
+      name = name.respond_to?(:unicode_normalize) ? name.unicode_normalize(:nfkc) : name.tr('０-９／－．', '0-9/-.')
+      name = name.strip
+
+      kind, year, month, day =
+        if (m = name.match(SEMINAR_KIND_FIRST))
+          [m[1], m[2], m[3], m[4]]
+        elsif (m = name.match(SEMINAR_DATE_FIRST))
+          [m[4], m[1], m[2], m[3]]
+        end
+      return nil unless kind
+
+      year = (year.presence || Time.zone.today.year).to_i
+      ymd  = Date.new(year, month.to_i, day.to_i).strftime('%Y-%m-%d')
+      [kind == '参加希望' ? :hope : :attend, ymd]
+    rescue ArgumentError
+      nil # 無効日付はスキップ
+    end
+
+    # 全カテゴリのタグから「参加希望/参加 + 日付」の形をしたものを拾う。
+    # 以前は PROAKA_SEMINAR_CATEGORY 配下だけを見ていたが、体験会タグは別カテゴリに作られることがあるため
+    # カテゴリではなくタグ名の形式で判定する。
+    def seminar_map_from_categories(categories)
       result = Hash.new { |h, k| h[k] = { hope: false, attend: false } }
 
-      tag_list.each do |t|
-        raw_name = (t['name'] || t[:name]).to_s
-
-        # 全角→半角や互換文字の統一（例: ［／－］, 全角数字）
-        name = raw_name.dup
-        if name.respond_to?(:unicode_normalize)
-          name = name.unicode_normalize(:nfkc)
-        else
-          name = name.tr('０-９／－．', '0-9/-.')
-        end
-        name = name.strip
-
-        # 例: "参加希望 2025/10/09", "参加 2025-10-09", "参加希望2025年10月9日（木）"
-        if name =~ /(参加希望|参加)\s*([0-9]{4})[\/\-\.\s年]([0-9]{1,2})[\/\-\.\s月]([0-9]{1,2})(?:日|[^0-9].*)?\s*\z/
-          what, y, m, d = $1, $2.to_i, $3.to_i, $4.to_i
-          begin
-            ymd = Date.new(y, m, d).strftime('%Y-%m-%d')
-            if what == '参加希望'
-              result[ymd][:hope] = true
-            else
-              result[ymd][:attend] = true
-            end
-          rescue ArgumentError
-            # 無効日付はスキップ
-          end
-          next
-        end
-
-        # フォールバック: 「キーワード + 日付っぽいもの」を緩めに抽出
-        if name =~ /(参加希望|参加)\s*([0-9]{4}[\-\/\.][0-9]{1,2}[\-\/\.][0-9]{1,2})/
-          what, datestr = $1, $2
-          begin
-            ymd = Date.parse(datestr).strftime('%Y-%m-%d')
-            if what == '参加希望'
-              result[ymd][:hope] = true
-            else
-              result[ymd][:attend] = true
-            end
-          rescue ArgumentError
-            # だめなら無視
-          end
+      Array(categories).each do |category|
+        Array(category['tags'] || category[:tags]).each do |tag|
+          parsed = parse_seminar_tag_name(tag['name'] || tag[:name])
+          next unless parsed
+          kind, ymd = parsed
+          result[ymd][kind] = true
         end
       end
 
