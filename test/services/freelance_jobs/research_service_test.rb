@@ -2,7 +2,7 @@
 # test/services/freelance_jobs/research_service_test.rb
 #
 # Fake fetcher（サイトのホスト名でルーティングし、fixtureの本文を返す）と
-# Fake sheets client（read_values/replace_sheetの呼び出しを記録するだけ）を使い、
+# Fake sheets client（read_rows/replace_sheetの呼び出しを記録するだけ）を使い、
 # ネットワーク・スプレッドシートへの実アクセスを一切行わずにオーケストレーションを検証する。
 
 require_relative "../../support/freelance_jobs_loader"
@@ -42,16 +42,16 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
   end
 
   class FakeSheetsClient
-    attr_reader :replace_sheet_calls, :read_values_calls
+    attr_reader :replace_sheet_calls, :read_rows_calls
 
     def initialize(existing_values:)
       @existing_values = existing_values
       @replace_sheet_calls = []
-      @read_values_calls = []
+      @read_rows_calls = []
     end
 
-    def read_values(range)
-      @read_values_calls << range
+    def read_rows(max_row_count: 2000)
+      @read_rows_calls << max_row_count
       @existing_values
     end
 
@@ -114,7 +114,7 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     assert summary[:aborted]
     assert_equal "取得に成功したサイトがありません", summary[:reason]
     assert_equal [], sheets_client.replace_sheet_calls
-    assert_equal [], sheets_client.read_values_calls, "全滅時はシート読み取りにも進まない"
+    assert_equal [], sheets_client.read_rows_calls, "全滅時はシート読み取りにも進まない"
     assert_equal 6, summary[:failures].size
   end
 

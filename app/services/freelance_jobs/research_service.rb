@@ -69,7 +69,9 @@ module FreelanceJobs
         return aborted_summary("分類済み候補が0件です", fetched_counts, succeeded_sites, failures, rows.size, starred_candidates)
       end
 
-      raw_values = sheets_client.read_values("A1:O2000")
+      # 行モデル（案件URLをindex5に差し込んだ15列）で読む。シート上に案件URL列は無く、
+      # 案件名セルのハイパーリンクからURLが復元される。
+      raw_values = sheets_client.read_rows
       existing_rows, header_missing = extract_existing_rows(raw_values)
 
       if header_missing

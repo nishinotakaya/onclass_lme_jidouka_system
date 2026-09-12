@@ -8,16 +8,38 @@ module FreelanceJobs
   # 案件一覧シートの読み取り・書き込みを担当する。
   # 認証は Youtube::CompetitorWorker#build_sheets_service と同じ流儀
   # （サービスアカウントJSON鍵、ENV["GOOGLE_APPLICATION_CREDENTIALS"]）。
+  #
+  # 行モデル（RowBuilder / SheetMerger が扱う配列）は ROW_COLUMN_COUNT 列で、
+  # index URL_COLUMN_INDEX に案件URLを持つ。一方シート上は案件URL列を置かず、
+  # 案件名セルのハイパーリンク（textFormat.link）としてURLを保持する。
+  # 読み取り時にリンクからURLを復元して行モデルへ差し戻すため、マージ側は
+  # 案件URL列の有無を意識しなくてよい。
   class SheetsClient
-    COLUMN_COUNT = 15
+    # 行モデルの列数（案件URLを含む）。バックアップシートにはこの形のまま退避する。
+    ROW_COLUMN_COUNT = 15
+    # シート上の列数（案件URLを除く A〜N）。
+    SHEET_COLUMN_COUNT = 14
+    SHEET_LAST_COLUMN = "N"
+    URL_COLUMN_INDEX = 5
+    TITLE_COLUMN_INDEX = 3
+    MAX_READ_ROW_COUNT = 2000
 
-    COLUMN_WIDTHS = [90, 45, 130, 300, 95, 230, 130, 400, 260, 130, 80, 130, 120, 330, 120].freeze
+    # 案件URL列(230px)を除いた14列分。
+    COLUMN_WIDTHS = [90, 45, 130, 300, 95, 130, 400, 260, 130, 80, 130, 120, 330, 120].freeze
 
     BANNER_BACKGROUND_COLOR = { red: 0.93, green: 0.93, blue: 0.93 }.freeze
     HEADER_BACKGROUND_COLOR = { red: 0.16, green: 0.40, blue: 0.75 }.freeze
     STARRED_BACKGROUND_COLOR = { red: 1.0, green: 0.97, blue: 0.80 }.freeze
     WHITE_BACKGROUND_COLOR = { red: 1.0, green: 1.0, blue: 1.0 }.freeze
     FORMULA_TRIGGER_CHARS = ["=", "+", "-", "@"].freeze
+    LINK_FOREGROUND_COLOR = { red: 0.05, green: 0.35, blue: 0.75 }.freeze
+    # バナー行の左上(A1)に置く Sidekiq Web UI へのリンク。ラベルと遷移先。
+    SIDEKIQ_LINK_LABEL = "sidekiq"
+    DEFAULT_SIDEKIQ_WEB_URL = "https://onclass-lme-jidouka-app-857ffde75fc4.herokuapp.com/sidekiq"
+
+    def self.sidekiq_web_url
+      ENV.fetch("SIDEKIQ_WEB_URL", DEFAULT_SIDEKIQ_WEB_URL)
+    end
 
     def initialize(spreadsheet_id:, sheet_gid:)
       @spreadsheet_id = spreadsheet_id
@@ -25,16 +47,28 @@ module FreelanceJobs
       @service = build_service
     end
 
-    def read_values(range)
-      response = @service.get_spreadsheet_values(@spreadsheet_id, "'#{sheet_name}'!#{range}")
-      response.values || []
+    # シートを行モデル（ROW_COLUMN_COUNT列）として読む。
+    # 案件名セルのハイパーリンクを URL_COLUMN_INDEX に差し込んで返すため、
+    # 値だけを返す get_spreadsheet_values ではなくグリッドデータを取得する。
+    def read_rows(max_row_count: MAX_READ_ROW_COUNT)
+      range = "'#{sheet_name}'!A1:#{SHEET_LAST_COLUMN}#{max_row_count}"
+      spreadsheet = @service.get_spreadsheet(
+        @spreadsheet_id,
+        ranges: [range],
+        include_grid_data: true,
+        fields: "sheets.data.rowData.values(formattedValue,hyperlink,userEnteredFormat.textFormat.link)"
+      )
+      row_data = spreadsheet.sheets&.first&.data&.first&.row_data || []
+      rows = row_data.map { |grid_row| build_row_model(grid_row) }
+      rows.pop while rows.last && rows.last.all? { |value| value.to_s.empty? }
+      rows
     end
 
     # 書き込み手順（空になる瞬間を作らない）:
-    # 1. 隠しシート（backup_sheet_name）へ現在値(backup_values)を退避
-    # 2. A1:O(n)を上書き（数式化しうる文字列は'を付けてガード）
+    # 1. 隠しシート（backup_sheet_name）へ現在値(backup_values)を案件URL列込みで退避
+    # 2. A1:N(n)を上書き（案件URL列は書かない。数式化しうる文字列は'を付けてガード）
     # 3. 余った行だけclear
-    # 4. 書式（既存merge/basic_filterを取得してから安全に張り替え）
+    # 4. 書式（既存merge/basic_filterを取得してから安全に張り替え）＋案件名セルへリンク付与
     def replace_sheet(banner_text:, header:, rows:, starred_row_indexes:, backup_values:, column_widths: COLUMN_WIDTHS)
       metadata = fetch_metadata
       main_sheet = resolve_main_sheet!(metadata)
@@ -42,10 +76,11 @@ module FreelanceJobs
 
       backup_existing_values!(metadata, backup_values)
 
+      previous_row_count = main_sheet.properties.grid_properties.row_count.to_i
       values = build_write_values(banner_text, header, rows)
       write_values!(values)
-      clear_leftover_rows!(main_sheet, values.size)
-      apply_formatting!(main_sheet, values.size, starred_row_indexes, column_widths)
+      clear_leftover_rows!(previous_row_count, values.size)
+      apply_formatting!(main_sheet, values.size, starred_row_indexes, column_widths, rows, previous_row_count)
     end
 
     # バックアップ用の隠しシート名。gidごとに一意にする（例: "_backup_gid0"）。
@@ -54,6 +89,19 @@ module FreelanceJobs
     end
 
     private
+
+    # グリッドデータ1行 → 案件URLを差し込んだ ROW_COLUMN_COUNT 列の行モデル。
+    def build_row_model(grid_row)
+      cells = grid_row.values || []
+      sheet_values = Array.new(SHEET_COLUMN_COUNT) { |index| cells[index]&.formatted_value.to_s }
+      sheet_values.insert(URL_COLUMN_INDEX, cell_link_uri(cells[TITLE_COLUMN_INDEX]))
+    end
+
+    def cell_link_uri(cell)
+      return "" unless cell
+
+      (cell.hyperlink || cell.user_entered_format&.text_format&.link&.uri).to_s
+    end
 
     def build_service
       service = Google::Apis::SheetsV4::SheetsService.new
@@ -120,15 +168,24 @@ module FreelanceJobs
           properties: {
             title: backup_sheet_name,
             hidden: true,
-            grid_properties: { row_count: 2000, column_count: COLUMN_COUNT }
+            grid_properties: { row_count: MAX_READ_ROW_COUNT, column_count: ROW_COLUMN_COUNT }
           }
         }
       }])
     end
 
     def build_write_values(banner_text, header, rows)
-      banner_row = [banner_text] + Array.new(header.size - 1, "")
-      [banner_row, header, *rows].map { |row| row.map { |value| escape_formula(value) } }
+      # A1は Sidekiq Web へのリンク、B1以降(結合セル)がバナー本文。
+      banner_row = [SIDEKIQ_LINK_LABEL, banner_text] + Array.new(SHEET_COLUMN_COUNT - 2, "")
+      [banner_row, *[header, *rows].map { |row| strip_url_column(row) }]
+        .map { |row| row.map { |value| escape_formula(value) } }
+    end
+
+    # 行モデルから案件URL列を落として、シート上の14列にする。
+    def strip_url_column(row)
+      sheet_row = Array.new(ROW_COLUMN_COUNT) { |index| row[index] }
+      sheet_row.delete_at(URL_COLUMN_INDEX)
+      sheet_row
     end
 
     # 先頭が = + - @ の文字列は数式と解釈されうるため ' を付けてテキスト扱いにする。
@@ -140,17 +197,17 @@ module FreelanceJobs
     end
 
     def write_values!(values)
-      write_range!("'#{@sheet_name}'!A1:O#{values.size}", values, value_input_option: "USER_ENTERED")
+      write_range!("'#{@sheet_name}'!A1:#{SHEET_LAST_COLUMN}#{values.size}", values,
+                    value_input_option: "USER_ENTERED")
     end
 
-    def clear_leftover_rows!(main_sheet, written_row_count)
-      previous_row_count = main_sheet.properties.grid_properties.row_count.to_i
+    def clear_leftover_rows!(previous_row_count, written_row_count)
       return if previous_row_count <= written_row_count
 
-      clear_range!("'#{@sheet_name}'!A#{written_row_count + 1}:O#{previous_row_count}")
+      clear_range!("'#{@sheet_name}'!A#{written_row_count + 1}:#{SHEET_LAST_COLUMN}#{previous_row_count}")
     end
 
-    def apply_formatting!(main_sheet, total_row_count, starred_row_indexes, column_widths)
+    def apply_formatting!(main_sheet, total_row_count, starred_row_indexes, column_widths, rows, previous_row_count)
       sheet_id = main_sheet.properties.sheet_id
       requests = []
 
@@ -170,6 +227,8 @@ module FreelanceJobs
       requests.concat(starred_row_requests(sheet_id, starred_row_indexes))
       requests << frozen_row_count_request(sheet_id)
       requests.concat(column_width_requests(sheet_id, column_widths))
+      requests << sidekiq_link_request(sheet_id)
+      requests.concat(title_link_requests(sheet_id, rows, previous_row_count))
       requests << basic_filter_request(sheet_id, total_row_count)
 
       batch_update!(requests)
@@ -193,10 +252,12 @@ module FreelanceJobs
       end
     end
 
+    # A1はSidekiqリンク用に独立させ、B1:N1だけをバナー本文として結合する。
     def merge_banner_request(sheet_id)
       {
         merge_cells: {
-          range: full_width_range(sheet_id, 0, 1),
+          range: { sheet_id: sheet_id, start_row_index: 0, end_row_index: 1,
+                    start_column_index: 1, end_column_index: SHEET_COLUMN_COUNT },
           merge_type: "MERGE_ALL"
         }
       }
@@ -320,6 +381,54 @@ module FreelanceJobs
       end
     end
 
+    # バナー行の左上(A1)に Sidekiq Web UI へのリンクを張る。
+    # banner_format_request が textFormat を丸ごと上書きするため、必ずその後に適用する。
+    def sidekiq_link_request(sheet_id)
+      {
+        update_cells: {
+          range: { sheet_id: sheet_id, start_row_index: 0, end_row_index: 1,
+                    start_column_index: 0, end_column_index: 1 },
+          rows: [{ values: [link_cell(self.class.sidekiq_web_url, bold: true)] }],
+          fields: "userEnteredFormat.textFormat(link,foregroundColor,underline,bold)"
+        }
+      }
+    end
+
+    # 案件名セル(D列)へ案件URLをハイパーリンクとして張る。値は書き換えず書式だけを更新する。
+    # 全行を毎回書き直す（order_rowsで並びが変わるため、行位置に残った古いリンクは必ず上書きする）。
+    # 前回より行数が減った場合は、余った行のリンクも消す。
+    def title_link_requests(sheet_id, rows, previous_row_count)
+      link_row_count = [rows.size, previous_row_count - 2].max
+      return [] if link_row_count <= 0
+
+      link_cells = Array.new(link_row_count) { |index| title_link_cell(rows.dig(index, URL_COLUMN_INDEX)) }
+      [{
+        update_cells: {
+          range: {
+            sheet_id: sheet_id, start_row_index: 2, end_row_index: 2 + link_row_count,
+            start_column_index: TITLE_COLUMN_INDEX, end_column_index: TITLE_COLUMN_INDEX + 1
+          },
+          rows: link_cells.map { |cell| { values: [cell] } },
+          fields: "userEnteredFormat.textFormat(link,foregroundColor,underline)"
+        }
+      }]
+    end
+
+    def title_link_cell(url)
+      link_cell(url)
+    end
+
+    # URLが空ならリンクを解除するセル、あればリンク付きセルを返す。
+    def link_cell(url, bold: nil)
+      text_format = { link: nil, underline: false }
+      unless url.to_s.strip.empty?
+        text_format = { link: { uri: url.to_s.strip }, foreground_color: LINK_FOREGROUND_COLOR, underline: true }
+      end
+      text_format[:bold] = bold unless bold.nil?
+
+      { user_entered_format: { text_format: text_format } }
+    end
+
     # データ0件でも範囲が壊れないよう、end_row_indexは最低3を確保する。
     def basic_filter_request(sheet_id, total_row_count)
       {
@@ -330,7 +439,7 @@ module FreelanceJobs
               start_row_index: 1,
               end_row_index: [total_row_count, 3].max,
               start_column_index: 0,
-              end_column_index: COLUMN_COUNT
+              end_column_index: SHEET_COLUMN_COUNT
             }
           }
         }
@@ -339,7 +448,7 @@ module FreelanceJobs
 
     def full_width_range(sheet_id, start_row_index, end_row_index)
       { sheet_id: sheet_id, start_row_index: start_row_index, end_row_index: end_row_index,
-        start_column_index: 0, end_column_index: COLUMN_COUNT }
+        start_column_index: 0, end_column_index: SHEET_COLUMN_COUNT }
     end
 
     def write_range!(range, values, value_input_option:)
