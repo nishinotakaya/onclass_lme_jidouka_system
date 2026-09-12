@@ -70,6 +70,7 @@ module FreelanceJobs
         category_order: ["Ruby", "TypeScript", "React"],
         classifier: FreelanceJobs::EngineerClassifier,
         source_specs: [
+          [FreelanceJobs::Sources::Levtech, {}],
           [FreelanceJobs::Sources::Crowdworks, {
             search_targets: [
               { keyword: "Ruby", hint: "Ruby", max_page: 2 },
