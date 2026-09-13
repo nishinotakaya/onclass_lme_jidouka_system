@@ -55,10 +55,10 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
     expected_banner_row = [FreelanceJobs::SheetsClient::SIDEKIQ_LINK_LABEL,
                            %(=SUBTOTAL(103,$C$3:$C$3)&"件"),
                            "バナー本文"] +
-                           Array.new(FreelanceJobs::SheetsClient::SHEET_COLUMN_COUNT - 3, "")
+                           Array.new(FreelanceJobs::SheetsClient::BASE_SHEET_COLUMN_COUNT - 3, "")
     assert_equal expected_banner_row, values[0],
                  "A1はSidekiqリンク用ラベル、B1はフィルター後の表示件数、C1がバナー本文の想定"
-    assert_equal FreelanceJobs::SheetsClient::SHEET_COLUMN_COUNT, values[0].size
+    assert_equal FreelanceJobs::SheetsClient::BASE_SHEET_COLUMN_COUNT, values[0].size
   end
 
   # --- visible_count_formula（B1のフィルター後件数） ---
@@ -80,7 +80,7 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
     rows = [full_width_row_model]
 
     values = client.send(:build_write_values, "バナー本文", header, rows)
-    visible_count_cell = values[0][FreelanceJobs::SheetsClient::VISIBLE_COUNT_COLUMN_INDEX]
+    visible_count_cell = values[0][FreelanceJobs::SheetsClient::BASE_VISIBLE_COUNT_COLUMN_INDEX]
 
     assert visible_count_cell.start_with?("=SUBTOTAL("),
            "件数セルは数式として評価させたいので ' を付けない想定: #{visible_count_cell}"
@@ -92,8 +92,8 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
 
     values = client.send(:build_write_values, "バナー本文", header, rows)
 
-    assert_equal FreelanceJobs::SheetsClient::SHEET_COLUMN_COUNT, values[1].size, "ヘッダーも14列に落ちる想定"
-    assert_equal FreelanceJobs::SheetsClient::SHEET_COLUMN_COUNT, values[2].size, "データ行も14列に落ちる想定"
+    assert_equal FreelanceJobs::SheetsClient::BASE_SHEET_COLUMN_COUNT, values[1].size, "ヘッダーも14列に落ちる想定"
+    assert_equal FreelanceJobs::SheetsClient::BASE_SHEET_COLUMN_COUNT, values[2].size, "データ行も14列に落ちる想定"
     refute_includes values[2], "https://example.com/job", "案件URL列(index5)はシート書き込み値から落ちる想定"
     assert_equal "値4", values[2][4], "URL列より前の列はindexがずれない"
     assert_equal "値6", values[2][5], "URL列より後の列はindexが1つ前にずれる"
@@ -164,74 +164,113 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
     [sheets_client, service]
   end
 
-  # 条件付き書式は毎朝のバッチで積み上がると重複するので、既存ルールを全部消してから張り直す。
+  # --- チェックボックス列（先頭列） ---
+
+  def test_build_write_values_prepends_a_checkbox_cell_to_every_row
+    client = build_client(checkbox_column: true)
+    rows = [build_row("https://example.com/a"), build_row("https://example.com/b")]
+
+    values = client.send(:build_write_values, "バナー", header_row_model, rows)
+
+    assert_equal FreelanceJobs::SheetsClient::BASE_SHEET_COLUMN_COUNT + 1, values[0].size
+    # バナー行のチェックボックス列は空にして、Sidekiqリンクと件数を1列ずつ右へずらす。
+    assert_equal "", values[0][0]
+    assert_equal FreelanceJobs::SheetsClient::SIDEKIQ_LINK_LABEL, values[0][1]
+    assert_match(/\A=SUBTOTAL\(103,\$D\$3:\$D\$4\)/, values[0][2], "件数の集計対象も分類列(D列)へずれる想定")
+    assert_equal FreelanceJobs::SheetsClient::CHECKBOX_HEADER_LABEL, values[1][0]
+    assert_equal "🌟おすすめ", values[1][1]
+    assert_equal [false, false], values[2..].map(&:first)
+  end
+
+  # チェックを付けた案件は、次の更新で行の位置が変わってもチェックが残る。
+  def test_build_write_values_carries_over_checked_state_by_job_url
+    client = build_client(checkbox_column: true)
+    client.instance_variable_set(:@checkbox_states_by_url, { "https://example.com/b" => true })
+    rows = [build_row("https://example.com/a"), build_row("https://example.com/b")]
+
+    values = client.send(:build_write_values, "バナー", header_row_model, rows)
+
+    assert_equal [false, true], values[2..].map(&:first)
+  end
+
+  def test_build_write_values_has_no_checkbox_cell_when_the_sheet_has_no_checkbox_column
+    values = build_client.send(:build_write_values, "バナー", header_row_model, [build_row("https://example.com/a")])
+
+    assert_equal FreelanceJobs::SheetsClient::BASE_SHEET_COLUMN_COUNT, values[0].size
+    assert_equal FreelanceJobs::SheetsClient::SIDEKIQ_LINK_LABEL, values[0][0]
+    assert_equal "🌟おすすめ", values[1][0]
+  end
+
+  # 案件が増えればチェックボックスもその行まで伸びる（データ行の範囲ぴったりに張り直す）。
+  def test_checkbox_validation_requests_cover_exactly_the_data_rows
+    client = build_client(checkbox_column: true)
+
+    requests = client.send(:checkbox_validation_requests, 123, 10, 10)
+
+    assert_equal 1, requests.size
+    validation = requests.first.fetch(:set_data_validation)
+    assert_equal({ sheet_id: 123, start_row_index: 2, end_row_index: 10, start_column_index: 0, end_column_index: 1 },
+                  validation.fetch(:range))
+    assert_equal "BOOLEAN", validation.dig(:rule, :condition, :type)
+  end
+
+  # 行数が減った回は、余った行の入力規則を外す（ruleを渡さないリクエストが解除になる）。
+  def test_checkbox_validation_requests_release_the_rule_on_leftover_rows
+    client = build_client(checkbox_column: true)
+
+    requests = client.send(:checkbox_validation_requests, 123, 5, 12)
+
+    assert_equal 2, requests.size
+    leftover = requests.last.fetch(:set_data_validation)
+    assert_equal 5, leftover.dig(:range, :start_row_index)
+    assert_equal 12, leftover.dig(:range, :end_row_index)
+    refute leftover.key?(:rule), "ruleを渡さないことが入力規則の解除になる"
+  end
+
+  def test_checkbox_validation_requests_are_empty_without_a_checkbox_column
+    assert_empty build_client.send(:checkbox_validation_requests, 123, 10, 10)
+  end
+
+  # チェックボックス列を足した最初の実行では、まだ旧レイアウトのシートを読む。
+  def test_detect_checkbox_offset_reads_the_layout_from_the_header_row
+    client = build_client(checkbox_column: true)
+    old_layout = [grid_row(["⏰ バナー"]), grid_row(["🌟おすすめ", "No."])]
+    new_layout = [grid_row(["", "sidekiq"]), grid_row([FreelanceJobs::SheetsClient::CHECKBOX_HEADER_LABEL, "🌟おすすめ"])]
+
+    assert_equal 0, client.send(:detect_checkbox_offset, old_layout)
+    assert_equal 1, client.send(:detect_checkbox_offset, new_layout)
+  end
+
+  def build_row(url)
+    row = Array.new(FreelanceJobs::SheetsClient::ROW_COLUMN_COUNT) { |index| "値#{index}" }
+    row[FreelanceJobs::SheetsClient::URL_COLUMN_INDEX] = url
+    row
+  end
+
+  def header_row_model
+    FreelanceJobs::RowBuilder::HEADER
+  end
+
+  def grid_row(formatted_values)
+    Google::Apis::SheetsV4::RowData.new(
+      values: formatted_values.map { |value| Google::Apis::SheetsV4::CellData.new(formatted_value: value) }
+    )
+  end
+
+  # シートの書式はバッチが持ち主なので、条件付き書式は毎回すべて消す。
   # 削除はindexが前に詰まる仕様のため、後ろのルールから消さないと消し漏れる。
-  def test_conditional_format_requests_deletes_existing_rules_from_the_last_index
+  def test_clear_conditional_format_requests_deletes_existing_rules_from_the_last_index
     client = build_client
     main_sheet = sheet_stub(conditional_formats: [Object.new, Object.new, Object.new])
 
-    requests = client.send(:conditional_format_requests, main_sheet, 5, highlight_rule)
+    requests = client.send(:clear_conditional_format_requests, main_sheet)
 
-    deleted_indexes = requests.filter_map { |request| request.dig(:delete_conditional_format_rule, :index) }
+    deleted_indexes = requests.map { |request| request.dig(:delete_conditional_format_rule, :index) }
     assert_equal [2, 1, 0], deleted_indexes
   end
 
-  def test_conditional_format_requests_adds_the_rule_over_the_whole_data_row_range
-    client = build_client
-    added = client.send(:conditional_format_requests, sheet_stub, 5, highlight_rule)
-                  .fetch(-1)
-                  .fetch(:add_conditional_format_rule)
-    rule = added.fetch(:rule)
-
-    assert_equal 0, added.fetch(:index)
-    # ヘッダー行(index 1)の次から最終行まで、A〜N列を1つの範囲にして行全体を塗る。
-    assert_equal [{ sheet_id: 123, start_row_index: 2, end_row_index: 5, start_column_index: 0, end_column_index: 14 }],
-                  rule.fetch(:ranges)
-    assert_equal "CUSTOM_FORMULA", rule.dig(:boolean_rule, :condition, :type)
-    assert_equal [{ user_entered_value: highlight_rule.formula }],
-                  rule.dig(:boolean_rule, :condition, :values)
-    assert_equal highlight_rule.background_color, rule.dig(:boolean_rule, :format, :background_color)
-  end
-
-  # highlight_ruleを持たないプロファイル（未経験向け）では、既存ルールの削除だけを行う。
-  def test_conditional_format_requests_only_deletes_when_there_is_no_highlight_rule
-    client = build_client
-    requests = client.send(:conditional_format_requests, sheet_stub(conditional_formats: [Object.new]), 5, nil)
-
-    assert_equal 1, requests.size
-    assert requests.first.key?(:delete_conditional_format_rule)
-  end
-
-  # データ行が無いとき(バナー+ヘッダーのみ)は範囲が作れないので追加しない。
-  def test_conditional_format_requests_skips_adding_when_there_is_no_data_row
-    client = build_client
-    requests = client.send(:conditional_format_requests, sheet_stub, 2, highlight_rule)
-
-    assert_empty requests
-  end
-
-  # 実際にシートへ入るG列の文言に対して、数式が意図どおりの行だけを選ぶことを確かめる
-  # （REGEXMATCHはGoogleスプレッドシート側の評価なので、ここでは同等のRuby正規表現で検証する）。
-  def test_engineer_highlight_formula_matches_levels_below_three_years
-    below_three_years = [
-      "★☆☆ 初級（未経験・学習中OK）",
-      "★★☆ 中級（実務経験あり）",
-      "★★☆ 中級\n（実務経験あり）",
-      "★★☆ 中級（実務経験1年以上）",
-      "★★☆ 中級（実務経験2年以上）"
-    ]
-    three_years_or_more = [
-      "★★☆ 中級（実務経験3年以上）",
-      "★★☆ 中級（実務経験5年以上）",
-      "★★★ 上級（リード・設計）",
-      "★★★ 上級（リード・設計／10年以上）"
-    ]
-
-    below_three_years.each { |level| assert highlight_target?("Ruby", level), "青くなるべき: #{level}" }
-    below_three_years.each { |level| assert highlight_target?("TypeScript", level), "青くなるべき: #{level}" }
-    three_years_or_more.each { |level| refute highlight_target?("Ruby", level), "青くしてはいけない: #{level}" }
-    # 分類がReactの行は対象外。
-    refute highlight_target?("React", "★★☆ 中級（実務経験1年以上）")
+  def test_clear_conditional_format_requests_returns_nothing_when_there_is_no_rule
+    assert_empty build_client.send(:clear_conditional_format_requests, sheet_stub)
   end
 
   def test_replace_sheet_unmerges_the_banner_row_before_writing_values
@@ -261,9 +300,9 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
 
     assert_equal 0, range[:start_row_index]
     assert_equal 1, range[:end_row_index]
-    assert_equal FreelanceJobs::SheetsClient::BANNER_TEXT_COLUMN_INDEX, range[:start_column_index]
+    assert_equal FreelanceJobs::SheetsClient::BASE_BANNER_TEXT_COLUMN_INDEX, range[:start_column_index]
     assert_equal 2, range[:start_column_index], "A1(Sidekiqリンク)とB1(表示件数)は結合に含めない想定"
-    assert_equal FreelanceJobs::SheetsClient::SHEET_COLUMN_COUNT, range[:end_column_index]
+    assert_equal FreelanceJobs::SheetsClient::BASE_SHEET_COLUMN_COUNT, range[:end_column_index]
   end
 
   # --- strip_url_column ---
@@ -288,7 +327,7 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
     assert_equal 2, range[:start_row_index]
     assert_equal 5, range[:end_row_index]
     assert_equal 0, range[:start_column_index]
-    assert_equal FreelanceJobs::SheetsClient::SHEET_COLUMN_COUNT, range[:end_column_index]
+    assert_equal FreelanceJobs::SheetsClient::BASE_SHEET_COLUMN_COUNT, range[:end_column_index]
   end
 
   # --- basic_filter_request（A6: データ0件でも範囲が壊れない） ---
@@ -400,7 +439,7 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
   end
 
   def build_sheet_row(title_hyperlink: nil, title_link_uri: nil)
-    Array.new(FreelanceJobs::SheetsClient::SHEET_COLUMN_COUNT) do |index|
+    Array.new(FreelanceJobs::SheetsClient::BASE_SHEET_COLUMN_COUNT) do |index|
       if index == FreelanceJobs::SheetsClient::TITLE_COLUMN_INDEX
         build_sheet_cell("案件#{index}", hyperlink: title_hyperlink, link_uri: title_link_uri)
       else
@@ -491,7 +530,7 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
 
   def test_read_rows_drops_trailing_fully_blank_rows
     metadata = GidFakeMetadata.new([GidFakeSheet.new(GidFakeSheetProperties.new(0, "HTML CSS求人"))])
-    blank_row = Array.new(FreelanceJobs::SheetsClient::SHEET_COLUMN_COUNT) { build_sheet_cell("") }
+    blank_row = Array.new(FreelanceJobs::SheetsClient::BASE_SHEET_COLUMN_COUNT) { build_sheet_cell("") }
     grid_spreadsheet = build_grid_spreadsheet([build_sheet_row, blank_row])
     service = GidFakeGoogleSheetsService.new(metadata: metadata, grid_spreadsheet: grid_spreadsheet)
     client_instance = build_client_with_fake_service(spreadsheet_id: "SHEET_ID", sheet_gid: 0, service: service)
@@ -618,12 +657,16 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
     assert_equal [], requests
   end
 
-  # 条件付き書式のリクエスト組み立てだけを見たいので、認証せずにインスタンスだけ作る。
-  def build_client
-    FreelanceJobs::SheetsClient.allocate
+  # リクエストの組み立てだけを見たいので、認証せずにインスタンスだけ作る。
+  # checkbox_column: true にするとチェックボックス列ぶん全体が1列ずれる。
+  def build_client(checkbox_column: false)
+    client_instance = FreelanceJobs::SheetsClient.allocate
+    client_instance.instance_variable_set(:@checkbox_column, checkbox_column)
+    client_instance.instance_variable_set(:@checkbox_states_by_url, {})
+    client_instance
   end
 
-  # conditional_format_requests が読むのは sheet_id と conditional_formats だけ。
+  # 書式リクエストが読むのは sheet_id と conditional_formats だけ。
   def sheet_stub(conditional_formats: [])
     CallOrderRecordingService::SheetStub.new(
       properties: CallOrderRecordingService::Properties.new(
@@ -634,20 +677,5 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
       basic_filter: nil,
       conditional_formats: conditional_formats
     )
-  end
-
-  def highlight_rule
-    FreelanceJobs::Profile::ENGINEER.highlight_rule
-  end
-
-  # ENGINEERの数式と同じ判定をRubyで再現する（数式そのものの分岐を1箇所に保つため、
-  # 正規表現は数式リテラルから取り出して使う）。
-  def highlight_target?(category, level)
-    formula = highlight_rule.formula
-    senior_pattern = formula[/REGEXMATCH\(\$G3,"([^"]+)"\)\),/, 1]
-    years_pattern = formula[/REGEXMATCH\(\$G3,"([^"]+)"\)\)\)\z/, 1]
-    ["Ruby", "TypeScript"].include?(category) &&
-      !Regexp.new(senior_pattern).match?(level) &&
-      !Regexp.new(years_pattern).match?(level)
   end
 end

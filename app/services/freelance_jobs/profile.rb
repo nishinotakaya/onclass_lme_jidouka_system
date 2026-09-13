@@ -8,14 +8,9 @@ module FreelanceJobs
   class Profile
     Definition = Struct.new(
       :key, :label, :sheet_gid, :header, :category_order, :classifier, :source_specs, :new_rows_require_star,
-      :highlight_rule,
+      :checkbox_column,
       keyword_init: true
     )
-
-    # 行全体を色分けする条件付き書式。formula はシートのデータ先頭行（3行目）を基準に書く
-    # （SheetsClient::FIRST_DATA_ROW_NUMBER と揃えること）。列は $ 固定、行は相対にすると
-    # 1行につき1回評価され、条件に合った行だけが塗られる。
-    HighlightRule = Struct.new(:description, :formula, :background_color, keyword_init: true)
 
     # Struct・配列・Hash・文字列を再帰的にfreezeした値を返す（元の値は変更しない）。
     # Classやシンボルなどそれ以外の値はそのまま返す（sourceクラス・classifierクラスの参照を
@@ -63,7 +58,8 @@ module FreelanceJobs
           [FreelanceJobs::Sources::Mamaworks, {}],
           [FreelanceJobs::Sources::Craudia, {}]
         ],
-        new_rows_require_star: true
+        new_rows_require_star: true,
+        checkbox_column: false
       )
     )
 
@@ -114,21 +110,9 @@ module FreelanceJobs
           [FreelanceJobs::Sources::FreelanceHub, {}]
         ],
         new_rows_require_star: false,
-        # 「★★☆ 中級（実務経験3年以上）」より下のレベル、つまり経験3年未満でも応募できる
-        # Ruby・TypeScript案件を淡い青で塗る。対象は初級／中級(実務経験あり)／中級(1年以上)／
-        # 中級(2年以上)で、上級と3年以上だけを除く。
-        # G列の値は EngineerClassifier#classify_difficulty が作る文字列
-        #（「★★☆ 中級（実務経験N年以上）」「★★★ 上級（リード・設計／N年以上）」等）。
-        # 年数は「3〜9年」と「10年以上（2桁）」をまとめて除外する。年数表記のない
-        # 「中級（実務経験あり）」は残す。改行入りの値（"中級\n（実務経験あり）"）でも
-        # REGEXMATCHは部分一致なので判定は変わらない。
-        highlight_rule: HighlightRule.new(
-          description: "Ruby・TypeScriptで実務経験3年未満（未経験・経験あり・1年・2年）でも応募できる案件",
-          formula: '=AND(OR($C3="Ruby",$C3="TypeScript"),' \
-                    'NOT(REGEXMATCH($G3,"上級")),' \
-                    'NOT(REGEXMATCH($G3,"実務経験(\d{2,}|[3-9])年")))',
-          background_color: { red: 0.80, green: 0.89, blue: 0.98 }
-        )
+        # 応募済み・検討済みを自分で潰していけるよう、先頭にチェックボックス列を置く。
+        # チェック状態は案件URLをキーに毎回の更新へ引き継がれる（SheetsClient参照）。
+        checkbox_column: true
       )
     )
 

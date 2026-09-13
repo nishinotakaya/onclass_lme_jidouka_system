@@ -17,15 +17,20 @@ module FreelanceJobs
   class SheetsClient
     # 行モデルの列数（案件URLを含む）。バックアップシートにはこの形のまま退避する。
     ROW_COLUMN_COUNT = 15
-    # シート上の列数（案件URLを除く A〜N）。
-    SHEET_COLUMN_COUNT = 14
-    SHEET_LAST_COLUMN = "N"
+    # 案件URL列を除いた、シート本体の列数（🌟おすすめ 〜 取得日時）。
+    # チェックボックス列を持つシートは、これに先頭1列が足されて15列になる。
+    BASE_SHEET_COLUMN_COUNT = 14
     URL_COLUMN_INDEX = 5
     TITLE_COLUMN_INDEX = 3
     MAX_READ_ROW_COUNT = 2000
 
-    # 案件URL列(230px)を除いた14列分。
-    # B列はNo.用に45pxだったが、B1に表示件数("300件")を置くため少し広げている。
+    # チェックボックス列（先頭列）。checkbox_column: true のシートにだけ付く。
+    # チェック状態は行位置ではなく案件URLをキーに引き継ぐ（並べ替えで行が動くため）。
+    CHECKBOX_HEADER_LABEL = "☑"
+    CHECKBOX_COLUMN_WIDTH = 40
+
+    # 案件URL列(230px)を除いた14列分。チェックボックス列の幅は先頭に足す。
+    # 表示件数("300件")を置く列はNo.用の45pxだと狭いので60pxにしている。
     COLUMN_WIDTHS = [90, 60, 130, 300, 95, 130, 400, 260, 130, 80, 130, 120, 330, 120].freeze
 
     BANNER_BACKGROUND_COLOR = { red: 0.93, green: 0.93, blue: 0.93 }.freeze
@@ -36,11 +41,13 @@ module FreelanceJobs
     LINK_FOREGROUND_COLOR = { red: 0.05, green: 0.35, blue: 0.75 }.freeze
     # バナー行の左上(A1)に置く Sidekiq Web UI へのリンク。ラベルと遷移先。
     SIDEKIQ_LINK_LABEL = "sidekiq"
-    # バナー行の構成: A1=Sidekiqリンク / B1=フィルター後の表示件数 / C1〜N1=バナー本文(結合)。
-    VISIBLE_COUNT_COLUMN_INDEX = 1
-    BANNER_TEXT_COLUMN_INDEX = 2
-    # 表示件数の集計対象列。分類(C列)は全行必ず埋まるのでCOUNTAの母数にできる。
-    VISIBLE_COUNT_TARGET_COLUMN = "C"
+    # バナー行の構成（チェックボックス列がある場合は全体が1列ずれる）:
+    # Sidekiqリンク / フィルター後の表示件数 / 以降は結合してバナー本文。
+    BASE_SIDEKIQ_LINK_COLUMN_INDEX = 0
+    BASE_VISIBLE_COUNT_COLUMN_INDEX = 1
+    BASE_BANNER_TEXT_COLUMN_INDEX = 2
+    # 表示件数の集計対象列。分類列は全行必ず埋まるのでCOUNTAの母数にできる。
+    BASE_VISIBLE_COUNT_TARGET_COLUMN_INDEX = 2
     # データ開始行（1行目=バナー、2行目=ヘッダー）。
     FIRST_DATA_ROW_NUMBER = 3
     DEFAULT_SIDEKIQ_WEB_URL = "https://onclass-lme-jidouka-app-857ffde75fc4.herokuapp.com/sidekiq"
@@ -49,9 +56,12 @@ module FreelanceJobs
       ENV.fetch("SIDEKIQ_WEB_URL", DEFAULT_SIDEKIQ_WEB_URL)
     end
 
-    def initialize(spreadsheet_id:, sheet_gid:)
+    # checkbox_column: 先頭にチェックボックス列を持たせるか（プロファイルごとに決まる）。
+    def initialize(spreadsheet_id:, sheet_gid:, checkbox_column: false)
       @spreadsheet_id = spreadsheet_id
       @sheet_gid = sheet_gid
+      @checkbox_column = checkbox_column
+      @checkbox_states_by_url = {}
       @service = build_service
     end
 
@@ -59,7 +69,7 @@ module FreelanceJobs
     # 案件名セルのハイパーリンクを URL_COLUMN_INDEX に差し込んで返すため、
     # 値だけを返す get_spreadsheet_values ではなくグリッドデータを取得する。
     def read_rows(max_row_count: MAX_READ_ROW_COUNT)
-      range = "'#{sheet_name}'!A1:#{SHEET_LAST_COLUMN}#{max_row_count}"
+      range = "'#{sheet_name}'!A1:#{sheet_last_column}#{max_row_count}"
       spreadsheet = @service.get_spreadsheet(
         @spreadsheet_id,
         ranges: [range],
@@ -67,7 +77,11 @@ module FreelanceJobs
         fields: "sheets.data.rowData.values(formattedValue,hyperlink,userEnteredFormat.textFormat.link)"
       )
       row_data = spreadsheet.sheets&.first&.data&.first&.row_data || []
-      rows = row_data.map { |grid_row| build_row_model(grid_row) }
+      # チェックボックス列を足した最初の実行では、まだ旧レイアウト（先頭列が🌟おすすめ）の
+      # シートを読むことになるため、列のずれは設定ではなく実データから判定する。
+      offset = detect_checkbox_offset(row_data)
+      @checkbox_states_by_url = collect_checkbox_states(row_data, offset)
+      rows = row_data.map { |grid_row| build_row_model(grid_row, offset) }
       rows.pop while rows.last && rows.last.all? { |value| value.to_s.empty? }
       rows
     end
@@ -75,12 +89,11 @@ module FreelanceJobs
     # 書き込み手順（空になる瞬間を作らない）:
     # 1. 隠しシート（backup_sheet_name）へ現在値(backup_values)を案件URL列込みで退避
     # 2. バナー行の既存の結合を解く（★値を書く前に必ず行う。理由は unmerge_banner_row! を参照）
-    # 3. A1:N(n)を上書き（案件URL列は書かない。数式化しうる文字列は'を付けてガード）
+    # 3. A1:最終列(n)を上書き（案件URL列は書かない。数式化しうる文字列は'を付けてガード）
     # 4. 余った行だけclear
     # 5. 書式（basic_filterを取得してから安全に張り替え）＋案件名セルへリンク付与
-    #    ＋条件付き書式（highlight_rule）の張り替え
-    def replace_sheet(banner_text:, header:, rows:, starred_row_indexes:, backup_values:, column_widths: COLUMN_WIDTHS,
-                      highlight_rule: nil)
+    #    ＋チェックボックスのデータ入力規則
+    def replace_sheet(banner_text:, header:, rows:, starred_row_indexes:, backup_values:, column_widths: COLUMN_WIDTHS)
       metadata = fetch_metadata
       main_sheet = resolve_main_sheet!(metadata)
       @sheet_name = main_sheet.properties.title
@@ -92,8 +105,7 @@ module FreelanceJobs
       values = build_write_values(banner_text, header, rows)
       write_values!(values)
       clear_leftover_rows!(previous_row_count, values.size)
-      apply_formatting!(main_sheet, values.size, starred_row_indexes, column_widths, rows, previous_row_count,
-                        highlight_rule)
+      apply_formatting!(main_sheet, values.size, starred_row_indexes, column_widths, rows, previous_row_count)
     end
 
     # バックアップ用の隠しシート名。gidごとに一意にする（例: "_backup_gid0"）。
@@ -103,11 +115,65 @@ module FreelanceJobs
 
     private
 
+    # チェックボックス列を持つシートでは、本体の列が1つ右にずれる。
+    def checkbox_offset
+      @checkbox_column ? 1 : 0
+    end
+
+    def sheet_column_count
+      BASE_SHEET_COLUMN_COUNT + checkbox_offset
+    end
+
+    def sheet_last_column
+      column_letter(sheet_column_count - 1)
+    end
+
+    def column_letter(column_index)
+      ("A".."Z").to_a.fetch(column_index)
+    end
+
+    def sidekiq_link_column_index
+      checkbox_offset + BASE_SIDEKIQ_LINK_COLUMN_INDEX
+    end
+
+    def visible_count_column_index
+      checkbox_offset + BASE_VISIBLE_COUNT_COLUMN_INDEX
+    end
+
+    def banner_text_column_index
+      checkbox_offset + BASE_BANNER_TEXT_COLUMN_INDEX
+    end
+
+    def sheet_title_column_index
+      checkbox_offset + TITLE_COLUMN_INDEX
+    end
+
+    # シート上にチェックボックス列があるかを実データから判定する。ヘッダー行(2行目)の
+    # 先頭セルがチェックボックス列の見出しなら、本体は1列右にずれている。
+    def detect_checkbox_offset(row_data)
+      header_cells = row_data[1]&.values || []
+      header_cells.first&.formatted_value.to_s == CHECKBOX_HEADER_LABEL ? 1 : 0
+    end
+
+    # 案件URL → チェック状態。次の書き込みでそのまま書き戻すために保持する。
+    def collect_checkbox_states(row_data, offset)
+      return {} if offset.zero?
+
+      row_data.each_with_object({}) do |grid_row, states|
+        cells = grid_row.values || []
+        url = FreelanceJobs::JobPosting.normalize_url(cell_link_uri(cells[offset + TITLE_COLUMN_INDEX]))
+        next if url.empty?
+
+        states[url] = cells.first&.formatted_value.to_s.casecmp?("true")
+      end
+    end
+
     # グリッドデータ1行 → 案件URLを差し込んだ ROW_COLUMN_COUNT 列の行モデル。
-    def build_row_model(grid_row)
+    # 行モデルにチェックボックス列は含めない（マージ側は列の増減を意識しなくてよい）。
+    def build_row_model(grid_row, offset)
       cells = grid_row.values || []
-      sheet_values = Array.new(SHEET_COLUMN_COUNT) { |index| cells[index]&.formatted_value.to_s }
-      sheet_values.insert(URL_COLUMN_INDEX, cell_link_uri(cells[TITLE_COLUMN_INDEX]))
+      sheet_values = Array.new(BASE_SHEET_COLUMN_COUNT) { |index| cells[offset + index]&.formatted_value.to_s }
+      sheet_values.insert(URL_COLUMN_INDEX, cell_link_uri(cells[offset + TITLE_COLUMN_INDEX]))
     end
 
     def cell_link_uri(cell)
@@ -187,12 +253,39 @@ module FreelanceJobs
       }])
     end
 
+    # バナー行 / ヘッダー行 / データ行を、シート上の列数ぶんの配列にして返す。
+    # チェックボックス列がある場合は、各行の先頭に1セル足す。
     def build_write_values(banner_text, header, rows)
-      # A1=Sidekiqリンク、B1=フィルター後の表示件数（数式）、C1以降(結合セル)=バナー本文。
+      # Sidekiqリンク、フィルター後の表示件数（数式）、以降(結合セル)=バナー本文。
       # 件数セルだけは数式として評価させたいので escape_formula を通さない。
-      banner_row = [SIDEKIQ_LINK_LABEL, visible_count_formula(rows.size), escape_formula(banner_text)] +
-                    Array.new(SHEET_COLUMN_COUNT - 3, "")
-      [banner_row, *[header, *rows].map { |row| strip_url_column(row).map { |value| escape_formula(value) } }]
+      banner_row = blank_checkbox_cell +
+                    [SIDEKIQ_LINK_LABEL, visible_count_formula(rows.size), escape_formula(banner_text)] +
+                    Array.new(BASE_SHEET_COLUMN_COUNT - 3, "")
+      header_row = checkbox_header_cell + sheet_row_values(header)
+      data_rows = rows.each_with_index.map { |row, index| checkbox_cell(row) + sheet_row_values(row) }
+
+      [banner_row, header_row, *data_rows]
+    end
+
+    def sheet_row_values(row)
+      strip_url_column(row).map { |value| escape_formula(value) }
+    end
+
+    def blank_checkbox_cell
+      Array.new(checkbox_offset, "")
+    end
+
+    def checkbox_header_cell
+      Array.new(checkbox_offset, CHECKBOX_HEADER_LABEL)
+    end
+
+    # 既存シートのチェック状態を案件URLで引き継ぐ。並べ替えで行位置が変わっても
+    # 同じ案件のチェックが残り、シートに無かった新規案件だけが未チェックになる。
+    def checkbox_cell(row)
+      return [] if checkbox_offset.zero?
+
+      url = FreelanceJobs::JobPosting.normalize_url(row[URL_COLUMN_INDEX])
+      [@checkbox_states_by_url.fetch(url, false)]
     end
 
     # フィルターで絞り込んだあとに実際に見えている行数を出す。
@@ -202,12 +295,12 @@ module FreelanceJobs
       return "0件" if data_row_count.zero?
 
       last_row_number = FIRST_DATA_ROW_NUMBER + data_row_count - 1
-      range = "$#{VISIBLE_COUNT_TARGET_COLUMN}$#{FIRST_DATA_ROW_NUMBER}:" \
-              "$#{VISIBLE_COUNT_TARGET_COLUMN}$#{last_row_number}"
+      target_column = column_letter(checkbox_offset + BASE_VISIBLE_COUNT_TARGET_COLUMN_INDEX)
+      range = "$#{target_column}$#{FIRST_DATA_ROW_NUMBER}:$#{target_column}$#{last_row_number}"
       %(=SUBTOTAL(103,#{range})&"件")
     end
 
-    # 行モデルから案件URL列を落として、シート上の14列にする。
+    # 行モデルから案件URL列を落として、シート本体の14列にする。
     def strip_url_column(row)
       sheet_row = Array.new(ROW_COLUMN_COUNT) { |index| row[index] }
       sheet_row.delete_at(URL_COLUMN_INDEX)
@@ -223,18 +316,17 @@ module FreelanceJobs
     end
 
     def write_values!(values)
-      write_range!("'#{@sheet_name}'!A1:#{SHEET_LAST_COLUMN}#{values.size}", values,
+      write_range!("'#{@sheet_name}'!A1:#{sheet_last_column}#{values.size}", values,
                     value_input_option: "USER_ENTERED")
     end
 
     def clear_leftover_rows!(previous_row_count, written_row_count)
       return if previous_row_count <= written_row_count
 
-      clear_range!("'#{@sheet_name}'!A#{written_row_count + 1}:#{SHEET_LAST_COLUMN}#{previous_row_count}")
+      clear_range!("'#{@sheet_name}'!A#{written_row_count + 1}:#{sheet_last_column}#{previous_row_count}")
     end
 
-    def apply_formatting!(main_sheet, total_row_count, starred_row_indexes, column_widths, rows, previous_row_count,
-                          highlight_rule = nil)
+    def apply_formatting!(main_sheet, total_row_count, starred_row_indexes, column_widths, rows, previous_row_count)
       sheet_id = main_sheet.properties.sheet_id
       requests = []
 
@@ -252,10 +344,11 @@ module FreelanceJobs
 
       requests.concat(starred_row_requests(sheet_id, starred_row_indexes))
       requests << frozen_row_count_request(sheet_id)
-      requests.concat(column_width_requests(sheet_id, column_widths))
+      requests.concat(column_width_requests(sheet_id, blank_checkbox_cell.empty? ? column_widths : [CHECKBOX_COLUMN_WIDTH, *column_widths]))
       requests << sidekiq_link_request(sheet_id)
       requests.concat(title_link_requests(sheet_id, rows, previous_row_count))
-      requests.concat(conditional_format_requests(main_sheet, total_row_count, highlight_rule))
+      requests.concat(clear_conditional_format_requests(main_sheet))
+      requests.concat(checkbox_validation_requests(sheet_id, total_row_count, previous_row_count))
       requests << basic_filter_request(sheet_id, total_row_count)
 
       batch_update!(requests)
@@ -293,7 +386,7 @@ module FreelanceJobs
       {
         merge_cells: {
           range: { sheet_id: sheet_id, start_row_index: 0, end_row_index: 1,
-                    start_column_index: BANNER_TEXT_COLUMN_INDEX, end_column_index: SHEET_COLUMN_COUNT },
+                    start_column_index: banner_text_column_index, end_column_index: sheet_column_count },
           merge_type: "MERGE_ALL"
         }
       }
@@ -372,11 +465,12 @@ module FreelanceJobs
       }
     end
 
-    # A列(🌟)はwrite_sheet.rbに合わせてフォントを少し大きくする。
+    # 🌟おすすめ列はwrite_sheet.rbに合わせてフォントを少し大きくする。
     def recommend_column_font_request(sheet_id, total_row_count)
       {
         repeat_cell: {
-          range: { sheet_id: sheet_id, start_row_index: 2, end_row_index: total_row_count, start_column_index: 0, end_column_index: 1 },
+          range: { sheet_id: sheet_id, start_row_index: 2, end_row_index: total_row_count,
+                    start_column_index: checkbox_offset, end_column_index: checkbox_offset + 1 },
           cell: { user_entered_format: { text_format: { font_size: 14 } } },
           fields: "userEnteredFormat.textFormat.fontSize"
         }
@@ -396,40 +490,40 @@ module FreelanceJobs
       end
     end
 
-    # 条件付き書式を毎回「全削除→張り直し」する。毎朝のバッチで積み上がらないようにするためと、
-    # 行数が変わっても適用範囲が必ず最新のデータ行全体に合うようにするため。
-    # 削除はindexが詰まる仕様なので、必ず後ろのルールから消す（降順）。
-    def conditional_format_requests(main_sheet, total_row_count, highlight_rule)
+    # このシートの書式はバッチが持ち主なので、手で追加された条件付き書式も含めて毎回消す。
+    # 残っていると行が入れ替わった後も同じ行位置が塗られたままになり、意味のない色になる。
+    # 削除はindexが前に詰まる仕様なので、必ず後ろのルールから消す（降順）。
+    def clear_conditional_format_requests(main_sheet)
       sheet_id = main_sheet.properties.sheet_id
-      existing_rule_count = (main_sheet.conditional_formats || []).size
-      requests = (existing_rule_count - 1).downto(0).map do |index|
+      ((main_sheet.conditional_formats || []).size - 1).downto(0).map do |index|
         { delete_conditional_format_rule: { sheet_id: sheet_id, index: index } }
       end
-      return requests if highlight_rule.nil? || total_row_count <= 2
-
-      requests << add_conditional_format_rule_request(sheet_id, total_row_count, highlight_rule)
     end
 
-    # 行全体（A〜N列）を1つの範囲として渡し、カスタム数式で行ごとに判定させる。
-    # 数式内の行番号はデータ先頭行(FIRST_DATA_ROW_NUMBER)基準・列は$固定で書く決まりにしている
-    # （Profile::HighlightRule 参照）。条件付き書式は静的な背景色より優先されるため、
-    # 🌟行の黄色より手前に適用されたように見える。
-    def add_conditional_format_rule_request(sheet_id, total_row_count, highlight_rule)
-      {
-        add_conditional_format_rule: {
-          index: 0,
-          rule: {
-            ranges: [full_width_range(sheet_id, 2, total_row_count)],
-            boolean_rule: {
-              condition: {
-                type: "CUSTOM_FORMULA",
-                values: [{ user_entered_value: highlight_rule.formula }]
-              },
-              format: { background_color: highlight_rule.background_color }
-            }
+    # チェックボックス列にデータ入力規則(BOOLEAN)を張る。データ行の範囲ぴったりに張り直すので、
+    # 案件が増えればチェックボックスもその行まで自動で伸びる。
+    # 前回より行数が減ったときは、余った行の入力規則を消す（ruleを渡さないと解除になる）。
+    def checkbox_validation_requests(sheet_id, total_row_count, previous_row_count)
+      return [] if checkbox_offset.zero?
+
+      requests = []
+      if total_row_count > 2
+        requests << {
+          set_data_validation: {
+            range: checkbox_column_range(sheet_id, 2, total_row_count),
+            rule: { condition: { type: "BOOLEAN" }, strict: true, show_custom_ui: true }
           }
         }
-      }
+      end
+      if previous_row_count > total_row_count
+        requests << { set_data_validation: { range: checkbox_column_range(sheet_id, total_row_count, previous_row_count) } }
+      end
+      requests
+    end
+
+    def checkbox_column_range(sheet_id, start_row_index, end_row_index)
+      { sheet_id: sheet_id, start_row_index: start_row_index, end_row_index: end_row_index,
+        start_column_index: 0, end_column_index: 1 }
     end
 
     def frozen_row_count_request(sheet_id)
@@ -453,20 +547,21 @@ module FreelanceJobs
       end
     end
 
-    # バナー行の左上(A1)に Sidekiq Web UI へのリンクを張る。
+    # バナー行の Sidekiq セルに Sidekiq Web UI へのリンクを張る。
     # banner_format_request が textFormat を丸ごと上書きするため、必ずその後に適用する。
     def sidekiq_link_request(sheet_id)
       {
         update_cells: {
           range: { sheet_id: sheet_id, start_row_index: 0, end_row_index: 1,
-                    start_column_index: 0, end_column_index: 1 },
+                    start_column_index: sidekiq_link_column_index,
+                    end_column_index: sidekiq_link_column_index + 1 },
           rows: [{ values: [link_cell(self.class.sidekiq_web_url, bold: true)] }],
           fields: "userEnteredFormat.textFormat(link,foregroundColor,underline,bold)"
         }
       }
     end
 
-    # 案件名セル(D列)へ案件URLをハイパーリンクとして張る。値は書き換えず書式だけを更新する。
+    # 案件名セルへ案件URLをハイパーリンクとして張る。値は書き換えず書式だけを更新する。
     # 全行を毎回書き直す（order_rowsで並びが変わるため、行位置に残った古いリンクは必ず上書きする）。
     # 前回より行数が減った場合は、余った行のリンクも消す。
     def title_link_requests(sheet_id, rows, previous_row_count)
@@ -478,7 +573,7 @@ module FreelanceJobs
         update_cells: {
           range: {
             sheet_id: sheet_id, start_row_index: 2, end_row_index: 2 + link_row_count,
-            start_column_index: TITLE_COLUMN_INDEX, end_column_index: TITLE_COLUMN_INDEX + 1
+            start_column_index: sheet_title_column_index, end_column_index: sheet_title_column_index + 1
           },
           rows: link_cells.map { |cell| { values: [cell] } },
           fields: "userEnteredFormat.textFormat(link,foregroundColor,underline)"
@@ -511,7 +606,7 @@ module FreelanceJobs
               start_row_index: 1,
               end_row_index: [total_row_count, 3].max,
               start_column_index: 0,
-              end_column_index: SHEET_COLUMN_COUNT
+              end_column_index: sheet_column_count
             }
           }
         }
@@ -520,7 +615,7 @@ module FreelanceJobs
 
     def full_width_range(sheet_id, start_row_index, end_row_index)
       { sheet_id: sheet_id, start_row_index: start_row_index, end_row_index: end_row_index,
-        start_column_index: 0, end_column_index: SHEET_COLUMN_COUNT }
+        start_column_index: 0, end_column_index: sheet_column_count }
     end
 
     def write_range!(range, values, value_input_option:)

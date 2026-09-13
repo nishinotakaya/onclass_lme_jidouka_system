@@ -103,8 +103,7 @@ module FreelanceJobs
         header: @profile.header,
         rows: merge_result.rows,
         starred_row_indexes: starred_row_indexes,
-        backup_values: raw_values,
-        highlight_rule: @profile.highlight_rule
+        backup_values: raw_values
       )
 
       {
@@ -189,7 +188,8 @@ module FreelanceJobs
     end
 
     def sheets_client
-      @sheets_client ||= FreelanceJobs::SheetsClient.new(spreadsheet_id: @spreadsheet_id, sheet_gid: @profile.sheet_gid)
+      @sheets_client ||= FreelanceJobs::SheetsClient.new(spreadsheet_id: @spreadsheet_id, sheet_gid: @profile.sheet_gid,
+                                                          checkbox_column: @profile.checkbox_column)
     end
 
     # バナーは一目で読み切れる長さに絞る。失敗の原因（HTTPステータス・URL）や実行間隔の但し書きは
