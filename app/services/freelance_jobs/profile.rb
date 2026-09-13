@@ -91,6 +91,8 @@ module FreelanceJobs
           [FreelanceJobs::Sources::EngineerFactory, {}],
           [FreelanceJobs::Sources::Sokudan, {}],
           [FreelanceJobs::Sources::Relance, {}],
+          [FreelanceJobs::Sources::Crowdtech, {}],
+          [FreelanceJobs::Sources::PeBank, {}],
           # クラウドソーシング（未経験向けプロファイルと同じ取得元をキーワード検索で流用する）。
           [FreelanceJobs::Sources::Crowdworks, {
             search_targets: [
