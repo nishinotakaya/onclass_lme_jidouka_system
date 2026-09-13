@@ -94,8 +94,10 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     assert_equal 1, sheets_client.replace_sheet_calls.size
 
     banner_text = sheets_client.replace_sheet_calls.first[:banner_text]
-    assert_includes banner_text, "最終実行 2026-09-04 06:05"
-    assert_includes banner_text, "成功 6/6"
+    assert_includes banner_text, "⏰ 毎朝 06:00〜06:30（日本時間）更新"
+    assert_includes banner_text, "09/04 06:05"
+    assert_includes banner_text, "6/6サイト"
+    refute_includes banner_text, "⚠失敗", "全サイト成功時は失敗の欄を出さない想定"
     assert_equal 6, summary[:succeeded_sites].size
     assert_equal [], summary[:failures]
     assert_operator summary[:candidates], :>, 0
@@ -134,7 +136,7 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     assert_equal [], sheets_client.replace_sheet_calls
   end
 
-  # --- (d) 1サイトだけ失敗しても続行し、bannerに⚠ 取得失敗が入る ---
+  # --- (d) 1サイトだけ失敗しても続行し、bannerに⚠失敗が入る ---
 
   def test_call_continues_when_only_one_source_fails
     fetcher = RoutingFakeFetcher.new(routes: real_fixture_routes, raising_hosts: ["craudia.com"])
@@ -151,9 +153,11 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     refute_includes summary[:succeeded_sites], "クラウディア"
 
     banner_text = sheets_client.replace_sheet_calls.first[:banner_text]
-    assert_includes banner_text, "⚠ 取得失敗"
-    assert_includes banner_text, "クラウディア"
-    assert_includes banner_text, "成功 5/6"
+    assert_includes banner_text, "⚠失敗 クラウディア"
+    assert_includes banner_text, "5/6サイト"
+    # 失敗の原因（HTTPステータス・URL・例外クラス）はログとsummaryだけに残し、バナーには出さない。
+    refute_includes banner_text, "FetchError"
+    refute_includes banner_text, "http"
   end
 
   # === ラウンド2 C2: 新規追加は🌟付きだけ。既存URL一致行は🌟の有無に関わらず更新対象 ===
@@ -234,7 +238,7 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     assert_equal ["ランサーズ"], summary[:excluded_sites]
   end
 
-  def test_call_with_excluded_sites_banner_shows_source_count_and_excluded_notice
+  def test_call_with_excluded_sites_banner_shows_source_count_and_excluded_site_name
     fetcher = RoutingFakeFetcher.new(routes: real_fixture_routes_excluding_lancers)
     sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
 
@@ -246,8 +250,8 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
 
     refute summary[:aborted]
     banner_text = sheets_client.replace_sheet_calls.first[:banner_text]
-    assert_includes banner_text, "取得元 5サイト（成功 5/5）"
-    assert_includes banner_text, "対象外: ランサーズ（アクセス制限のため自動取得できません）"
+    assert_includes banner_text, "5/5サイト"
+    assert_includes banner_text, "除外 ランサーズ"
   end
 
   def test_excluded_sites_from_env_splits_on_full_width_and_half_width_comma_and_trims_whitespace
@@ -274,7 +278,7 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     failure_message = summary[:failures].first
     assert failure_message.start_with?("クラウディア（"), "「サイト名（メッセージ）」形式である想定: #{failure_message}"
     assert failure_message.end_with?("）"), "全角カッコで閉じる想定: #{failure_message}"
-    refute_includes failure_message, "FetchError", "クラス名はバナーの失敗メッセージに出さない設計"
+    refute_includes failure_message, "FetchError", "クラス名は失敗メッセージに出さない設計"
   end
 
   def test_call_continues_when_excluded_sites_has_unknown_site_name

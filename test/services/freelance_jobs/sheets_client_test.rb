@@ -46,16 +46,44 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
     row
   end
 
-  def test_build_write_values_prepends_banner_row_with_sidekiq_link_label_and_padded_blanks
+  def test_build_write_values_prepends_banner_row_with_sidekiq_link_visible_count_and_padded_blanks
     header = full_width_row_model(0 => "🌟おすすめ")
     rows = [full_width_row_model]
 
     values = client.send(:build_write_values, "バナー本文", header, rows)
 
-    expected_banner_row = [FreelanceJobs::SheetsClient::SIDEKIQ_LINK_LABEL, "バナー本文"] +
-                           Array.new(FreelanceJobs::SheetsClient::SHEET_COLUMN_COUNT - 2, "")
-    assert_equal expected_banner_row, values[0], "A1はSidekiqリンク用ラベル、B1がバナー本文の想定"
+    expected_banner_row = [FreelanceJobs::SheetsClient::SIDEKIQ_LINK_LABEL,
+                           %(=SUBTOTAL(103,$C$3:$C$3)&"件"),
+                           "バナー本文"] +
+                           Array.new(FreelanceJobs::SheetsClient::SHEET_COLUMN_COUNT - 3, "")
+    assert_equal expected_banner_row, values[0],
+                 "A1はSidekiqリンク用ラベル、B1はフィルター後の表示件数、C1がバナー本文の想定"
     assert_equal FreelanceJobs::SheetsClient::SHEET_COLUMN_COUNT, values[0].size
+  end
+
+  # --- visible_count_formula（B1のフィルター後件数） ---
+
+  def test_visible_count_formula_counts_only_visible_rows_from_the_first_data_row
+    formula = client.send(:visible_count_formula, 300)
+
+    assert_equal %(=SUBTOTAL(103,$C$3:$C$302)&"件"), formula,
+                 "データは3行目から始まり、300件なら302行目までを数える想定"
+  end
+
+  def test_visible_count_formula_returns_plain_text_when_there_is_no_data_row
+    assert_equal "0件", client.send(:visible_count_formula, 0),
+                 "0件のときは範囲が作れないので数式にしない想定"
+  end
+
+  def test_build_write_values_keeps_visible_count_formula_unescaped
+    header = full_width_row_model(0 => "🌟おすすめ")
+    rows = [full_width_row_model]
+
+    values = client.send(:build_write_values, "バナー本文", header, rows)
+    visible_count_cell = values[0][FreelanceJobs::SheetsClient::VISIBLE_COUNT_COLUMN_INDEX]
+
+    assert visible_count_cell.start_with?("=SUBTOTAL("),
+           "件数セルは数式として評価させたいので ' を付けない想定: #{visible_count_cell}"
   end
 
   def test_build_write_values_drops_url_column_from_header_and_rows
@@ -79,6 +107,163 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
 
     assert_equal "'=HACK()", values[2][0]
     assert_equal "'-危険", values[2][5], "index6はURL列(index5)除去後にindex5へずれる"
+  end
+
+  # --- replace_sheet の呼び出し順（結合解除 → 値の書き込み） ---
+  #
+  # 結合されたセル範囲へ値を書くと左上以外のセルへの書き込みは黙って捨てられる。
+  # バナーの結合開始列を変えた回に、新しい位置のセルが空のままになるのを防ぐための回帰テスト。
+
+  # 呼ばれたSheets APIの順番だけを記録する最小のフェイク。
+  class CallOrderRecordingService
+    Properties = Struct.new(:sheet_id, :title, :grid_properties, keyword_init: true)
+    GridProperties = Struct.new(:row_count, keyword_init: true)
+    SheetStub = Struct.new(:properties, :merges, :basic_filter, :conditional_formats, keyword_init: true)
+    MergeRange = Struct.new(:start_row_index, :end_row_index, :start_column_index, :end_column_index,
+                             keyword_init: true)
+
+    attr_reader :calls
+
+    def initialize
+      @calls = []
+    end
+
+    def get_spreadsheet(_spreadsheet_id, **_options)
+      @calls << :get_spreadsheet
+      banner_merge = MergeRange.new(start_row_index: 0, end_row_index: 1,
+                                     start_column_index: 1, end_column_index: 14)
+      sheet = SheetStub.new(
+        properties: Properties.new(sheet_id: 123, title: "求人",
+                                    grid_properties: GridProperties.new(row_count: 10)),
+        merges: [banner_merge],
+        basic_filter: nil
+      )
+      Struct.new(:sheets, keyword_init: true).new(sheets: [sheet])
+    end
+
+    def batch_update_spreadsheet(_spreadsheet_id, request_body, **_options)
+      kinds = request_body.requests.map { |request| request.keys.first }
+      @calls << (kinds.include?(:unmerge_cells) ? :unmerge : :batch_update)
+    end
+
+    def update_spreadsheet_value(_spreadsheet_id, range, _body, **_options)
+      @calls << (range.include?("_backup_") ? :backup_write : :write_values)
+    end
+
+    def clear_values(_spreadsheet_id, _range, _request)
+      @calls << :clear
+    end
+  end
+
+  def build_client_with_recording_service
+    service = CallOrderRecordingService.new
+    sheets_client = FreelanceJobs::SheetsClient.allocate
+    sheets_client.instance_variable_set(:@service, service)
+    sheets_client.instance_variable_set(:@spreadsheet_id, "sheet-id")
+    sheets_client.instance_variable_set(:@sheet_gid, 123)
+    [sheets_client, service]
+  end
+
+  # 条件付き書式は毎朝のバッチで積み上がると重複するので、既存ルールを全部消してから張り直す。
+  # 削除はindexが前に詰まる仕様のため、後ろのルールから消さないと消し漏れる。
+  def test_conditional_format_requests_deletes_existing_rules_from_the_last_index
+    client = build_client
+    main_sheet = sheet_stub(conditional_formats: [Object.new, Object.new, Object.new])
+
+    requests = client.send(:conditional_format_requests, main_sheet, 5, highlight_rule)
+
+    deleted_indexes = requests.filter_map { |request| request.dig(:delete_conditional_format_rule, :index) }
+    assert_equal [2, 1, 0], deleted_indexes
+  end
+
+  def test_conditional_format_requests_adds_the_rule_over_the_whole_data_row_range
+    client = build_client
+    added = client.send(:conditional_format_requests, sheet_stub, 5, highlight_rule)
+                  .fetch(-1)
+                  .fetch(:add_conditional_format_rule)
+    rule = added.fetch(:rule)
+
+    assert_equal 0, added.fetch(:index)
+    # ヘッダー行(index 1)の次から最終行まで、A〜N列を1つの範囲にして行全体を塗る。
+    assert_equal [{ sheet_id: 123, start_row_index: 2, end_row_index: 5, start_column_index: 0, end_column_index: 14 }],
+                  rule.fetch(:ranges)
+    assert_equal "CUSTOM_FORMULA", rule.dig(:boolean_rule, :condition, :type)
+    assert_equal [{ user_entered_value: highlight_rule.formula }],
+                  rule.dig(:boolean_rule, :condition, :values)
+    assert_equal highlight_rule.background_color, rule.dig(:boolean_rule, :format, :background_color)
+  end
+
+  # highlight_ruleを持たないプロファイル（未経験向け）では、既存ルールの削除だけを行う。
+  def test_conditional_format_requests_only_deletes_when_there_is_no_highlight_rule
+    client = build_client
+    requests = client.send(:conditional_format_requests, sheet_stub(conditional_formats: [Object.new]), 5, nil)
+
+    assert_equal 1, requests.size
+    assert requests.first.key?(:delete_conditional_format_rule)
+  end
+
+  # データ行が無いとき(バナー+ヘッダーのみ)は範囲が作れないので追加しない。
+  def test_conditional_format_requests_skips_adding_when_there_is_no_data_row
+    client = build_client
+    requests = client.send(:conditional_format_requests, sheet_stub, 2, highlight_rule)
+
+    assert_empty requests
+  end
+
+  # 実際にシートへ入るG列の文言に対して、数式が意図どおりの行だけを選ぶことを確かめる
+  # （REGEXMATCHはGoogleスプレッドシート側の評価なので、ここでは同等のRuby正規表現で検証する）。
+  def test_engineer_highlight_formula_matches_levels_below_three_years
+    below_three_years = [
+      "★☆☆ 初級（未経験・学習中OK）",
+      "★★☆ 中級（実務経験あり）",
+      "★★☆ 中級\n（実務経験あり）",
+      "★★☆ 中級（実務経験1年以上）",
+      "★★☆ 中級（実務経験2年以上）"
+    ]
+    three_years_or_more = [
+      "★★☆ 中級（実務経験3年以上）",
+      "★★☆ 中級（実務経験5年以上）",
+      "★★★ 上級（リード・設計）",
+      "★★★ 上級（リード・設計／10年以上）"
+    ]
+
+    below_three_years.each { |level| assert highlight_target?("Ruby", level), "青くなるべき: #{level}" }
+    below_three_years.each { |level| assert highlight_target?("TypeScript", level), "青くなるべき: #{level}" }
+    three_years_or_more.each { |level| refute highlight_target?("Ruby", level), "青くしてはいけない: #{level}" }
+    # 分類がReactの行は対象外。
+    refute highlight_target?("React", "★★☆ 中級（実務経験1年以上）")
+  end
+
+  def test_replace_sheet_unmerges_the_banner_row_before_writing_values
+    sheets_client, service = build_client_with_recording_service
+
+    sheets_client.replace_sheet(
+      banner_text: "バナー本文",
+      header: Array.new(FreelanceJobs::SheetsClient::ROW_COLUMN_COUNT) { |index| "見出し#{index}" },
+      rows: [Array.new(FreelanceJobs::SheetsClient::ROW_COLUMN_COUNT) { |index| "値#{index}" }],
+      starred_row_indexes: [],
+      backup_values: [["既存"]]
+    )
+
+    unmerge_position = service.calls.index(:unmerge)
+    write_position = service.calls.index(:write_values)
+
+    refute_nil unmerge_position, "バナー行の結合解除が呼ばれる想定"
+    refute_nil write_position, "本体シートへの値書き込みが呼ばれる想定"
+    assert unmerge_position < write_position,
+           "結合を解いてから値を書かないと、左上以外のセルへの書き込みが捨てられる: #{service.calls.inspect}"
+  end
+
+  # --- merge_banner_request（A1・B1を結合から外す） ---
+
+  def test_merge_banner_request_merges_from_the_banner_text_column_to_the_last_column
+    range = client.send(:merge_banner_request, 999).dig(:merge_cells, :range)
+
+    assert_equal 0, range[:start_row_index]
+    assert_equal 1, range[:end_row_index]
+    assert_equal FreelanceJobs::SheetsClient::BANNER_TEXT_COLUMN_INDEX, range[:start_column_index]
+    assert_equal 2, range[:start_column_index], "A1(Sidekiqリンク)とB1(表示件数)は結合に含めない想定"
+    assert_equal FreelanceJobs::SheetsClient::SHEET_COLUMN_COUNT, range[:end_column_index]
   end
 
   # --- strip_url_column ---
@@ -431,5 +616,38 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
     requests = client.send(:title_link_requests, 42, [], 2)
 
     assert_equal [], requests
+  end
+
+  # 条件付き書式のリクエスト組み立てだけを見たいので、認証せずにインスタンスだけ作る。
+  def build_client
+    FreelanceJobs::SheetsClient.allocate
+  end
+
+  # conditional_format_requests が読むのは sheet_id と conditional_formats だけ。
+  def sheet_stub(conditional_formats: [])
+    CallOrderRecordingService::SheetStub.new(
+      properties: CallOrderRecordingService::Properties.new(
+        sheet_id: 123, title: "求人",
+        grid_properties: CallOrderRecordingService::GridProperties.new(row_count: 10)
+      ),
+      merges: [],
+      basic_filter: nil,
+      conditional_formats: conditional_formats
+    )
+  end
+
+  def highlight_rule
+    FreelanceJobs::Profile::ENGINEER.highlight_rule
+  end
+
+  # ENGINEERの数式と同じ判定をRubyで再現する（数式そのものの分岐を1箇所に保つため、
+  # 正規表現は数式リテラルから取り出して使う）。
+  def highlight_target?(category, level)
+    formula = highlight_rule.formula
+    senior_pattern = formula[/REGEXMATCH\(\$G3,"([^"]+)"\)\),/, 1]
+    years_pattern = formula[/REGEXMATCH\(\$G3,"([^"]+)"\)\)\)\z/, 1]
+    ["Ruby", "TypeScript"].include?(category) &&
+      !Regexp.new(senior_pattern).match?(level) &&
+      !Regexp.new(years_pattern).match?(level)
   end
 end

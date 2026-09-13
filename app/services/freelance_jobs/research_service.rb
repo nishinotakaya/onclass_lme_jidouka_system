@@ -42,7 +42,10 @@ module FreelanceJobs
 
       fetched_counts = {}
       succeeded_sites = []
+      # failuresは原因つき（summary・ログ用）、failed_sitesはサイト名だけ（バナー用）。
+      # バナーはURLやHTTPステータスまで出すと読めなくなるので、原因はログ側だけに残す。
       failures = []
+      failed_sites = []
       postings = []
 
       @sources.each do |source_class, options|
@@ -54,6 +57,7 @@ module FreelanceJobs
           postings.concat(source_postings)
         rescue StandardError => error
           failures << "#{site_name}（#{error.message[0, 60]}）"
+          failed_sites << site_name
           FreelanceJobs.logger.error("[FreelanceJobs::ResearchService] #{site_name} #{error.class}: #{error.message}")
         end
       end
@@ -95,11 +99,12 @@ module FreelanceJobs
       starred_row_indexes = merge_result.rows.each_index.select { |index| merge_result.rows[index][0].to_s.include?("🌟") }
 
       sheets_client.replace_sheet(
-        banner_text: build_banner_text(merge_result, failures, succeeded_sites),
+        banner_text: build_banner_text(merge_result, failed_sites, succeeded_sites),
         header: @profile.header,
         rows: merge_result.rows,
         starred_row_indexes: starred_row_indexes,
-        backup_values: raw_values
+        backup_values: raw_values,
+        highlight_rule: @profile.highlight_rule
       )
 
       {
@@ -187,16 +192,27 @@ module FreelanceJobs
       @sheets_client ||= FreelanceJobs::SheetsClient.new(spreadsheet_id: @spreadsheet_id, sheet_gid: @profile.sheet_gid)
     end
 
-    def build_banner_text(merge_result, failures, succeeded_sites)
-      text = "⏰ 自動更新バッチ：#{@run_window_label} に自動実行（Sidekiq）｜" \
-             "最終実行 #{@now.strftime("%Y-%m-%d %H:%M")}｜" \
-             "取得元 #{@sources.size}サイト（成功 #{succeeded_sites.size}/#{@sources.size}）｜" \
-             "掲載 #{merge_result.total}件（新規 +#{merge_result.added}／期限切れ削除 −#{merge_result.removed}）"
-      unless @excluded_sites.empty?
-        text += "｜対象外: #{@excluded_sites.join("、")}（アクセス制限のため自動取得できません）"
-      end
-      text += "｜⚠ 取得失敗: #{failures.join("、")}" unless failures.empty?
-      text
+    # バナーは一目で読み切れる長さに絞る。失敗の原因（HTTPステータス・URL）や実行間隔の但し書きは
+    # 載せず、A1のSidekiqリンクからログを見てもらう。掲載件数はB1のSUBTOTALが出すので、
+    # ここでは「フィルター前の全件数」と前回からの増減だけを持たせる。
+    def build_banner_text(merge_result, failed_sites, succeeded_sites)
+      parts = [
+        "⏰ #{@run_window_label}更新",
+        @now.strftime("%m/%d %H:%M"),
+        "#{succeeded_sites.size}/#{@sources.size}サイト",
+        "全#{merge_result.total}件#{row_difference_text(merge_result)}"
+      ]
+      parts << "⚠失敗 #{failed_sites.join("、")}" unless failed_sites.empty?
+      parts << "除外 #{@excluded_sites.join("、")}" unless @excluded_sites.empty?
+      parts.join("｜")
+    end
+
+    # 増減があるときだけ " +3 −1" のように付ける（0のときは何も出さない）。
+    def row_difference_text(merge_result)
+      difference = []
+      difference << "+#{merge_result.added}" if merge_result.added.positive?
+      difference << "−#{merge_result.removed}" if merge_result.removed.positive?
+      difference.empty? ? "" : " #{difference.join(" ")}"
     end
 
     # A1/A5: シートに一切書かずに中止する場合の summary（書き込み・バックアップは行わない）。
