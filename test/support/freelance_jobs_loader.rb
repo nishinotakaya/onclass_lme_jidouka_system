@@ -12,10 +12,17 @@ else
 
   root = File.expand_path("../../app", __dir__)
   require "#{root}/services/freelance_jobs"
+  # 取得元(sources/**)はJobPostingに依存するため、先に共通基盤を読む。
   %w[
     http_fetcher job_posting classifier row_builder sheet_merger sheets_client
-    sources/crowdworks sources/lancers sources/coconala sources/shufti sources/mamaworks sources/craudia
-    sources/levtech
+  ].each { |name| require "#{root}/services/freelance_jobs/#{name}" }
+
+  # 取得元は1ファイル1サイトで互いに依存しないため、ファイル名順にまとめて読む
+  # （取得元を追加するたびにこのローダーを編集しなくてよいようにしている）。
+  Dir["#{root}/services/freelance_jobs/sources/*.rb"].sort.each { |source_path| require source_path }
+
+  # profileは全取得元クラスを参照するため、必ずsources/**より後に読む。
+  %w[
     engineer_classifier profile
     research_service
   ].each { |name| require "#{root}/services/freelance_jobs/#{name}" }

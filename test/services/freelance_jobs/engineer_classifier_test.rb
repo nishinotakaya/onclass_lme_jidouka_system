@@ -115,6 +115,36 @@ class FreelanceJobsEngineerClassifierTest < Minitest::Test
     assert_nil result.category
   end
 
+  # 「営業」が開発対象システムの業務ドメインを指す場合は除外しない（実案件での取りこぼし防止）。
+  def test_category_is_detected_for_sales_support_system_development
+    posting = build_posting(title: "【Ruby】営業支援系サブシステムの開発")
+    result = classify(posting)
+
+    assert_equal "Ruby", result.category
+  end
+
+  def test_category_is_detected_for_sales_promotion_saas_development
+    posting = build_posting(title: "営業促進を目的としたSaaSのTypeScript開発")
+    result = classify(posting)
+
+    assert_equal "TypeScript", result.category
+  end
+
+  def test_category_is_detected_for_sales_management_system_development
+    posting = build_posting(title: "営業管理システムのReactフロントエンド開発")
+    result = classify(posting)
+
+    assert_equal "React", result.category
+  end
+
+  # 営業そのものを請け負う募集は従来どおり除外し続ける（上の緩和で漏れないことの固定）。
+  def test_category_nil_for_sales_agency_posting
+    posting = build_posting(title: "Rubyエンジニア向けサービスの営業代行")
+    result = classify(posting)
+
+    assert_nil result.category
+  end
+
   def test_category_nil_for_interview_article_posting_even_with_ruby_in_title
     posting = build_posting(title: "エンジニアへのインタビュー記事作成（Ruby経験者向け）")
     result = classify(posting)

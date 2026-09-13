@@ -70,7 +70,18 @@ module FreelanceJobs
         category_order: ["Ruby", "TypeScript", "React"],
         classifier: FreelanceJobs::EngineerClassifier,
         source_specs: [
+          # フリーランスエージェント・マッチング（案件単価が明示され、分類の当たりが良い順に置く）。
+          # 2026-09-12「エンジニア申込サイト一覧」の実地調査で採用推奨(◎/○)となった8サイトを追加した。
           [FreelanceJobs::Sources::Levtech, {}],
+          [FreelanceJobs::Sources::CoconalaTech, {}],
+          [FreelanceJobs::Sources::Bizlink, {}],
+          [FreelanceJobs::Sources::HiproTech, {}],
+          [FreelanceJobs::Sources::FindyFreelance, {}],
+          [FreelanceJobs::Sources::Fosternet, {}],
+          [FreelanceJobs::Sources::Potepan, {}],
+          [FreelanceJobs::Sources::TechStock, {}],
+          [FreelanceJobs::Sources::LevtechCreator, {}],
+          # クラウドソーシング（未経験向けプロファイルと同じ取得元をキーワード検索で流用する）。
           [FreelanceJobs::Sources::Crowdworks, {
             search_targets: [
               { keyword: "Ruby", hint: "Ruby", max_page: 2 },
