@@ -87,6 +87,10 @@ module FreelanceJobs
           [FreelanceJobs::Sources::Potepan, {}],
           [FreelanceJobs::Sources::TechStock, {}],
           [FreelanceJobs::Sources::LevtechCreator, {}],
+          [FreelanceJobs::Sources::ShuuumatuWorker, {}],
+          [FreelanceJobs::Sources::EngineerFactory, {}],
+          [FreelanceJobs::Sources::Sokudan, {}],
+          [FreelanceJobs::Sources::Relance, {}],
           # クラウドソーシング（未経験向けプロファイルと同じ取得元をキーワード検索で流用する）。
           [FreelanceJobs::Sources::Crowdworks, {
             search_targets: [
@@ -100,7 +104,12 @@ module FreelanceJobs
           [FreelanceJobs::Sources::Coconala, { keywords: ["Ruby", "TypeScript", "React"] }],
           [FreelanceJobs::Sources::Shufti, { tag_ids: [], keywords: ["Ruby", "TypeScript", "React"] }],
           [FreelanceJobs::Sources::Mamaworks, { category_paths: ["/jobs/engineering"], keyword_filter: nil }],
-          [FreelanceJobs::Sources::Craudia, {}]
+          [FreelanceJobs::Sources::Craudia, {}],
+          # アグリゲーター（横断検索）は最後に置く。同じ案件が掲載元エージェントと重複するため、
+          # 先に取得した一次サイト側の行が残るようにする（重複はURLキーで落ちる）。
+          # 掲載元が実装済みサイトのカードは各ソースの excluded_providers 既定値で除外される。
+          [FreelanceJobs::Sources::FreelanceBoard, {}],
+          [FreelanceJobs::Sources::FreelanceHub, {}]
         ],
         new_rows_require_star: false,
         # 「★★☆ 中級（実務経験3年以上）」より下のレベル、つまり経験3年未満でも応募できる
