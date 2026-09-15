@@ -76,6 +76,9 @@ class Youtube::OauthController < ApplicationController
       Time.current + token.fetch("expires_in", 3600).to_i.seconds
     )
 
+    # 再認証できたので、次に失効したときにまた失効通知メールを1通送れるようにする
+    Youtube::OauthAlertNotifier.reset!
+
     render plain: "認証成功！YouTube バッチが実行できるようになりました。この画面は閉じてOKです。"
   rescue Signet::AuthorizationError => e
     Rails.logger.error("[YouTubeOAuth] AuthorizationError: #{e.message}")

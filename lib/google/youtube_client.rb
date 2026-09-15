@@ -60,31 +60,54 @@ class Google::YoutubeClient
   end
 
   # Worker 側から使うメインメソッド
+  #
+  # 認証が通らないと YouTube 系バッチは全滅する。Google アプリがテストモードの間は
+  # refresh_token が約7日で失効するため、失効を検知したら再認証URLをメールで
+  # 1通だけ通知する（Youtube::OauthAlertNotifier）。
   def authorize!
-    # access_token も refresh_token も無い → そもそも OAuth 未実施
-    if @client.access_token.blank? && @client.refresh_token.blank?
-      raise <<~MSG
-        [YouTubeOAuth] access_token も refresh_token もありません。
+    ensure_credentials_present!
+    refresh_access_token! if access_token_unusable?
 
-        1. ブラウザで <APP_URL>/youtube/oauth/authorize にアクセス
-        2. Google の同意画面で YouTube へのアクセスを許可
-        3. 発行された refresh_token を Heroku config var
-           YOUTUBE_OAUTH_REFRESH_TOKEN に設定
-
-        を実行してから再度 Worker を動かしてください。
-      MSG
-    end
-
-    # access_token が無い or 期限切れで refresh_token がある場合はリフレッシュして
-    # アクセストークンを取り直す（refresh_token だけあれば自動復帰できる）。
-    if (@client.access_token.blank? || @client.expired?) && @client.refresh_token.present?
-      @client.refresh!
-
-      Rails.cache.write("youtube_access_token",  @client.access_token)
-      Rails.cache.write("youtube_refresh_token", @client.refresh_token)
-      Rails.cache.write("youtube_expires_at",    @client.expires_at) if @client.expires_at
-    end
-
+    # ここまで来たら認証は生きている。次に失効したときに再び1通送れるようにする。
+    Youtube::OauthAlertNotifier.reset!
     @client
+  end
+
+  private
+
+  def ensure_credentials_present!
+    return if @client.access_token.present? || @client.refresh_token.present?
+
+    Youtube::OauthAlertNotifier.notify_once(
+      reason: "アクセストークンもリフレッシュトークンも保存されていません（未認可）"
+    )
+
+    raise <<~MSG
+      [YouTubeOAuth] access_token も refresh_token もありません。
+
+      1. ブラウザで <APP_URL>/youtube/oauth/authorize にアクセス
+      2. Google の同意画面で YouTube へのアクセスを許可
+      3. 発行された refresh_token を Heroku config var
+         YOUTUBE_OAUTH_REFRESH_TOKEN に設定
+
+      を実行してから再度 Worker を動かしてください。
+    MSG
+  end
+
+  # access_token が無い or 期限切れで、refresh_token から取り直せる状態か
+  def access_token_unusable?
+    (@client.access_token.blank? || @client.expired?) && @client.refresh_token.present?
+  end
+
+  def refresh_access_token!
+    @client.refresh!
+
+    Rails.cache.write("youtube_access_token",  @client.access_token)
+    Rails.cache.write("youtube_refresh_token", @client.refresh_token)
+    Rails.cache.write("youtube_expires_at",    @client.expires_at) if @client.expires_at
+  rescue Signet::AuthorizationError, Google::Auth::AuthorizationError => e
+    # refresh_token 自体が失効/取り消し（invalid_grant）。ブラウザでの再同意が必要。
+    Youtube::OauthAlertNotifier.notify_once(reason: "#{e.class}: #{e.message}")
+    raise
   end
 end
