@@ -30,6 +30,7 @@ class FreelanceJobsAlertMailer < ApplicationMailer
     @last_success_at = last_success_at&.in_time_zone("Asia/Tokyo")
     @detected_at     = detected_at
     @sidekiq_url     = sidekiq_url
+    @reauthorize_url = reauthorize_url
 
     mail(to: alert_to, subject: "【要対応】副業案件バッチが実行されていません（#{profile_label}）")
   end
@@ -48,7 +49,8 @@ class FreelanceJobsAlertMailer < ApplicationMailer
     FreelanceJobs::SheetsClient.sidekiq_web_url
   end
 
-  # Google認証が切れていた場合の入口。YouTube と同じ再認証画面を使う。
+  # Googleの再認証（OAuth）の入口。案件シート自体はサービスアカウントで動くのでログイン不要だが、
+  # 同じGoogleアカウントのOAuthが切れているときはここから入り直してもらう。
   def reauthorize_url
     "#{Youtube::OauthAlertNotifier::DEFAULT_APP_BASE_URL}/youtube/oauth/authorize"
   end

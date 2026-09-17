@@ -11,10 +11,13 @@
 
 1. サービスアカウントが対象スプレッドシートの編集者になっているか
    （シートを開き「共有」に GOOGLE_APPLICATION_CREDENTIALS のサービスアカウントがいるか）
-2. YouTube と同じ OAuth も切れている場合は、下記URLから再認証してください
-   <%= @reauthorize_url %>
+2. OAuth 側が切れている場合は、下記の再認証URLから入り直してください
 <% end %>
 
+■ リンク
+Googleの再認証（OAuth）: <%= @reauthorize_url %>
+  ※ 副業案件シートはサービスアカウントで動くため通常ログインは不要です。
+     YouTube系と共通のGoogle認証が切れている場合だけ、ここから入り直してください。
 ログ（Sidekiq）: <%= @sidekiq_url %>
 
 --
