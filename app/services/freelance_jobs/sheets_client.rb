@@ -29,6 +29,12 @@ module FreelanceJobs
     CHECKBOX_HEADER_LABEL = "☑"
     CHECKBOX_COLUMN_WIDTH = 40
 
+    # 行モデル1列目のヘッダー文言。シート上でこのラベルが何列目にあるかが、そのまま
+    # 行モデルの開始位置（＝チェックボックス列の有無）になる。
+    # チェックボックス列のヘッダーは利用者が自由に付け替えられる（例:「応募チェック」）ので、
+    # そちらの文言でレイアウトを判定してはいけない。
+    STAR_HEADER_LABEL = FreelanceJobs::RowBuilder::HEADER.first
+
     # 案件URL列(230px)を除いた14列分。チェックボックス列の幅は先頭に足す。
     # 表示件数("300件")を置く列はNo.用の45pxだと狭いので60pxにしている。
     COLUMN_WIDTHS = [90, 60, 130, 300, 95, 130, 400, 260, 130, 80, 130, 120, 330, 120].freeze
@@ -62,6 +68,8 @@ module FreelanceJobs
       @sheet_gid = sheet_gid
       @checkbox_column = checkbox_column
       @checkbox_states_by_url = {}
+      # シート上のチェックボックス列ヘッダー（付け替えられていたらそれを引き継ぐ）
+      @checkbox_header_label = nil
       @service = build_service
     end
 
@@ -81,6 +89,7 @@ module FreelanceJobs
       # シートを読むことになるため、列のずれは設定ではなく実データから判定する。
       offset = detect_checkbox_offset(row_data)
       @checkbox_states_by_url = collect_checkbox_states(row_data, offset)
+      @checkbox_header_label = detect_checkbox_header_label(row_data, offset)
       rows = row_data.map { |grid_row| build_row_model(grid_row, offset) }
       rows.pop while rows.last && rows.last.all? { |value| value.to_s.empty? }
       rows
@@ -152,7 +161,20 @@ module FreelanceJobs
     # 先頭セルがチェックボックス列の見出しなら、本体は1列右にずれている。
     def detect_checkbox_offset(row_data)
       header_cells = row_data[1]&.values || []
-      header_cells.first&.formatted_value.to_s == CHECKBOX_HEADER_LABEL ? 1 : 0
+      star_column_index = header_cells.find_index do |cell|
+        cell&.formatted_value.to_s == STAR_HEADER_LABEL
+      end
+      # 空シートや読み取り失敗時は、プロファイルの設定どおりのレイアウトで書く。
+      star_column_index || checkbox_offset
+    end
+
+    # チェックボックス列のヘッダー文言をシートから引き継ぐ。
+    # 利用者が「応募チェック」等に付け替えていても、書き戻しで元に戻さないため。
+    def detect_checkbox_header_label(row_data, offset)
+      return nil if offset.zero?
+
+      label = (row_data[1]&.values || []).first&.formatted_value.to_s
+      label.empty? ? nil : label
     end
 
     # 案件URL → チェック状態。次の書き込みでそのまま書き戻すために保持する。
@@ -276,7 +298,7 @@ module FreelanceJobs
     end
 
     def checkbox_header_cell
-      Array.new(checkbox_offset, CHECKBOX_HEADER_LABEL)
+      Array.new(checkbox_offset, @checkbox_header_label || CHECKBOX_HEADER_LABEL)
     end
 
     # 既存シートのチェック状態を案件URLで引き継ぐ。並べ替えで行位置が変わっても

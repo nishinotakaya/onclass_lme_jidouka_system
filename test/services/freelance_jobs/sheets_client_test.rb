@@ -241,6 +241,35 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
     assert_equal 1, client.send(:detect_checkbox_offset, new_layout)
   end
 
+  # チェックボックス列のヘッダーは利用者が付け替える（例:「応募チェック」）。
+  # その文言で判定していると、付け替えた瞬間にレイアウトを見失って毎回中断してしまうため、
+  # 位置の基準は必ず🌟おすすめ側に置く。
+  def test_detect_checkbox_offset_survives_a_renamed_checkbox_header
+    client = build_client(checkbox_column: true)
+    renamed_layout = [grid_row(["", "sidekiq"]), grid_row(["応募チェック", "🌟おすすめ", "No."])]
+
+    assert_equal 1, client.send(:detect_checkbox_offset, renamed_layout)
+  end
+
+  # 読み取れないシート（空・ヘッダー行なし）では、プロファイルの設定どおりのレイアウトで書く。
+  def test_detect_checkbox_offset_falls_back_to_the_profile_layout
+    assert_equal 1, build_client(checkbox_column: true).send(:detect_checkbox_offset, [])
+    assert_equal 0, build_client(checkbox_column: false).send(:detect_checkbox_offset, [])
+  end
+
+  # 付け替えられたヘッダー文言は書き戻しでも維持する（勝手に☑へ戻さない）。
+  def test_build_write_values_keeps_a_renamed_checkbox_header
+    client = build_client(checkbox_column: true)
+    renamed_layout = [grid_row(["", "sidekiq"]), grid_row(["応募チェック", "🌟おすすめ"])]
+    offset = client.send(:detect_checkbox_offset, renamed_layout)
+    client.instance_variable_set(:@checkbox_header_label,
+                                  client.send(:detect_checkbox_header_label, renamed_layout, offset))
+
+    values = client.send(:build_write_values, "バナー", header_row_model, [build_row("https://example.com/a")])
+
+    assert_equal "応募チェック", values[1][0]
+  end
+
   def build_row(url)
     row = Array.new(FreelanceJobs::SheetsClient::ROW_COLUMN_COUNT) { |index| "値#{index}" }
     row[FreelanceJobs::SheetsClient::URL_COLUMN_INDEX] = url
