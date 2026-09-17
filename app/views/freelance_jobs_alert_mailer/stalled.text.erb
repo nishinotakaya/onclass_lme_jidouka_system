@@ -1,0 +1,18 @@
+副業案件リサーチのバッチ（<%= @profile_label %>）が、実行された形跡がありません。
+
+検知日時: <%= @detected_at.strftime("%Y年%-m月%-d日 %H時%M分") %>
+<% if @last_success_at %>
+最後に成功した日時: <%= @last_success_at.strftime("%Y年%-m月%-d日 %H時%M分") %>
+<% else %>
+最後に成功した日時: 記録がありません
+<% end %>
+対象シート: <%= @sheet_url %>
+
+毎朝6時のスケジュール実行が動いていない可能性があります。次を確認してください。
+
+1. worker dyno が起きているか（heroku ps）
+2. Sidekiq にジョブが積まれているか: <%= @sidekiq_url %>
+3. スケジューラ（sidekiq-scheduler）が起動時に登録されているか
+
+--
+このメールは同じ原因につき1通だけ送信されます（復旧すると次回分が解禁されます）。

@@ -4,10 +4,11 @@ module Youtube
   # YouTube の Google OAuth が失効してバッチが止まったことを、メールで「1回だけ」知らせる。
   #
   # Google のアプリがテストモードのままなので refresh_token は約7日で失効し、
-  # そのたびに全 YouTube 系バッチが invalid_grant で止まる。失敗はリトライで
-  # 何十回も繰り返されるため、素直に通知すると同じメールが大量に届く。
-  # そこで「失効を検知したら1通だけ送り、再認証が通ったら次の1通を解禁する」。
+  # そのたびに全 YouTube 系バッチが invalid_grant で止まる。送信の重複抑止は
+  # BatchAlerts::OnceNotifier に任せ、ここは「何を・どのURLで直すか」だけを持つ。
   class OauthAlertNotifier
+    LOG_TAG = "[YouTubeOAuth]"
+
     # 通知済みフラグ（Redis 共有キャッシュ。web と worker のどちらから送っても効く）
     ALERT_SENT_CACHE_KEY = "youtube_oauth_alert_sent"
 
@@ -25,7 +26,7 @@ module Youtube
 
       # 再認証に成功したときに呼ぶ。次に失効したらまた1通送れるようにする。
       def reset!
-        Rails.cache.delete(ALERT_SENT_CACHE_KEY)
+        BatchAlerts::OnceNotifier.release_delivery_slot(ALERT_SENT_CACHE_KEY)
       end
     end
 
@@ -34,39 +35,17 @@ module Youtube
     end
 
     def notify_once
-      return :not_configured unless mail_configured?
-
-      # SET NX 相当。複数 worker が同時に失敗しても送信は1通に収束する。
-      return :already_sent unless claim_alert_slot!
-
-      YoutubeOauthMailer.expired(authorize_url: authorize_url, reason: @reason).deliver_now
-      Rails.logger.warn("[YouTubeOAuth] 失効通知メールを送信しました reason=#{@reason}")
-      :sent
-    rescue => e
-      # 送信に失敗したらフラグを戻し、次の失敗で再挑戦できるようにする。
-      # また、通知の失敗で本来の認証エラーを覆い隠さない（例外は投げ直さない）。
-      Rails.cache.delete(ALERT_SENT_CACHE_KEY)
-      Rails.logger.error("[YouTubeOAuth] 失効通知メールの送信に失敗: #{e.class}: #{e.message}")
-      :failed
+      BatchAlerts::OnceNotifier.deliver_once(
+        cache_key: ALERT_SENT_CACHE_KEY,
+        retention: ALERT_SENT_RETENTION,
+        log_tag: LOG_TAG,
+        description: "失効通知メール"
+      ) do
+        YoutubeOauthMailer.expired(authorize_url: authorize_url, reason: @reason)
+      end
     end
 
     private
-
-    def claim_alert_slot!
-      Rails.cache.write(
-        ALERT_SENT_CACHE_KEY,
-        Time.current.iso8601,
-        expires_in: ALERT_SENT_RETENTION,
-        unless_exist: true
-      )
-    end
-
-    def mail_configured?
-      return true if ENV["SMTP_USERNAME"].present?
-
-      Rails.logger.error("[YouTubeOAuth] SMTP_USERNAME が未設定のため失効通知メールを送れません")
-      false
-    end
 
     # 例: YOUTUBE_REDIRECT_URI="https://example.herokuapp.com/oauth2callback"
     #     → "https://example.herokuapp.com/youtube/oauth/authorize"

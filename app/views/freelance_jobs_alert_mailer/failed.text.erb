@@ -1,0 +1,21 @@
+副業案件リサーチのバッチ（<%= @profile_label %>）が失敗し、シートが更新できていません。
+
+検知日時: <%= @detected_at.strftime("%Y年%-m月%-d日 %H時%M分") %>
+対象シート: <%= @sheet_url %>
+エラー: <%= @reason %>
+<% if @google_auth_failure %>
+
+■ 原因: Google の認証が通っていません
+スプレッドシートへのアクセスに使っている Google 認証が切れているか、権限がありません。
+次のどちらかを確認してください。
+
+1. サービスアカウントが対象スプレッドシートの編集者になっているか
+   （シートを開き「共有」に GOOGLE_APPLICATION_CREDENTIALS のサービスアカウントがいるか）
+2. YouTube と同じ OAuth も切れている場合は、下記URLから再認証してください
+   <%= @reauthorize_url %>
+<% end %>
+
+ログ（Sidekiq）: <%= @sidekiq_url %>
+
+--
+このメールは同じ原因につき1通だけ送信されます（復旧すると次回分が解禁されます）。

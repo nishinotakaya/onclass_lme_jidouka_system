@@ -110,10 +110,18 @@ youtube_lme_landing_daily:
   tz: "Asia/Tokyo"
   description: "新規YouTube動画のLME QRコードアクション作成＆概要欄URL更新"
 
-# ★ 副業案件リサーチ（HTML/CSS・Excel）— 朝だけ実行、メール通知なし
+# ★ 副業案件リサーチ（HTML/CSS・Excel）— 朝だけ実行。失敗・中断したときだけ通知メールを送る
 freelance_jobs_research_morning:
   class: "FreelanceJobs::ResearchWorker"
   cron: "0 6 * * *"   # 毎朝 06:00 のみ
   queue: freelance_jobs_research
   tz: "Asia/Tokyo"
-  description: "副業案件（HTML/CSS・Excel、Ruby・TypeScript・React）を各サイトから取得し2シートを更新（毎朝6時・メール通知なし）"
+  description: "副業案件（HTML/CSS・Excel、Ruby・TypeScript・React）を各サイトから取得し2シートを更新（毎朝6時・失敗時のみメール通知）"
+
+# ★ 副業案件リサーチの見張り番 — 本体(06:00)が走らなかった/失敗したままなら通知メールを送る
+freelance_jobs_watchdog_morning:
+  class: "FreelanceJobs::WatchdogWorker"
+  cron: "0 7 * * *"   # 毎朝 07:00（本体の1時間後）
+  queue: freelance_jobs_research
+  tz: "Asia/Tokyo"
+  description: "副業案件バッチが実行されたかを確認し、止まっていれば通知メールを送る"

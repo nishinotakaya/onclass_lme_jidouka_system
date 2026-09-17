@@ -29,7 +29,29 @@ end
 
 require_relative "../../../app/jobs/freelance_jobs/research_worker"
 
+# 通知そのものは alert_notifier_test で検証するので、ここでは「どのプロファイルで何を呼んだか」
+# だけを記録する代役を置く（本物はRails.cache・ActionMailerに依存するため）。
+module FreelanceJobs
+  class AlertNotifier
+    class << self
+      attr_accessor :calls
+
+      def notify_failure(profile:, reason: nil, error: nil)
+        calls << { kind: :failure, profile_key: profile.key, reason: reason, error: error }
+      end
+
+      def record_success(profile:)
+        calls << { kind: :success, profile_key: profile.key }
+      end
+    end
+  end
+end
+
 class FreelanceJobsResearchWorkerTest < Minitest::Test
+  def setup
+    FreelanceJobs::AlertNotifier.calls = []
+  end
+
   # ResearchService#callの結果を差し替えるダブル。call_resultがExceptionならそれをraiseし、
   # そうでなければそのまま返す（成功時のsummary Hashを模す）。
   class FakeResearchServiceInstance
@@ -138,5 +160,39 @@ class FreelanceJobsResearchWorkerTest < Minitest::Test
 
     assert_equal Class, FreelanceJobs::ResearchService.singleton_class.instance_method(:new).owner,
                  "スタブ解除後はClass#newの委譲に戻っているはず"
+  end
+
+  # 中断(aborted)は例外にならないため、ログに出るだけで誰も気づけない。必ず通知する。
+  def test_perform_notifies_when_a_profile_is_aborted
+    aborted_summary = { aborted: true, reason: "既存シートにヘッダー行(🌟おすすめ)が見つかりません" }
+    stub_research_service_new(results_by_profile_key: { "beginner" => {}, "engineer" => aborted_summary }) do |_kwargs|
+      FreelanceJobs::ResearchWorker.new.perform
+
+      failures = FreelanceJobs::AlertNotifier.calls.select { |call| call[:kind] == :failure }
+      assert_equal ["engineer"], failures.map { |call| call[:profile_key] }
+      assert_includes failures.first[:reason], "ヘッダー行"
+    end
+  end
+
+  # 例外で落ちた場合も同じく通知する（例外の中身をそのまま渡す）。
+  def test_perform_notifies_when_a_profile_raises
+    beginner_error = StandardError.new("beginner boom")
+    stub_research_service_new(results_by_profile_key: { "beginner" => beginner_error, "engineer" => {} }) do |_kwargs|
+      assert_raises(StandardError) { FreelanceJobs::ResearchWorker.new.perform }
+
+      failure = FreelanceJobs::AlertNotifier.calls.find { |call| call[:kind] == :failure }
+      assert_equal "beginner", failure[:profile_key]
+      assert_equal beginner_error, failure[:error]
+    end
+  end
+
+  # 成功したら最終成功時刻を記録する（ウォッチドッグの入力になる）。
+  def test_perform_records_success_for_each_succeeded_profile
+    stub_research_service_new(results_by_profile_key: { "beginner" => {}, "engineer" => {} }) do |_kwargs|
+      FreelanceJobs::ResearchWorker.new.perform
+
+      assert_equal [["beginner", :success], ["engineer", :success]],
+                    FreelanceJobs::AlertNotifier.calls.map { |call| [call[:profile_key], call[:kind]] }
+    end
   end
 end
