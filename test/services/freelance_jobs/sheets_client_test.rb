@@ -688,11 +688,44 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
 
   # リクエストの組み立てだけを見たいので、認証せずにインスタンスだけ作る。
   # checkbox_column: true にするとチェックボックス列ぶん全体が1列ずれる。
-  def build_client(checkbox_column: false)
+  def build_client(checkbox_column: false, hidden_level_marker: nil)
     client_instance = FreelanceJobs::SheetsClient.allocate
     client_instance.instance_variable_set(:@checkbox_column, checkbox_column)
     client_instance.instance_variable_set(:@checkbox_states_by_url, {})
+    client_instance.instance_variable_set(:@hidden_level_marker, hidden_level_marker)
     client_instance
+  end
+
+  # --- 既定フィルター（レベル） ---
+
+  # 上級まで並ぶと応募できる案件が埋もれるので、開いた直後は中級以下だけが見える状態にする。
+  def test_basic_filter_hides_the_levels_marked_as_out_of_range
+    client = build_client(checkbox_column: true, hidden_level_marker: "★★★")
+
+    filter = client.send(:basic_filter_request, 42, 300)[:set_basic_filter][:filter]
+
+    # チェックボックス列が1つ入るので、レベル列はG列(index 6)になる。
+    criteria = filter[:criteria]["6"]
+    assert_equal "TEXT_NOT_CONTAINS", criteria.condition.type
+    assert_equal "★★★", criteria.condition.values.first.user_entered_value
+  end
+
+  # チェックボックス列が無いシートでは1つ手前(F列)を見る。
+  def test_basic_filter_targets_the_level_column_without_a_checkbox_column
+    client = build_client(checkbox_column: false, hidden_level_marker: "★★★")
+
+    filter = client.send(:basic_filter_request, 42, 300)[:set_basic_filter][:filter]
+
+    assert_equal ["5"], filter[:criteria].keys
+  end
+
+  # 未経験向けシートは全レベルを見せたいので、条件は付けない（素のフィルターのまま）。
+  def test_basic_filter_has_no_criteria_without_a_hidden_level_marker
+    client = build_client(checkbox_column: false)
+
+    filter = client.send(:basic_filter_request, 42, 300)[:set_basic_filter][:filter]
+
+    refute filter.key?(:criteria)
   end
 
   # 書式リクエストが読むのは sheet_id と conditional_formats だけ。

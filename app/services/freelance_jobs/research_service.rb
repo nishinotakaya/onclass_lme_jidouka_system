@@ -189,7 +189,8 @@ module FreelanceJobs
 
     def sheets_client
       @sheets_client ||= FreelanceJobs::SheetsClient.new(spreadsheet_id: @spreadsheet_id, sheet_gid: @profile.sheet_gid,
-                                                          checkbox_column: @profile.checkbox_column)
+                                                          checkbox_column: @profile.checkbox_column,
+                                                          hidden_level_marker: @profile.hidden_level_marker)
     end
 
     # バナーは一目で読み切れる長さに絞る。失敗の原因（HTTPステータス・URL）や実行間隔の但し書きは

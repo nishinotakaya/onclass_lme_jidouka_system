@@ -56,6 +56,11 @@ module FreelanceJobs
     BASE_VISIBLE_COUNT_TARGET_COLUMN_INDEX = 2
     # データ開始行（1行目=バナー、2行目=ヘッダー）。
     FIRST_DATA_ROW_NUMBER = 3
+
+    # レベル列の位置。行モデルでは index 6 だが、案件URL列(index 5)はシートに書かないため
+    # シート本体では1つ手前にずれる。既定フィルターの対象列として使う。
+    LEVEL_ROW_COLUMN_INDEX = 6
+    BASE_LEVEL_COLUMN_INDEX = LEVEL_ROW_COLUMN_INDEX - 1
     DEFAULT_SIDEKIQ_WEB_URL = "https://onclass-lme-jidouka-app-857ffde75fc4.herokuapp.com/sidekiq"
 
     def self.sidekiq_web_url
@@ -63,10 +68,12 @@ module FreelanceJobs
     end
 
     # checkbox_column: 先頭にチェックボックス列を持たせるか（プロファイルごとに決まる）。
-    def initialize(spreadsheet_id:, sheet_gid:, checkbox_column: false)
+    # hidden_level_marker: 既定のフィルターで畳むレベル表記（部分一致）。nilならフィルターは素のまま。
+    def initialize(spreadsheet_id:, sheet_gid:, checkbox_column: false, hidden_level_marker: nil)
       @spreadsheet_id = spreadsheet_id
       @sheet_gid = sheet_gid
       @checkbox_column = checkbox_column
+      @hidden_level_marker = hidden_level_marker
       @checkbox_states_by_url = {}
       # シート上のチェックボックス列ヘッダー（付け替えられていたらそれを引き継ぐ）
       @checkbox_header_label = nil
@@ -620,18 +627,35 @@ module FreelanceJobs
 
     # データ0件でも範囲が壊れないよう、end_row_indexは最低3を確保する。
     def basic_filter_request(sheet_id, total_row_count)
-      {
-        set_basic_filter: {
-          filter: {
-            range: {
-              sheet_id: sheet_id,
-              start_row_index: 1,
-              end_row_index: [total_row_count, 3].max,
-              start_column_index: 0,
-              end_column_index: sheet_column_count
-            }
-          }
+      filter = {
+        range: {
+          sheet_id: sheet_id,
+          start_row_index: 1,
+          end_row_index: [total_row_count, 3].max,
+          start_column_index: 0,
+          end_column_index: sheet_column_count
         }
+      }
+      criteria = default_filter_criteria
+      filter[:criteria] = criteria if criteria
+
+      { set_basic_filter: { filter: filter } }
+    end
+
+    # 既定でレベル列に掛けておくフィルター条件。
+    # 「★★★を含まない行だけ表示」にしているので、上級の表記が
+    # （★★★ 上級（リード・設計／7年以上）のように）増えても追従できる。
+    def default_filter_criteria
+      return nil if @hidden_level_marker.to_s.empty?
+
+      column_index = checkbox_offset + BASE_LEVEL_COLUMN_INDEX
+      {
+        column_index.to_s => Google::Apis::SheetsV4::FilterCriteria.new(
+          condition: Google::Apis::SheetsV4::BooleanCondition.new(
+            type: "TEXT_NOT_CONTAINS",
+            values: [Google::Apis::SheetsV4::ConditionValue.new(user_entered_value: @hidden_level_marker)]
+          )
+        )
       }
     end
 

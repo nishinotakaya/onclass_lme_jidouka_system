@@ -8,7 +8,7 @@ module FreelanceJobs
   class Profile
     Definition = Struct.new(
       :key, :label, :sheet_gid, :header, :category_order, :classifier, :source_specs, :new_rows_require_star,
-      :checkbox_column,
+      :checkbox_column, :hidden_level_marker,
       keyword_init: true
     )
 
@@ -59,7 +59,8 @@ module FreelanceJobs
           [FreelanceJobs::Sources::Craudia, {}]
         ],
         new_rows_require_star: true,
-        checkbox_column: false
+        checkbox_column: false,
+        hidden_level_marker: nil
       )
     )
 
@@ -112,7 +113,11 @@ module FreelanceJobs
         new_rows_require_star: false,
         # 応募済み・検討済みを自分で潰していけるよう、先頭にチェックボックス列を置く。
         # チェック状態は案件URLをキーに毎回の更新へ引き継がれる（SheetsClient参照）。
-        checkbox_column: true
+        checkbox_column: true,
+        # 既定のフィルターで畳むレベル表記（部分一致）。上級(★★★)まで並ぶと応募できる案件が
+        # 埋もれるため、開いた直後は中級以下だけが見える状態にする。
+        # フィルターを外せば上級も見られる（行は消していない）。
+        hidden_level_marker: "★★★"
       )
     )
 
