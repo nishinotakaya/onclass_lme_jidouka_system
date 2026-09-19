@@ -90,6 +90,13 @@ module FreelanceJobs
           [FreelanceJobs::Sources::Relance, {}],
           [FreelanceJobs::Sources::Crowdtech, {}],
           [FreelanceJobs::Sources::PeBank, {}],
+          # 2026-09-19の案件サイト再調査で追加した3サイト。いずれも未経験〜中級の案件が多く、
+          # 既定フィルター（中級以下だけ表示）で見える行を増やす目的で入れている。
+          # テックダイレクトは時給制・週3日〜が標準、ギークスジョブは「未経験OK」「若手歓迎」の
+          # 公式ファセットを持ち、ITプロパートナーズは週2日〜の副業前提。
+          [FreelanceJobs::Sources::Techdirect, {}],
+          [FreelanceJobs::Sources::GeechsJob, {}],
+          [FreelanceJobs::Sources::Itpropartners, {}],
           # クラウドソーシング（未経験向けプロファイルと同じ取得元をキーワード検索で流用する）。
           [FreelanceJobs::Sources::Crowdworks, {
             search_targets: [
