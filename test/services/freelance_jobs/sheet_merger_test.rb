@@ -145,28 +145,33 @@ class FreelanceJobsSheetMergerTest < Minitest::Test
   # --- 500件上限は新規行にだけ効く（既存行は上限で落ちない）（AC-05: 300→500に引き上げ） ---
 
   def test_500_row_cap_only_drops_new_rows_never_existing_rows
-    existing_rows = Array.new(490) do |index|
-      row(site: "CrowdWorks", url: "https://crowdworks.jp/public/jobs/existing-#{index}", deadline_text: "2030-01-01")
+    # MAX_ROWS_PER_SITE(40)の影響を受けずに500件上限そのものを検証するため、
+    # 既存行は14サイト×35件（1サイトあたり40件未満）に分散させる。
+    existing_site_names = Array.new(14) { |site_index| format("ExistingSite%02d", site_index + 1) }
+    existing_rows = existing_site_names.flat_map do |site_name|
+      Array.new(35) do |index|
+        row(site: site_name, url: "https://example.com/#{site_name}/existing-#{index}", deadline_text: "2030-01-01")
+      end
     end
     new_rows = Array.new(30) do |index|
       # 締切が遠いほど優先度が高い（インデックスが大きいほど生き残りやすい）。
       deadline_text = (TODAY + index + 1).strftime("%Y-%m-%d")
-      row(recommend: "🌟", url: "https://crowdworks.jp/public/jobs/new-#{index}", deadline_text: deadline_text)
+      row(recommend: "🌟", site: "NewSite", url: "https://example.com/NewSite/new-#{index}", deadline_text: deadline_text)
     end
 
     result = FreelanceJobs::SheetMerger.merge(existing_rows: existing_rows, new_rows: new_rows,
-                                               succeeded_sites: ["CrowdWorks"], today: TODAY)
+                                               succeeded_sites: existing_site_names + ["NewSite"], today: TODAY)
 
     assert_equal 500, result.total
     assert_equal 10, result.added
-    existing_urls_present = result.rows.count { |r| r[5].start_with?("https://crowdworks.jp/public/jobs/existing-") }
+    existing_urls_present = result.rows.count { |r| r[5].include?("/existing-") }
     assert_equal 490, existing_urls_present, "既存行は500件上限の影響を受けない"
 
     surviving_new_urls = result.rows.map { |r| r[5] }.select { |url| url.include?("/new-") }
     assert_equal 10, surviving_new_urls.size
     # 締切が最も遠い(index 20..29)ものだけが残る。
-    (20..29).each { |index| assert_includes surviving_new_urls, "https://crowdworks.jp/public/jobs/new-#{index}" }
-    (0..19).each { |index| refute_includes surviving_new_urls, "https://crowdworks.jp/public/jobs/new-#{index}" }
+    (20..29).each { |index| assert_includes surviving_new_urls, "https://example.com/NewSite/new-#{index}" }
+    (0..19).each { |index| refute_includes surviving_new_urls, "https://example.com/NewSite/new-#{index}" }
   end
 
   # --- 並び順（HTML/CSS→Excel、分類内はrow_priority_key）とNo.採番 ---
@@ -201,14 +206,18 @@ class FreelanceJobsSheetMergerTest < Minitest::Test
 
   # === ラウンド2 C3: 1回あたりの新規追加上限（MAX_NEW_ROWS_PER_RUN = 80） ===
 
+  # サイトを分散させているのは MAX_ROWS_PER_SITE=40 の影響を受けずに 80 件上限そのものを検証するため。
+  # 4サイト×25件（各サイトともMAX_ROWS_PER_SITE=40未満）に分散し、既存行は無しにする。
   def test_max_80_new_rows_per_run_keeps_highest_priority_ones
+    site_names = ["SiteA", "SiteB", "SiteC", "SiteD"]
     new_rows = Array.new(100) do |index|
       deadline_text = (TODAY + index + 1).strftime("%Y-%m-%d") # indexが大きいほど締切が遠い＝優先度が高い
-      row(recommend: "🌟", url: "https://crowdworks.jp/public/jobs/new-#{index}", deadline_text: deadline_text)
+      site_name = site_names[index % 4]
+      row(recommend: "🌟", site: site_name, url: "https://example.com/#{site_name}/new-#{index}", deadline_text: deadline_text)
     end
 
     result = FreelanceJobs::SheetMerger.merge(existing_rows: [], new_rows: new_rows,
-                                               succeeded_sites: ["CrowdWorks"], today: TODAY)
+                                               succeeded_sites: site_names, today: TODAY)
 
     assert_equal 80, result.added
     assert_equal 80, result.total
@@ -216,23 +225,211 @@ class FreelanceJobsSheetMergerTest < Minitest::Test
     assert_equal (20..99).to_a.sort, surviving_indexes.sort, "締切が最も遠い上位80件だけが残る"
   end
 
+  # 500行上限は予算計算（MAX_TOTAL_ROWS - 生存既存行数）で効く。既存行はMAX_ROWS_PER_SITEの
+  # 影響を受けずに15サイト×30件、新規行は4サイトに分散させて80件上限との組み合わせを検証する。
   def test_added_reflects_actual_count_after_both_80_cap_and_500_cap
-    existing_rows = Array.new(450) do |index|
-      row(site: "CrowdWorks", url: "https://crowdworks.jp/public/jobs/existing-#{index}", deadline_text: "2030-01-01")
+    existing_site_names = Array.new(15) { |site_index| format("ExistingSite%02d", site_index + 1) }
+    existing_rows = existing_site_names.flat_map do |site_name|
+      Array.new(30) do |index|
+        row(site: site_name, url: "https://example.com/#{site_name}/existing-#{index}", deadline_text: "2030-01-01")
+      end
     end
+    site_names = ["SiteA", "SiteB", "SiteC", "SiteD"]
     new_rows = Array.new(100) do |index|
       deadline_text = (TODAY + index + 1).strftime("%Y-%m-%d")
-      row(recommend: "🌟", url: "https://crowdworks.jp/public/jobs/new-#{index}", deadline_text: deadline_text)
+      site_name = site_names[index % 4]
+      row(recommend: "🌟", site: site_name, url: "https://example.com/#{site_name}/new-#{index}", deadline_text: deadline_text)
     end
 
     result = FreelanceJobs::SheetMerger.merge(existing_rows: existing_rows, new_rows: new_rows,
-                                               succeeded_sites: ["CrowdWorks"], today: TODAY)
+                                               succeeded_sites: existing_site_names + site_names, today: TODAY)
 
     assert_equal 500, result.total
-    assert_equal 50, result.added, "80件キャップ後、さらに500件上限で削られた実数になっているべき"
+    assert_equal 50, result.added, "80件キャップ後、さらに500件上限（予算計算）で削られた実数になっているべき"
     surviving_indexes = result.rows.map { |r| r[5] }.select { |url| url.include?("/new-") }
                                .map { |url| url[%r{new-(\d+)}, 1].to_i }
     assert_equal (50..99).to_a.sort, surviving_indexes.sort, "元の100件のうち上位50件（締切が遠い順）と一致するはず"
+  end
+
+  # === AC-21..AC-23: 新規行の公平配分（保証枠＋品質枠） ===
+
+  # 予算をNEW_ROWS_FLOOR_PER_SITE(3)より十分絞るため、新規行が来ないFillerSiteに既存行460件を置く。
+  # 予算 = min(80, 500-460) = 40。保証枠6件(2サイト×3件)を引いた残り34件は、🌟🌟のRichSiteの
+  # 候補（受け入れ可能数MAX_ROWS_PER_SITE-0=40のうち3件は保証枠で消費済みなので残り37件）で
+  # 使い切られるため、🌟0のZeroStarSiteは保証枠の3件しか載らないはず。
+  def test_guarantee_floor_of_three_new_rows_applies_even_to_zero_star_site
+    filler_existing_rows = Array.new(460) do |index|
+      row(site: "FillerSite", url: "https://example.com/FillerSite/existing-#{index}", deadline_text: "2030-01-01")
+    end
+    rich_site_rows = Array.new(50) do |index|
+      row(recommend: "🌟🌟", site: "RichSite", url: "https://example.com/RichSite/new-#{index}",
+          deadline_text: (TODAY + index + 1).strftime("%Y-%m-%d"))
+    end
+    zero_star_site_rows = Array.new(10) do |index|
+      row(recommend: "", site: "ZeroStarSite", url: "https://example.com/ZeroStarSite/new-#{index}",
+          deadline_text: (TODAY + index + 1).strftime("%Y-%m-%d"))
+    end
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: filler_existing_rows, new_rows: rich_site_rows + zero_star_site_rows,
+      succeeded_sites: ["FillerSite", "RichSite", "ZeroStarSite"], today: TODAY
+    )
+
+    zero_star_survivor_count = result.rows.count { |merged_row| merged_row[4] == "ZeroStarSite" }
+    assert_equal 3, zero_star_survivor_count,
+                 "🌟0のサイトでも保証枠NEW_ROWS_FLOOR_PER_SITE(3)件は必ず載る（品質枠では最下位のため3件を超えない）"
+  end
+
+  # 上と同じ構成で、保証枠の後の残り予算34件が🌟🌟のRichSiteの候補で埋まることを確認する。
+  def test_new_rows_fill_remaining_budget_by_star_count_after_guarantee_floor
+    filler_existing_rows = Array.new(460) do |index|
+      row(site: "FillerSite", url: "https://example.com/FillerSite/existing-#{index}", deadline_text: "2030-01-01")
+    end
+    rich_site_rows = Array.new(50) do |index|
+      row(recommend: "🌟🌟", site: "RichSite", url: "https://example.com/RichSite/new-#{index}",
+          deadline_text: (TODAY + index + 1).strftime("%Y-%m-%d"))
+    end
+    zero_star_site_rows = Array.new(10) do |index|
+      row(recommend: "", site: "ZeroStarSite", url: "https://example.com/ZeroStarSite/new-#{index}",
+          deadline_text: (TODAY + index + 1).strftime("%Y-%m-%d"))
+    end
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: filler_existing_rows, new_rows: rich_site_rows + zero_star_site_rows,
+      succeeded_sites: ["FillerSite", "RichSite", "ZeroStarSite"], today: TODAY
+    )
+
+    rich_site_survivor_count = result.rows.count { |merged_row| merged_row[4] == "RichSite" }
+    assert_equal 37, rich_site_survivor_count,
+                 "保証枠3件の後、残り予算34件は🌟が多いRichSiteの候補（保証枠消費後の残り37件）で埋まるはず"
+  end
+
+  # 既存行がMAX_ROWS_PER_SITE(40)件ちょうどのサイトは受け入れ可能数が0になり、新規行を1件も受け入れない。
+  def test_site_with_40_existing_rows_accepts_no_new_rows
+    existing_rows = Array.new(40) do |index|
+      row(site: "FullSite", url: "https://example.com/FullSite/existing-#{index}", deadline_text: "2030-01-01")
+    end
+    new_rows = Array.new(5) do |index|
+      row(recommend: "🌟", site: "FullSite", url: "https://example.com/FullSite/new-#{index}",
+          deadline_text: (TODAY + index + 1).strftime("%Y-%m-%d"))
+    end
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: existing_rows, new_rows: new_rows,
+      succeeded_sites: ["FullSite"], today: TODAY
+    )
+
+    assert_equal 0, result.added, "既存行が40件(MAX_ROWS_PER_SITE)あるサイトは新規行を受け入れないはず"
+    existing_survivor_count = result.rows.count { |merged_row| merged_row[5].include?("/existing-") }
+    assert_equal 40, existing_survivor_count, "既存行は1件も落ちないはず"
+  end
+
+  # 既存行が39件のサイトは受け入れ可能数が1件(40-39)になり、新規行をちょうど1件だけ受け入れる。
+  def test_site_with_39_existing_rows_accepts_only_one_new_row
+    existing_rows = Array.new(39) do |index|
+      row(site: "AlmostFullSite", url: "https://example.com/AlmostFullSite/existing-#{index}", deadline_text: "2030-01-01")
+    end
+    new_rows = Array.new(5) do |index|
+      row(recommend: "🌟", site: "AlmostFullSite", url: "https://example.com/AlmostFullSite/new-#{index}",
+          deadline_text: (TODAY + index + 1).strftime("%Y-%m-%d"))
+    end
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: existing_rows, new_rows: new_rows,
+      succeeded_sites: ["AlmostFullSite"], today: TODAY
+    )
+
+    assert_equal 1, result.added, "既存行が39件のサイトは受け入れ可能数1件(40-39)のみ新規行を受け入れるはず"
+    existing_survivor_count = result.rows.count { |merged_row| merged_row[5].include?("/existing-") }
+    assert_equal 39, existing_survivor_count, "既存行は1件も落ちないはず"
+  end
+
+  # 保証枠の総需要(27サイト×3件=81件)が予算(80件)を1件超える構成にする。
+  # 既存行0件のサイトが26個、既存行5件のサイト(RichExistingSite)が1個で、
+  # 既存行の少ない順に保証枠を配ると、既存行が最も多いRichExistingSiteが処理順で最後になり、
+  # 26サイト×3件=78件を使い切った時点で残り予算が2件しかないため、保証枠3件のうち2件しか確保できないはず。
+  def test_sites_with_fewer_existing_rows_get_guarantee_floor_first_when_budget_is_insufficient
+    existing_rows = Array.new(5) do |index|
+      row(site: "RichExistingSite", url: "https://example.com/RichExistingSite/existing-#{index}",
+          deadline_text: "2030-01-01")
+    end
+    zero_existing_site_names = Array.new(26) { |site_index| format("ZeroExistingSite%02d", site_index + 1) }
+    new_rows = (zero_existing_site_names + ["RichExistingSite"]).flat_map do |site_name|
+      Array.new(5) do |index|
+        row(recommend: "🌟", site: site_name, url: "https://example.com/#{site_name}/new-#{index}",
+            deadline_text: (TODAY + index + 1).strftime("%Y-%m-%d"))
+      end
+    end
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: existing_rows, new_rows: new_rows,
+      succeeded_sites: zero_existing_site_names + ["RichExistingSite"], today: TODAY
+    )
+
+    zero_existing_site_names.each do |site_name|
+      # サイト列だけでなくURLが/new-を含むかで絞る（既存行が0件のサイトなので結果は変わらないが、
+      # 「新規行を数えている」という意図をRichExistingSite側の数え方と揃えて明確にする）。
+      new_row_survivor_count = result.rows.count { |merged_row| merged_row[4] == site_name && merged_row[5].include?("/new-") }
+      assert_equal 3, new_row_survivor_count, "#{site_name}は既存行0件なので保証枠3件を確保できるはず"
+    end
+
+    # RichExistingSiteはサイト列だけで数えると既存行5件（全部生存＝正しい挙動）も含んでしまうため、
+    # URLが/new-を含む新規行だけに絞り込む。既存行はMAX_ROWS_PER_SITEの対象外なので5件とも残る。
+    rich_existing_site_new_row_count = result.rows.count { |merged_row| merged_row[4] == "RichExistingSite" && merged_row[5].include?("/new-") }
+    assert_equal 2, rich_existing_site_new_row_count,
+                 "既存行が最も多いRichExistingSiteは処理順が最後になり、予算切れで新規行を2件しか確保できないはず"
+
+    rich_existing_site_existing_row_count = result.rows.count { |merged_row| merged_row[4] == "RichExistingSite" && merged_row[5].include?("/existing-") }
+    assert_equal 5, rich_existing_site_existing_row_count, "RichExistingSiteの既存行5件は新規行の受け入れ枠に関わらず全部残るはず"
+  end
+
+  # 既存行だけで500件を超えている場合、予算 = MAX_TOTAL_ROWS - 生存既存行数 が負になる。
+  # 予算が0以下なので新規行を諦める。既存行は絶対に落とさない。
+  def test_existing_rows_exceeding_500_are_all_kept_and_no_new_rows_are_added
+    existing_site_names = Array.new(17) { |site_index| format("OverflowSite%02d", site_index + 1) }
+    existing_rows = existing_site_names.flat_map do |site_name|
+      Array.new(30) do |index|
+        row(site: site_name, url: "https://example.com/#{site_name}/existing-#{index}", deadline_text: "2030-01-01")
+      end
+    end
+    new_rows = Array.new(10) do |index|
+      row(recommend: "🌟", site: "NewSiteBudgetZero", url: "https://example.com/NewSiteBudgetZero/new-#{index}",
+          deadline_text: (TODAY + index + 1).strftime("%Y-%m-%d"))
+    end
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: existing_rows, new_rows: new_rows,
+      succeeded_sites: existing_site_names + ["NewSiteBudgetZero"], today: TODAY
+    )
+
+    assert_equal 0, result.added, "予算が0以下なので新規行を諦める"
+    assert_equal 0, result.removed, "既存行は絶対に落とさない"
+    assert_equal 510, result.total
+    existing_survivor_count = result.rows.count { |merged_row| merged_row[5].include?("/existing-") }
+    assert_equal 510, existing_survivor_count, "既存行は全部残る"
+  end
+
+  # 1サイト内の新規候補は同一サイトかつ受け入れ可能数を3に絞った状態で、🌟数がバラバラな5件を渡し、
+  # 上位3件（🌟が多い順）だけが選ばれることを確認する。
+  def test_within_site_new_row_selection_is_ordered_by_priority_when_capacity_is_limited
+    existing_rows = Array.new(37) do |index|
+      row(site: "LimitedCapacitySite", url: "https://example.com/LimitedCapacitySite/existing-#{index}",
+          deadline_text: "2030-01-01")
+    end
+    new_rows = [0, 1, 2, 3, 4].map do |star_count|
+      row(recommend: "🌟" * star_count, site: "LimitedCapacitySite",
+          url: "https://example.com/LimitedCapacitySite/new-star#{star_count}", deadline_text: "-")
+    end
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: existing_rows, new_rows: new_rows,
+      succeeded_sites: ["LimitedCapacitySite"], today: TODAY
+    )
+
+    surviving_star_counts = result.rows.select { |merged_row| merged_row[5].include?("/new-star") }
+                                   .map { |merged_row| merged_row[5][/star(\d)/, 1].to_i }
+    assert_equal 3, surviving_star_counts.size
+    assert_equal [2, 3, 4], surviving_star_counts.sort, "受け入れ可能数3件のうち🌟が多い上位3件だけが選ばれるはず"
   end
 
   # === ラウンド2 C4: 新規行の並び順（🌟が多い順→締切が遠い順、締切不明は最後） ===
@@ -579,6 +776,14 @@ class FreelanceJobsSheetMergerTest < Minitest::Test
 
   def test_max_new_rows_per_run_remains_80
     assert_equal 80, FreelanceJobs::SheetMerger::MAX_NEW_ROWS_PER_RUN
+  end
+
+  def test_max_rows_per_site_is_40
+    assert_equal 40, FreelanceJobs::SheetMerger::MAX_ROWS_PER_SITE
+  end
+
+  def test_new_rows_floor_per_site_is_3
+    assert_equal 3, FreelanceJobs::SheetMerger::NEW_ROWS_FLOOR_PER_SITE
   end
 
   # === AC-10: PE-BANKのURLリンク切れ修正。URL表記(F列)も自動更新対象に含める ===
