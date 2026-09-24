@@ -62,9 +62,10 @@ class FreelanceJobsProfileTest < Minitest::Test
   def test_engineer_header_replaces_only_difficulty_and_memo_columns
     header = FreelanceJobs::Profile::ENGINEER.header
 
-    assert_equal 15, header.size
+    assert_equal 16, header.size
     assert_equal "レベル（求められる経験）", header[6]
     assert_equal "一言メモ（条件・注意点）", header[13]
+    assert_equal "追加日", header[15]
     FreelanceJobs::RowBuilder::HEADER.each_index do |index|
       next if [6, 13].include?(index)
 
@@ -148,6 +149,68 @@ class FreelanceJobsProfileTest < Minitest::Test
 
     assert_equal FreelanceJobs::Sources::Crowdworks, source_class
     refute source_class.frozen?, "Classオブジェクト自体はfreezeの対象外という設計"
+  end
+
+  # --- AC-02b: ココナラテックは include_closed: true で取得する ---
+
+  def test_engineer_coconala_tech_source_spec_includes_closed_postings
+    coconala_tech_options = FreelanceJobs::Profile::ENGINEER.source_specs
+                                                             .find { |source_class, _options| source_class == FreelanceJobs::Sources::CoconalaTech }
+                                                             .last
+
+    assert_equal({ include_closed: true }, coconala_tech_options)
+  end
+
+  # --- Reshine: Itpropartnersの直後・クラウドソーシング群(Crowdworks)より前に置く ---
+  # （まだ FreelanceJobs::Sources::Reshine が存在しないため、このテストは
+  #   NameError: uninitialized constant で落ちるのが正しいRedの状態）
+
+  def test_engineer_profile_includes_reshine_source
+    source_classes = FreelanceJobs::Profile::ENGINEER.source_specs.map(&:first)
+
+    assert_includes source_classes, FreelanceJobs::Sources::Reshine
+  end
+
+  def test_engineer_source_specs_places_reshine_right_after_itpropartners_and_before_crowdsourcing_group
+    source_classes = FreelanceJobs::Profile::ENGINEER.source_specs.map(&:first)
+
+    itpropartners_index = source_classes.index(FreelanceJobs::Sources::Itpropartners)
+    reshine_index = source_classes.index(FreelanceJobs::Sources::Reshine)
+    crowdworks_index = source_classes.index(FreelanceJobs::Sources::Crowdworks)
+
+    refute_nil itpropartners_index
+    refute_nil reshine_index
+    refute_nil crowdworks_index
+    assert_equal itpropartners_index + 1, reshine_index, "ReshineはItpropartnersの直後に置くはず"
+    assert(reshine_index < crowdworks_index, "Reshineはクラウドソーシング群(Crowdworks)より前に置くはず")
+  end
+
+  # --- AC-08: Midworks・テクフリ(Techcareer)はReshineの直後・クラウドソーシング群(Crowdworks)より前に置く ---
+  # （まだ FreelanceJobs::Sources::Midworks / Techcareer が存在しないため、このテストは
+  #   NameError: uninitialized constant で落ちるのが正しいRedの状態）
+
+  def test_engineer_profile_includes_midworks_and_techcareer_sources
+    source_classes = FreelanceJobs::Profile::ENGINEER.source_specs.map(&:first)
+
+    assert_includes source_classes, FreelanceJobs::Sources::Midworks
+    assert_includes source_classes, FreelanceJobs::Sources::Techcareer
+  end
+
+  def test_engineer_source_specs_places_midworks_and_techcareer_right_after_reshine_and_before_crowdsourcing_group
+    source_classes = FreelanceJobs::Profile::ENGINEER.source_specs.map(&:first)
+
+    reshine_index = source_classes.index(FreelanceJobs::Sources::Reshine)
+    midworks_index = source_classes.index(FreelanceJobs::Sources::Midworks)
+    techcareer_index = source_classes.index(FreelanceJobs::Sources::Techcareer)
+    crowdworks_index = source_classes.index(FreelanceJobs::Sources::Crowdworks)
+
+    refute_nil reshine_index
+    refute_nil midworks_index
+    refute_nil techcareer_index
+    refute_nil crowdworks_index
+    assert_equal reshine_index + 1, midworks_index, "MidworksはReshineの直後に置くはず"
+    assert_equal midworks_index + 1, techcareer_index, "テクフリ(Techcareer)はMidworksの直後に置くはず"
+    assert(techcareer_index < crowdworks_index, "Midworks・テクフリはクラウドソーシング群(Crowdworks)より前に置くはず")
   end
 
   # --- deep_freeze はコピーを作る（元の定数を破壊しない） ---

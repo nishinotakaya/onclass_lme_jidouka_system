@@ -16,10 +16,10 @@ module FreelanceJobs
   # 案件URL列の有無を意識しなくてよい。
   class SheetsClient
     # 行モデルの列数（案件URLを含む）。バックアップシートにはこの形のまま退避する。
-    ROW_COLUMN_COUNT = 15
-    # 案件URL列を除いた、シート本体の列数（🌟おすすめ 〜 取得日時）。
-    # チェックボックス列を持つシートは、これに先頭1列が足されて15列になる。
-    BASE_SHEET_COLUMN_COUNT = 14
+    ROW_COLUMN_COUNT = 16
+    # 案件URL列を除いた、シート本体の列数（🌟おすすめ 〜 取得日時 〜 追加日）。
+    # チェックボックス列を持つシートは、これに先頭1列が足されて16列になる。
+    BASE_SHEET_COLUMN_COUNT = 15
     URL_COLUMN_INDEX = 5
     TITLE_COLUMN_INDEX = 3
     MAX_READ_ROW_COUNT = 2000
@@ -35,13 +35,16 @@ module FreelanceJobs
     # そちらの文言でレイアウトを判定してはいけない。
     STAR_HEADER_LABEL = FreelanceJobs::RowBuilder::HEADER.first
 
-    # 案件URL列(230px)を除いた14列分。チェックボックス列の幅は先頭に足す。
+    # 案件URL列(230px)を除いた15列分。チェックボックス列の幅は先頭に足す。
     # 表示件数("300件")を置く列はNo.用の45pxだと狭いので60pxにしている。
-    COLUMN_WIDTHS = [90, 60, 130, 300, 95, 130, 400, 260, 130, 80, 130, 120, 330, 120].freeze
+    # 末尾の90pxはAC-03で追加した追加日列（取得日時と同じ幅）。
+    COLUMN_WIDTHS = [90, 60, 130, 300, 95, 130, 400, 260, 130, 80, 130, 120, 330, 120, 90].freeze
 
     BANNER_BACKGROUND_COLOR = { red: 0.93, green: 0.93, blue: 0.93 }.freeze
     HEADER_BACKGROUND_COLOR = { red: 0.16, green: 0.40, blue: 0.75 }.freeze
     STARRED_BACKGROUND_COLOR = { red: 1.0, green: 0.97, blue: 0.80 }.freeze
+    # AC-04: 本日追加した行を目立たせる背景色（オレンジ）。
+    NEW_TODAY_BACKGROUND_COLOR = { red: 1.0, green: 0.78, blue: 0.50 }.freeze
     WHITE_BACKGROUND_COLOR = { red: 1.0, green: 1.0, blue: 1.0 }.freeze
     FORMULA_TRIGGER_CHARS = ["=", "+", "-", "@"].freeze
     LINK_FOREGROUND_COLOR = { red: 0.05, green: 0.35, blue: 0.75 }.freeze
@@ -109,7 +112,8 @@ module FreelanceJobs
     # 4. 余った行だけclear
     # 5. 書式（basic_filterを取得してから安全に張り替え）＋案件名セルへリンク付与
     #    ＋チェックボックスのデータ入力規則
-    def replace_sheet(banner_text:, header:, rows:, starred_row_indexes:, backup_values:, column_widths: COLUMN_WIDTHS)
+    def replace_sheet(banner_text:, header:, rows:, starred_row_indexes:, backup_values:, column_widths: COLUMN_WIDTHS,
+                       new_today_row_indexes: [])
       metadata = fetch_metadata
       main_sheet = resolve_main_sheet!(metadata)
       @sheet_name = main_sheet.properties.title
@@ -121,7 +125,8 @@ module FreelanceJobs
       values = build_write_values(banner_text, header, rows)
       write_values!(values)
       clear_leftover_rows!(previous_row_count, values.size)
-      apply_formatting!(main_sheet, values.size, starred_row_indexes, column_widths, rows, previous_row_count)
+      apply_formatting!(main_sheet, values.size, starred_row_indexes, column_widths, rows, previous_row_count,
+                         new_today_row_indexes)
     end
 
     # バックアップ用の隠しシート名。gidごとに一意にする（例: "_backup_gid0"）。
@@ -269,7 +274,8 @@ module FreelanceJobs
     end
 
     def ensure_backup_sheet_exists!(metadata)
-      return if find_sheet(metadata, backup_sheet_name)
+      existing_backup_sheet = find_sheet(metadata, backup_sheet_name)
+      return expand_backup_sheet_column_count!(existing_backup_sheet) if existing_backup_sheet
 
       batch_update!([{
         add_sheet: {
@@ -278,6 +284,24 @@ module FreelanceJobs
             hidden: true,
             grid_properties: { row_count: MAX_READ_ROW_COUNT, column_count: ROW_COLUMN_COUNT }
           }
+        }
+      }])
+    end
+
+    # AC-03(c): 追加日列を足す前に作られたバックアップシートは列数がROW_COLUMN_COUNT未満のままなので、
+    # そこへ16列分の値を書こうとすると範囲外エラーになる。書き込みより先に列数を広げておく。
+    # 既に足りている場合はリクエストを発行しない（無駄なAPI呼び出しを避ける）。
+    def expand_backup_sheet_column_count!(backup_sheet)
+      current_column_count = backup_sheet.properties.grid_properties.column_count.to_i
+      return if current_column_count >= ROW_COLUMN_COUNT
+
+      batch_update!([{
+        update_sheet_properties: {
+          properties: {
+            sheet_id: backup_sheet.properties.sheet_id,
+            grid_properties: { column_count: ROW_COLUMN_COUNT }
+          },
+          fields: "gridProperties.columnCount"
         }
       }])
     end
@@ -355,7 +379,8 @@ module FreelanceJobs
       clear_range!("'#{@sheet_name}'!A#{written_row_count + 1}:#{sheet_last_column}#{previous_row_count}")
     end
 
-    def apply_formatting!(main_sheet, total_row_count, starred_row_indexes, column_widths, rows, previous_row_count)
+    def apply_formatting!(main_sheet, total_row_count, starred_row_indexes, column_widths, rows, previous_row_count,
+                           new_today_row_indexes)
       sheet_id = main_sheet.properties.sheet_id
       requests = []
 
@@ -372,6 +397,9 @@ module FreelanceJobs
       end
 
       requests.concat(starred_row_requests(sheet_id, starred_row_indexes))
+      # AC-04: 本日追加の塗りは🌟の塗りの直後に置く。同じ行が両方に該当する場合、
+      # batch_updateはリクエスト順に適用されるため、後に並ぶ本日追加のオレンジが🌟の薄黄色に勝つ想定。
+      requests.concat(new_today_row_requests(sheet_id, new_today_row_indexes))
       requests << frozen_row_count_request(sheet_id)
       requests.concat(column_width_requests(sheet_id, blank_checkbox_cell.empty? ? column_widths : [CHECKBOX_COLUMN_WIDTH, *column_widths]))
       requests << sidekiq_link_request(sheet_id)
@@ -513,6 +541,21 @@ module FreelanceJobs
           repeat_cell: {
             range: full_width_range(sheet_id, sheet_row_index, sheet_row_index + 1),
             cell: { user_entered_format: { background_color: STARRED_BACKGROUND_COLOR } },
+            fields: "userEnteredFormat.backgroundColor"
+          }
+        }
+      end
+    end
+
+    # AC-04: 本日追加された行（追加日が今日）をオレンジで塗る。starred_row_requestsと同じ
+    # +2オフセット（バナー行・ヘッダー行の2行ぶん）でデータ行indexをシート行indexに変換する。
+    def new_today_row_requests(sheet_id, new_today_row_indexes)
+      new_today_row_indexes.map do |data_row_index|
+        sheet_row_index = data_row_index + 2
+        {
+          repeat_cell: {
+            range: full_width_range(sheet_id, sheet_row_index, sheet_row_index + 1),
+            cell: { user_entered_format: { background_color: NEW_TODAY_BACKGROUND_COLOR } },
             fields: "userEnteredFormat.backgroundColor"
           }
         }

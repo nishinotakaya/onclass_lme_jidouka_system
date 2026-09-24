@@ -26,23 +26,26 @@ class FreelanceJobsRowBuilderTest < Minitest::Test
   end
 
   # --- HEADER ---
+  # AC-03: 行モデルに「追加日」列(index 15)を足して16列にする。
 
-  def test_header_has_15_columns_in_expected_order
+  def test_header_has_16_columns_including_added_on_as_the_last_column
     expected = ["🌟おすすめ", "No.", "分類", "案件名", "掲載サイト", "案件URL", "難易度", "内容（要約）",
-                "必要スキル", "報酬", "形式", "応募状況（応募数 / 契約状況）", "締切", "一言メモ（おすすめ理由・注意点）", "取得日時"]
+                "必要スキル", "報酬", "形式", "応募状況（応募数 / 契約状況）", "締切", "一言メモ（おすすめ理由・注意点）",
+                "取得日時", "追加日"]
 
     assert_equal expected, FreelanceJobs::RowBuilder::HEADER
-    assert_equal 15, FreelanceJobs::RowBuilder::HEADER.size
+    assert_equal 16, FreelanceJobs::RowBuilder::HEADER.size
+    assert_equal "追加日", FreelanceJobs::RowBuilder::HEADER.last
   end
 
   # --- build: 基本のマッピング ---
 
-  def test_build_maps_posting_and_classification_fields_into_15_columns
+  def test_build_maps_posting_and_classification_fields_into_16_columns
     posting = build_posting
     classification = build_classification
     row = FreelanceJobs::RowBuilder.build(posting, classification, now: NOW)
 
-    assert_equal 15, row.size
+    assert_equal 16, row.size
     assert_equal "🌟", row[0]
     assert_equal 0, row[1] # No.はSheetMergerで採番するため0
     assert_equal "HTML/CSS", row[2]
@@ -58,6 +61,18 @@ class FreelanceJobsRowBuilderTest < Minitest::Test
     assert_equal "2026-09-10", row[12]
     assert_equal "メモ", row[13]
     assert_equal "2026-09-04 08:30", row[14]
+    assert_equal "2026-09-04", row[15]
+  end
+
+  # 追加日(index15)はnowの日付部分のみ（取得日時のような時刻は含まない）。
+  def test_build_added_on_column_uses_date_only_format_derived_from_now
+    posting = build_posting
+    classification = build_classification
+    now = Time.new(2026, 12, 31, 23, 59, 0, "+09:00")
+    row = FreelanceJobs::RowBuilder.build(posting, classification, now: now)
+
+    assert_equal "2026-12-31 23:59", row[14]
+    assert_equal "2026-12-31", row[15]
   end
 
   def test_build_recommend_column_is_stringified

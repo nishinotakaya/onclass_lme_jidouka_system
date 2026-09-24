@@ -73,7 +73,7 @@ module FreelanceJobs
           category_hint: category_hint,
           reward: reward_text.empty? ? "要確認" : reward_text,
           work_format: work_format(reward_text),
-          application_status: "-",
+          application_status: closed_card?(card) ? FreelanceJobs::JobPosting::CLOSED_STATUS : "-",
           deadline_text: "-",
           deadline_on: nil,
           skills: split_skills(definition_table["開発環境"]),
@@ -86,6 +86,12 @@ module FreelanceJobs
       def self.job_href(card)
         card.css("a").map { |link| link["href"] }.compact
             .find { |href| href.match?(%r{/project/detail/\d+}) }
+      end
+
+      # h3.nameGroup > span.closedLabel が付いているカードは募集終了。
+      # カードは落とさず、application_statusだけ募集終了に切り替える。
+      def self.closed_card?(card)
+        !card.at_css("span.closedLabel").nil?
       end
 
       # dl.tableItem を「dt.title => dd.data」のHashにする（開発環境／求めるスキル／募集職種）。

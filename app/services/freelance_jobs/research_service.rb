@@ -62,7 +62,13 @@ module FreelanceJobs
         end
       end
 
-      rows = build_rows(postings)
+      # closedなpostingは分類器に通さない（build_rowsの対象外）。分類器に通すとcategoryが
+      # nilになって黙って消えることがあり、募集終了として既存行を消すための情報（URL）が
+      # 失われてしまうため、ここで先に分けてclosed_urlsとして扱う。
+      closed_postings, open_postings = postings.partition(&:closed?)
+      closed_urls = closed_postings.map(&:url)
+
+      rows = build_rows(open_postings)
       starred_candidates = count_starred(rows)
 
       if succeeded_sites.empty?
@@ -87,22 +93,31 @@ module FreelanceJobs
       # 既存行にURLが一致する行はJ/K/L/M/O更新のため🌟の有無に関わらず対象にする。
       rows_for_merge = @profile.new_rows_require_star ? filter_new_rows_for_merge(rows, existing_rows) : rows
 
+      # 同じURLが別サイトからopenとしても来た場合はclosedを優先する（closed_urlsに入っていれば行は削除される）。
       merge_result = FreelanceJobs::SheetMerger.merge(
         existing_rows: existing_rows,
         new_rows: rows_for_merge,
         succeeded_sites: succeeded_sites,
         excluded_sites: @excluded_sites,
         category_order: @profile.category_order,
-        today: @today
+        today: @today,
+        closed_urls: closed_urls
       )
 
       starred_row_indexes = merge_result.rows.each_index.select { |index| merge_result.rows[index][0].to_s.include?("🌟") }
+      # AC-04: 追加日(index15)が今日の行だけを強調表示の対象にする。既存行は追加日が保持されるため
+      # ここには含まれず、今回新たにシートへ載った行だけが塗られる。
+      today_added_on_text = @today.strftime("%Y-%m-%d")
+      new_today_row_indexes = merge_result.rows.each_index.select do |index|
+        merge_result.rows[index][FreelanceJobs::SheetMerger::ADDED_ON_COLUMN_INDEX] == today_added_on_text
+      end
 
       sheets_client.replace_sheet(
         banner_text: build_banner_text(merge_result, failed_sites, succeeded_sites),
         header: @profile.header,
         rows: merge_result.rows,
         starred_row_indexes: starred_row_indexes,
+        new_today_row_indexes: new_today_row_indexes,
         backup_values: raw_values
       )
 

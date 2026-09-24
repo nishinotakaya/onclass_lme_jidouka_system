@@ -355,4 +355,201 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     assert_includes written_header, "一言メモ（条件・注意点）"
     refute_includes written_header, "難易度"
   end
+
+  # === AC-02: closed / open の振り分け ===
+  # 通信なし。source_specsに渡した固定postings配列をそのまま返すFakeソースで、
+  # closed?なpostingが分類器に渡らず、closed_urlsとしてSheetMergerへ渡って
+  # 既存行を削除することを検証する。
+
+  # postings: にJobPosting配列をそのまま渡すだけのFakeソース。
+  class FixedPostingsSource
+    SITE_NAME = "テストソース"
+    REQUEST_INTERVAL = 0
+
+    def initialize(fetcher:, today:, postings:)
+      @postings = postings
+    end
+
+    def fetch
+      @postings
+    end
+  end
+
+  # AC-02b用。SITE_NAMEだけがFixedPostingsSourceと異なる（ココナラテックの実SITE_NAMEに揃える）。
+  class CoconalaTechFixedPostingsSource
+    SITE_NAME = "ココナラテック"
+    REQUEST_INTERVAL = 0
+
+    def initialize(fetcher:, today:, postings:)
+      @postings = postings
+    end
+
+    def fetch
+      @postings
+    end
+  end
+
+  # classifyに渡されたposting列を記録するだけのFakeクラス（class:)。
+  class RecordingClassifier
+    attr_reader :classified_postings
+
+    def initialize
+      @classified_postings = []
+    end
+
+    def classify(posting, today:)
+      @classified_postings << posting
+      FreelanceJobs::Classifier::Result.new(category: "テスト分類", difficulty: "★☆☆", recommend: "",
+                                             memo: "memo", skills_text: "skill")
+    end
+  end
+
+  def build_job_posting(site:, url:, title:, application_status: "-", category_hint: "テスト分類")
+    FreelanceJobs::JobPosting.new(
+      site: site, url: FreelanceJobs::JobPosting.normalize_url(url), title: title,
+      description: "説明", category_hint: category_hint, reward: "要確認", work_format: "業務委託（フリーランス）",
+      application_status: application_status, deadline_text: "-", deadline_on: nil, skills: [],
+      client: "", tags: [], posted_on: nil
+    )
+  end
+
+  def build_test_profile(source_specs:, classifier:)
+    FreelanceJobs::Profile::Definition.new(
+      key: "test_profile", label: "テスト", sheet_gid: 999_999,
+      header: FreelanceJobs::RowBuilder::HEADER, category_order: ["テスト分類"],
+      classifier: classifier, source_specs: source_specs,
+      new_rows_require_star: false, checkbox_column: false, hidden_level_marker: nil
+    )
+  end
+
+  def test_call_does_not_pass_closed_postings_to_the_classifier
+    open_posting = build_job_posting(site: "テストソース", url: "https://example.com/jobs/open-1", title: "募集中案件")
+    closed_posting = build_job_posting(site: "テストソース", url: "https://example.com/jobs/closed-1",
+                                        title: "募集終了案件", application_status: "募集終了")
+    classifier = RecordingClassifier.new
+    profile = build_test_profile(
+      source_specs: [[FixedPostingsSource, { postings: [open_posting, closed_posting] }]],
+      classifier: classifier
+    )
+    sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
+
+    service = FreelanceJobs::ResearchService.new(profile: profile, run_window_label: "テスト実行",
+                                                  fetcher: nil, sheets_client: sheets_client, now: NOW)
+    service.call
+
+    classified_urls = classifier.classified_postings.map(&:url)
+    assert_includes classified_urls, open_posting.url, "募集中postingは分類器に渡されるはず"
+    refute_includes classified_urls, closed_posting.url, "募集終了postingは分類器に渡されない（build_rowsの対象外）はず"
+  end
+
+  def test_call_passes_closed_posting_urls_to_merge_and_removes_matching_existing_row
+    closed_url = FreelanceJobs::JobPosting.normalize_url("https://example.com/jobs/closed-2")
+    open_posting = build_job_posting(site: "テストソース", url: "https://example.com/jobs/open-2", title: "募集中案件")
+    closed_posting = build_job_posting(site: "テストソース", url: closed_url, title: "募集終了案件",
+                                        application_status: "募集終了")
+    classifier = RecordingClassifier.new
+    profile = build_test_profile(
+      source_specs: [[FixedPostingsSource, { postings: [open_posting, closed_posting] }]],
+      classifier: classifier
+    )
+
+    existing_row = Array.new(15, "")
+    existing_row[2] = "テスト分類"
+    existing_row[3] = "既存の案件名(手入力保持)"
+    existing_row[4] = "テストソース"
+    existing_row[5] = closed_url
+    # 締切は遠い未来にしておく。should_remove?（締切ルール）では消えないはずの行が、
+    # closed_urlsのおかげで削除されることを確認する。
+    existing_row[12] = "2026-12-31"
+    existing_row[14] = "2026-09-01 00:00"
+    sheets_client = FakeSheetsClient.new(existing_values: [FreelanceJobs::RowBuilder::HEADER, existing_row])
+
+    service = FreelanceJobs::ResearchService.new(profile: profile, run_window_label: "テスト実行",
+                                                  fetcher: nil, sheets_client: sheets_client, now: NOW)
+    summary = service.call
+
+    refute summary[:aborted]
+    assert_equal 1, summary[:removed], "closed_urlsに含まれる既存行は締切が先でも削除されるはず"
+
+    written_urls = sheets_client.replace_sheet_calls.first[:rows].map { |row| row[5] }
+    refute_includes written_urls, closed_url, "募集終了postingの既存行はシートから消えているはず"
+  end
+
+  # === AC-02b: ココナラテック由来のclosed postingでも同様にclosed_urlsとして扱われる ===
+
+  def test_call_treats_coconala_tech_closed_posting_url_as_closed_url_too
+    coconala_closed_url = FreelanceJobs::JobPosting.normalize_url("https://tech.coconala.com/job-postings/closed-1")
+    open_posting = build_job_posting(site: "テストソース", url: "https://example.com/jobs/open-3", title: "募集中案件")
+    coconala_closed_posting = build_job_posting(site: "ココナラテック", url: coconala_closed_url,
+                                                 title: "ココナラテック募集終了案件", application_status: "募集終了")
+
+    classifier = RecordingClassifier.new
+    profile = build_test_profile(
+      source_specs: [
+        [FixedPostingsSource, { postings: [open_posting] }],
+        [CoconalaTechFixedPostingsSource, { postings: [coconala_closed_posting] }]
+      ],
+      classifier: classifier
+    )
+
+    existing_row = Array.new(15, "")
+    existing_row[2] = "テスト分類"
+    existing_row[3] = "ココナラテックの既存案件"
+    existing_row[4] = "ココナラテック"
+    existing_row[5] = coconala_closed_url
+    existing_row[12] = "-"
+    existing_row[14] = "2026-09-01 00:00"
+    sheets_client = FakeSheetsClient.new(existing_values: [FreelanceJobs::RowBuilder::HEADER, existing_row])
+
+    service = FreelanceJobs::ResearchService.new(profile: profile, run_window_label: "テスト実行",
+                                                  fetcher: nil, sheets_client: sheets_client, now: NOW)
+    summary = service.call
+
+    refute summary[:aborted]
+    assert_equal 1, summary[:removed], "ココナラテック由来のclosed postingのURLも既存行の削除に使われるはず"
+
+    written_urls = sheets_client.replace_sheet_calls.first[:rows].map { |row| row[5] }
+    refute_includes written_urls, coconala_closed_url
+  end
+
+  # === AC-04: 本日追加の行をnew_today_row_indexesとしてreplace_sheetへ渡す ===
+  # merge後の行のうち、追加日(index15)が「今日」の行だけがnew_today_row_indexesに入り、
+  # 今日ではない既存行のindexは含まれない想定。
+
+  def test_call_passes_only_rows_added_today_as_new_today_row_indexes
+    today_posting = build_job_posting(site: "テストソース", url: "https://example.com/jobs/today-1", title: "本日追加案件")
+    classifier = RecordingClassifier.new
+    profile = build_test_profile(
+      source_specs: [[FixedPostingsSource, { postings: [today_posting] }]],
+      classifier: classifier
+    )
+
+    existing_row = Array.new(16, "")
+    existing_row[2] = "テスト分類"
+    existing_row[3] = "既存案件（本日追加ではない）"
+    existing_row[4] = "テストソース"
+    existing_row[5] = FreelanceJobs::JobPosting.normalize_url("https://example.com/jobs/existing-old")
+    existing_row[12] = "2030-01-01"
+    existing_row[14] = "2026-08-01 00:00"
+    existing_row[15] = "2026-08-01" # 追加日は本日ではない
+    sheets_client = FakeSheetsClient.new(existing_values: [FreelanceJobs::RowBuilder::HEADER, existing_row])
+
+    service = FreelanceJobs::ResearchService.new(profile: profile, run_window_label: "テスト実行",
+                                                  fetcher: nil, sheets_client: sheets_client, now: NOW)
+    service.call
+
+    written_rows = sheets_client.replace_sheet_calls.first[:rows]
+    today_added_on_text = NOW.to_date.strftime("%Y-%m-%d")
+    new_today_row_index = written_rows.index { |written_row| written_row[5] == today_posting.url }
+    existing_row_index = written_rows.index { |written_row| written_row[3] == "既存案件（本日追加ではない）" }
+
+    refute_nil new_today_row_index
+    refute_nil existing_row_index
+    assert_equal today_added_on_text, written_rows[new_today_row_index][15], "新規行の追加日は今日のはず"
+    refute_equal today_added_on_text, written_rows[existing_row_index][15], "既存行の追加日は保持され今日にはならないはず"
+
+    new_today_row_indexes = sheets_client.replace_sheet_calls.first[:new_today_row_indexes]
+    assert_equal [new_today_row_index], new_today_row_indexes
+    refute_includes new_today_row_indexes, existing_row_index
+  end
 end

@@ -1,0 +1,356 @@
+{
+  "breadCrumbText": "Ruby",
+  "h1Text": "Rubyのフリーランス案件・副業求人一覧",
+  "requestInfo": {
+    "baseUrl": "https://sokudan.work/top/projects",
+    "query": "page=1",
+    "name": "/top/projects?page=1",
+    "imageUrl": null,
+    "id": null,
+    "label": null
+  },
+  "pageUrlList": [],
+  "projectList": [
+    {
+      "id": 21033,
+      "title": "【社食付】大手ECサービスブランド公式ショップのECディレクター募集",
+      "isRemotable": true,
+      "state": "opened",
+      "contractType": "outsourcing",
+      "isCorpNameSecret": false,
+      "createdAt": "2026-09-17T18:26:06.060+09:00",
+      "updatedAt": "2026-09-17T19:02:38.845+09:00",
+      "sideJobRestriction": false,
+      "isLike": false,
+      "isCorpWorker": false,
+      "corpNameHidden": false,
+      "minWorkingHoursLabel": "週37h",
+      "remoteType": {
+        "id": 2,
+        "name": "part_remote",
+        "label": "リモート(一部)可"
+      },
+      "projectAvailableTime": {
+        "id": 5,
+        "name": "over_thirty_two_hours",
+        "label": "週4日（週32~39h）"
+      },
+      "maxBudget": {
+        "id": 500000,
+        "name": "",
+        "label": "50万"
+      },
+      "minBudget": {
+        "id": 500000,
+        "name": "",
+        "label": "50万"
+      },
+      "coverImage": {
+        "name": "thumbnail_%E3%82%AB%E3%83%89%E3%83%99%E3%83%A4%E7%A4%BE%E6%A1%88%E4%BB%B6%E7%94%BB%E5%83%8F.webp",
+        "baseUrl": "https://img.sokudan.work/uploads/project/cover_image/21033/thumbnail_%E3%82%AB%E3%83%89%E3%83%99%E3%83%A4%E7%A4%BE%E6%A1%88%E4%BB%B6%E7%94%BB%E5%83%8F.webp",
+        "query": ""
+      },
+      "prefecture": {
+        "id": 101,
+        "name": "",
+        "label": "首都圏"
+      },
+      "tags": [
+        {
+          "id": 10,
+          "emphasizedStyle": false,
+          "name": "freelancers_welcome",
+          "label": "フリーランス歓迎"
+        },
+        {
+          "id": 9,
+          "emphasizedStyle": false,
+          "name": "",
+          "label": "オンライン面談可"
+        },
+        {
+          "id": 3,
+          "emphasizedStyle": false,
+          "name": "",
+          "label": "上場企業"
+        }
+      ],
+      "professions": [
+        {
+          "id": 116,
+          "name": "webdirector",
+          "label": "WEBディレクター"
+        },
+        {
+          "id": 106,
+          "name": "marketing",
+          "label": "マーケティング"
+        },
+        {
+          "id": 119,
+          "name": "creator",
+          "label": "クリエイター"
+        }
+      ],
+      "corporation": {
+        "id": null,
+        "detail": null,
+        "name": "＊＊＊＊＊",
+        "logoUrl": "https://sokudan.work/images/fallback/corporation_image_default.jpg",
+        "premiumScheme": false
+      }
+    },
+    {
+      "id": 20807,
+      "title": "【一部リモ可】全国展開化粧品ブランドのECシステムエンジニアを募集！",
+      "isRemotable": true,
+      "state": "opened",
+      "contractType": "outsourcing",
+      "isCorpNameSecret": false,
+      "createdAt": "2026-09-09T10:41:15.128+09:00",
+      "updatedAt": "2026-09-22T08:38:23.486+09:00",
+      "sideJobRestriction": false,
+      "isLike": false,
+      "isCorpWorker": false,
+      "corpNameHidden": false,
+      "minWorkingHoursLabel": "週40h",
+      "remoteType": {
+        "id": 2,
+        "name": "part_remote",
+        "label": "リモート(一部)可"
+      },
+      "projectAvailableTime": {
+        "id": 6,
+        "name": "forty_hours",
+        "label": "週5日（週40h）"
+      },
+      "maxBudget": {
+        "id": 950000,
+        "name": "",
+        "label": "95万"
+      },
+      "minBudget": {
+        "id": 650000,
+        "name": "",
+        "label": "65万"
+      },
+      "coverImage": {
+        "name": "thumbnail_4786854_m.webp",
+        "baseUrl": "https://img.sokudan.work/uploads/project/cover_image/20807/thumbnail_4786854_m.webp",
+        "query": ""
+      },
+      "prefecture": {
+        "id": 101,
+        "name": "",
+        "label": "首都圏"
+      },
+      "tags": [
+        {
+          "id": 13,
+          "emphasizedStyle": false,
+          "name": "",
+          "label": "長期"
+        },
+        {
+          "id": 22,
+          "emphasizedStyle": false,
+          "name": "urgent",
+          "label": "急募"
+        },
+        {
+          "id": 8,
+          "emphasizedStyle": false,
+          "name": "",
+          "label": "即日勤務OK"
+        }
+      ],
+      "professions": [
+        {
+          "id": 109,
+          "name": "backend_engineer",
+          "label": "バックエンドエンジニア"
+        }
+      ],
+      "corporation": {
+        "id": null,
+        "detail": null,
+        "name": "＊＊＊＊＊",
+        "logoUrl": "https://sokudan.work/images/fallback/corporation_image_default.jpg",
+        "premiumScheme": false
+      }
+    },
+    {
+      "id": 20774,
+      "title": "【一部リモ可/社員化可能性有】デジマ支援会社にてシステム開発ディレクター！",
+      "isRemotable": true,
+      "state": "closed",
+      "contractType": "outsourcing",
+      "isCorpNameSecret": false,
+      "createdAt": "2026-09-08T14:18:20.467+09:00",
+      "updatedAt": "2026-09-08T16:37:24.324+09:00",
+      "sideJobRestriction": false,
+      "isLike": false,
+      "isCorpWorker": false,
+      "corpNameHidden": false,
+      "minWorkingHoursLabel": "週40h",
+      "remoteType": {
+        "id": 2,
+        "name": "part_remote",
+        "label": "リモート(一部)可"
+      },
+      "projectAvailableTime": {
+        "id": 6,
+        "name": "forty_hours",
+        "label": "週5日（週40h）"
+      },
+      "maxBudget": {
+        "id": 600000,
+        "name": "",
+        "label": "60万"
+      },
+      "minBudget": {
+        "id": 500000,
+        "name": "",
+        "label": "50万"
+      },
+      "coverImage": {
+        "name": "thumbnail_33506311_m.webp",
+        "baseUrl": "https://img.sokudan.work/uploads/project/cover_image/20774/thumbnail_33506311_m.webp",
+        "query": ""
+      },
+      "prefecture": {
+        "id": 101,
+        "name": "",
+        "label": "首都圏"
+      },
+      "tags": [
+        {
+          "id": 13,
+          "emphasizedStyle": false,
+          "name": "",
+          "label": "長期"
+        },
+        {
+          "id": 22,
+          "emphasizedStyle": false,
+          "name": "urgent",
+          "label": "急募"
+        },
+        {
+          "id": 10,
+          "emphasizedStyle": false,
+          "name": "freelancers_welcome",
+          "label": "フリーランス歓迎"
+        }
+      ],
+      "professions": [
+        {
+          "id": 116,
+          "name": "webdirector",
+          "label": "WEBディレクター"
+        }
+      ],
+      "corporation": {
+        "id": null,
+        "detail": null,
+        "name": "＊＊＊＊＊",
+        "logoUrl": "https://sokudan.work/images/fallback/corporation_image_default.jpg",
+        "premiumScheme": false
+      }
+    },
+    {
+      "id": 20773,
+      "title": "【一部リモ可/社員化可能性有】デジマ支援会社にてWEB制作ディレクター！",
+      "isRemotable": true,
+      "state": "closed",
+      "contractType": "outsourcing",
+      "isCorpNameSecret": false,
+      "createdAt": "2026-09-08T13:54:04.692+09:00",
+      "updatedAt": "2026-09-08T16:37:18.682+09:00",
+      "sideJobRestriction": false,
+      "isLike": false,
+      "isCorpWorker": false,
+      "corpNameHidden": false,
+      "minWorkingHoursLabel": "週40h",
+      "remoteType": {
+        "id": 2,
+        "name": "part_remote",
+        "label": "リモート(一部)可"
+      },
+      "projectAvailableTime": {
+        "id": 6,
+        "name": "forty_hours",
+        "label": "週5日（週40h）"
+      },
+      "maxBudget": {
+        "id": 600000,
+        "name": "",
+        "label": "60万"
+      },
+      "minBudget": {
+        "id": 500000,
+        "name": "",
+        "label": "50万"
+      },
+      "coverImage": {
+        "name": "thumbnail_student-g1cc3417f6_1920.webp",
+        "baseUrl": "https://img.sokudan.work/uploads/project/cover_image/20773/thumbnail_student-g1cc3417f6_1920.webp",
+        "query": ""
+      },
+      "prefecture": {
+        "id": 101,
+        "name": "",
+        "label": "首都圏"
+      },
+      "tags": [
+        {
+          "id": 13,
+          "emphasizedStyle": false,
+          "name": "",
+          "label": "長期"
+        },
+        {
+          "id": 22,
+          "emphasizedStyle": false,
+          "name": "urgent",
+          "label": "急募"
+        },
+        {
+          "id": 10,
+          "emphasizedStyle": false,
+          "name": "freelancers_welcome",
+          "label": "フリーランス歓迎"
+        }
+      ],
+      "professions": [
+        {
+          "id": 116,
+          "name": "webdirector",
+          "label": "WEBディレクター"
+        }
+      ],
+      "corporation": {
+        "id": null,
+        "detail": null,
+        "name": "＊＊＊＊＊",
+        "logoUrl": "https://sokudan.work/images/fallback/corporation_image_default.jpg",
+        "premiumScheme": false
+      }
+    }
+  ],
+  "specialPageUrlList": [],
+  "benefitsLatestCreatedAt": "2026-09-22T00:00:00.000+09:00",
+  "footerProjectList": [],
+  "magazineList": [],
+  "magazineTitle": "",
+  "breadCrumbList": [],
+  "metatag": {
+    "title": "テスト用フィクスチャ",
+    "description": "",
+    "ogTitle": "",
+    "ogDescription": "",
+    "ogImage": "",
+    "canonicalUrl": "https://sokudan.work/top/projects"
+  },
+  "projectListStructuredData": {}
+}

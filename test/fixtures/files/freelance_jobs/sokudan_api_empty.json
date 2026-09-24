@@ -1,0 +1,29 @@
+{
+  "breadCrumbText": "Ruby",
+  "h1Text": "Rubyのフリーランス案件・副業求人一覧",
+  "requestInfo": {
+    "baseUrl": "https://sokudan.work/top/projects",
+    "query": "page=3",
+    "name": "/top/projects?page=3",
+    "imageUrl": null,
+    "id": null,
+    "label": null
+  },
+  "pageUrlList": [],
+  "projectList": [],
+  "specialPageUrlList": [],
+  "benefitsLatestCreatedAt": "2026-09-22T00:00:00.000+09:00",
+  "footerProjectList": [],
+  "magazineList": [],
+  "magazineTitle": "",
+  "breadCrumbList": [],
+  "metatag": {
+    "title": "テスト用フィクスチャ",
+    "description": "",
+    "ogTitle": "",
+    "ogDescription": "",
+    "ogImage": "",
+    "canonicalUrl": "https://sokudan.work/top/projects"
+  },
+  "projectListStructuredData": {}
+}

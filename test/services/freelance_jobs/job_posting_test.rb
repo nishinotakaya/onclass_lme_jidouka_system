@@ -86,4 +86,49 @@ class FreelanceJobsJobPostingTest < Minitest::Test
     assert_equal ["HTML"], posting.skills
     assert_nil posting.deadline_on
   end
+
+  # --- AC-02: closed? 判定 ---
+
+  def build_posting(application_status:)
+    FreelanceJobs::JobPosting.new(
+      site: "CrowdWorks", url: "https://crowdworks.jp/public/jobs/1", title: "案件",
+      description: "説明", category_hint: "HTML/CSS", reward: "要相談", work_format: "固定報酬制",
+      application_status: application_status, deadline_text: "-", deadline_on: nil, skills: [],
+      client: "", tags: [], posted_on: nil
+    )
+  end
+
+  def test_closed_status_constant_is_boshuu_shuuryou
+    assert_equal "募集終了", FreelanceJobs::JobPosting::CLOSED_STATUS
+  end
+
+  def test_closed_returns_true_when_application_status_exactly_matches_closed_status
+    posting = build_posting(application_status: "募集終了")
+
+    assert posting.closed?
+  end
+
+  def test_closed_returns_false_for_hyphen_status
+    posting = build_posting(application_status: "-")
+
+    refute posting.closed?
+  end
+
+  def test_closed_returns_false_for_open_status
+    posting = build_posting(application_status: "募集中")
+
+    refute posting.closed?
+  end
+
+  def test_closed_returns_false_for_nil_status
+    posting = build_posting(application_status: nil)
+
+    refute posting.closed?
+  end
+
+  def test_closed_returns_false_for_partial_match_status
+    posting = build_posting(application_status: "募集終了しました")
+
+    refute posting.closed?, "「募集終了」との完全一致でなければfalseのはず"
+  end
 end

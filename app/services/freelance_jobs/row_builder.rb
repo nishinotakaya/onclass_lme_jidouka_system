@@ -1,11 +1,12 @@
 # frozen_string_literal: true
 
 module FreelanceJobs
-  # JobPosting + Classifier::Result から、スプレッドシート15列分の配列を作る純粋関数。
+  # JobPosting + Classifier::Result から、スプレッドシート16列分の配列を作る純粋関数。
   class RowBuilder
     HEADER = [
       "🌟おすすめ", "No.", "分類", "案件名", "掲載サイト", "案件URL", "難易度", "内容（要約）",
-      "必要スキル", "報酬", "形式", "応募状況（応募数 / 契約状況）", "締切", "一言メモ（おすすめ理由・注意点）", "取得日時"
+      "必要スキル", "報酬", "形式", "応募状況（応募数 / 契約状況）", "締切", "一言メモ（おすすめ理由・注意点）", "取得日時",
+      "追加日"
     ].freeze
 
     SUMMARY_MAX_LENGTH = 160
@@ -36,7 +37,9 @@ module FreelanceJobs
         truncate(posting.application_status, APPLICATION_STATUS_MAX_LENGTH),
         truncate(posting.deadline_text, DEADLINE_TEXT_MAX_LENGTH),
         truncate(classification.memo, MEMO_MAX_LENGTH),
-        now.strftime("%Y-%m-%d %H:%M")
+        now.strftime("%Y-%m-%d %H:%M"),
+        # AC-03: 追加日（時刻を含まない日付のみ）。既存行はSheetMergerが上書きせず保持する。
+        now.strftime("%Y-%m-%d")
       ]
     end
 

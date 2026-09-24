@@ -47,7 +47,7 @@ module FreelanceJobs
       # サイト側のバッジ文言（CLOSED_BADGE）と、シートに出す応募状況（CLOSED_STATUS / OPEN_STATUS）は
       # たまたま同じ文字列だが由来が違うので定数を分けてある（バッジ文言が変わっても表示側は動く）。
       CLOSED_BADGE = "募集終了"
-      CLOSED_STATUS = "募集終了"
+      CLOSED_STATUS = FreelanceJobs::JobPosting::CLOSED_STATUS
       OPEN_STATUS = "募集中"
 
       # ul>li の必要項目数。0:単価 / 1:勤務地 / 2:職種+契約形態 の順で固定されている。
