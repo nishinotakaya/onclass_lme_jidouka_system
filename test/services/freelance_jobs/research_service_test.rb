@@ -31,7 +31,10 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
       raise FreelanceJobs::FetchError, "stubbed failure for #{url}" if matched_host && @raising_hosts.include?(matched_host)
       raise "no fixture route stubbed for #{url}" unless matched_host
 
-      @routes.fetch(matched_host)
+      route = @routes.fetch(matched_host)
+      # ルートがcallableなら（一覧URLと詳細URLでhostが同じEFのように）urlごとに本文を出し分ける。
+      # 既存のString値のルートはこれまでどおりそのまま返る。
+      route.respond_to?(:call) ? route.call(url) : route
     end
   end
 
@@ -551,5 +554,120 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     new_today_row_indexes = sheets_client.replace_sheet_calls.first[:new_today_row_indexes]
     assert_equal [new_today_row_index], new_today_row_indexes
     refute_includes new_today_row_indexes, existing_row_index
+  end
+
+  # === AC-13: ClosureVerifierをResearchServiceへ組み込む（エンジニアファクトリー由来）===
+  # EFは一覧に募集終了の印が出ないため、一覧に載っている案件の詳細ページを取りに行って
+  # 「こちらの案件は終了しました」を検出し、closed_urls経由で新規追加をせず既存行も消す想定。
+  # 実装(AC-13)はまだ無いため、このテストは現時点でRed（詳細確認が呼ばれず落ちる）でよい。
+
+  ENGINEER_FACTORY_DETAIL_HOST = "engineer-factory.com"
+
+  # EF一覧カード1件分の最小HTML片（案件パス・案件名だけがあれば十分。Rubyキーワードを
+  # 含めてEngineerClassifierでRuby分類されるようにする）。
+  def build_engineer_factory_list_card_html(job_id:, title: "【Ruby】バックエンドエンジニア募集")
+    <<~HTML
+      <section class="modJobBlock modJobBlock--large">
+        <h3 class="modJobBlock__title"><a href="/freelance/jobs/#{job_id}">#{title}<span>東京都の案件・求人</span></a></h3>
+      </section>
+    HTML
+  end
+
+  # 一覧URL(/freelance/jobs/skill/<id>[?page=N])には常に同じ1カードを、
+  # 詳細URL(/freelance/jobs/<job_id>)には募集終了フィクスチャを返すcallableルート。
+  def engineer_factory_routed_body(job_id:)
+    detail_url_pattern = %r{/freelance/jobs/#{job_id}\z}
+    list_body = wrap_html(build_engineer_factory_list_card_html(job_id: job_id))
+    closed_detail_body = read_fixture("engineer_factory_detail_closed.html")
+
+    lambda do |url|
+      url.match?(detail_url_pattern) ? closed_detail_body : list_body
+    end
+  end
+
+  def test_call_with_engineer_profile_excludes_engineer_factory_listing_whose_detail_page_is_closed
+    job_id = "999001"
+    ef_url = FreelanceJobs::JobPosting.normalize_url("https://www.engineer-factory.com/freelance/jobs/#{job_id}")
+
+    fetcher = RoutingFakeFetcher.new(
+      routes: engineer_fixture_routes.merge(ENGINEER_FACTORY_DETAIL_HOST => engineer_factory_routed_body(job_id: job_id))
+    )
+
+    existing_ef_row = Array.new(16, "")
+    existing_ef_row[2] = "Ruby"
+    existing_ef_row[3] = "既存のエンジニアファクトリー案件（募集終了予定）"
+    existing_ef_row[4] = "エンジニアファクトリー"
+    existing_ef_row[5] = ef_url
+    existing_ef_row[12] = "2030-01-01" # 締切は先の未来（締切ルールでは消えないはず）
+    existing_ef_row[14] = "2026-08-01 00:00"
+    sheets_client = FakeSheetsClient.new(existing_values: [FreelanceJobs::RowBuilder::HEADER, existing_ef_row])
+
+    service = FreelanceJobs::ResearchService.new(profile: FreelanceJobs::Profile::ENGINEER,
+                                                  run_window_label: "毎朝 06:00〜06:30（日本時間）",
+                                                  fetcher: fetcher, sheets_client: sheets_client, now: NOW)
+    summary = service.call
+
+    refute summary[:aborted]
+    written_urls = sheets_client.replace_sheet_calls.first[:rows].map { |row| row[5] }
+    refute_includes written_urls, ef_url,
+                    "詳細確認で募集終了と判定されたEF案件は新規追加も既存維持もされないはず"
+  end
+
+  # === AC-13回帰: 一覧取得に失敗したサイトの既存行は誤って削除されない ===
+  # verify_closuresはfailed_sitesを詳細確認の対象から除外している。これはSheetMerger側の
+  # 「取得失敗サイトの行は触らない」保護よりclosed_urls判定が先に効くため、除外が壊れると
+  # 一覧取得が失敗しただけで既存行が誤って削除されてしまう最重要の防波堤。
+  # EFの一覧取得(list_url)だけを失敗させ、詳細ページ(もし確認されれば「募集終了」と判定される
+  # フィクスチャ)は取得できる状態にしておくことで、「詳細確認が走っていれば消えていたはずの行が、
+  # 一覧取得失敗により詳細確認自体が行われず残る」ことを検証する。
+  def engineer_factory_route_with_failing_list_but_closable_detail(job_id:)
+    detail_url_pattern = %r{/freelance/jobs/#{job_id}\z}
+    closed_detail_body = read_fixture("engineer_factory_detail_closed.html")
+
+    lambda do |url|
+      # 一覧URL(/freelance/jobs/skill/<skill_id>[?page=N])は常に失敗させる。
+      # 詳細URL(/freelance/jobs/<job_id>)はもし確認されれば募集終了と判定される本文を返す。
+      url.match?(detail_url_pattern) ? closed_detail_body : (raise FreelanceJobs::FetchError, "stubbed EF list failure for #{url}")
+    end
+  end
+
+  def test_call_keeps_existing_row_of_a_site_whose_listing_fetch_failed_even_if_its_detail_page_would_be_closed
+    job_id = "999002"
+    ef_url = FreelanceJobs::JobPosting.normalize_url("https://www.engineer-factory.com/freelance/jobs/#{job_id}")
+
+    fetcher = RoutingFakeFetcher.new(
+      routes: engineer_fixture_routes.merge(
+        ENGINEER_FACTORY_DETAIL_HOST => engineer_factory_route_with_failing_list_but_closable_detail(job_id: job_id)
+      )
+    )
+
+    existing_ef_row = Array.new(16, "")
+    existing_ef_row[2] = "Ruby"
+    existing_ef_row[3] = "既存のエンジニアファクトリー案件（一覧取得失敗時は残るはず）"
+    existing_ef_row[4] = "エンジニアファクトリー"
+    existing_ef_row[5] = ef_url
+    existing_ef_row[12] = "2030-01-01" # 締切は先の未来（締切ルールでは消えないはず）
+    existing_ef_row[14] = "2026-08-01 00:00"
+    sheets_client = FakeSheetsClient.new(existing_values: [FreelanceJobs::RowBuilder::HEADER, existing_ef_row])
+
+    service = FreelanceJobs::ResearchService.new(profile: FreelanceJobs::Profile::ENGINEER,
+                                                  run_window_label: "毎朝 06:00〜06:30（日本時間）",
+                                                  fetcher: fetcher, sheets_client: sheets_client, now: NOW)
+    summary = service.call
+
+    refute summary[:aborted]
+    assert_includes summary[:failures].map { |failure_message| failure_message.split("（").first }, "エンジニアファクトリー",
+                     "EFの一覧取得は失敗として記録されるはず"
+    refute_includes summary[:succeeded_sites], "エンジニアファクトリー"
+
+    banner_text = sheets_client.replace_sheet_calls.first[:banner_text]
+    assert_includes banner_text, "⚠失敗", "バナーにも失敗サイトが載るはず"
+    assert_includes banner_text, "エンジニアファクトリー"
+
+    written_urls = sheets_client.replace_sheet_calls.first[:rows].map { |row| row[5] }
+    assert_includes written_urls, ef_url,
+                     "一覧取得が失敗したサイトの既存行は、詳細を確認すれば募集終了と判定されるものでも削除されないはず"
+    refute_includes fetcher.requested_urls, ef_url,
+                    "一覧取得が失敗したサイトは詳細確認の対象からも除外され、詳細URLへのリクエスト自体が発生しないはず"
   end
 end

@@ -61,6 +61,12 @@ module FreelanceJobs
       BADGE_SELECTOR = "span.tag-job"
       NUXT_DATA_SELECTOR = "script#__NUXT_DATA__"
 
+      # AC-11: 一覧ページ（HTML・__NUXT_DATA__のどちらも）には募集終了の印が出ず、
+      # 詳細ページ本文にだけ「こちらの案件は終了しました」が出る。そのため一覧の解析(self.parse)
+      # では募集終了を判定できず、詳細ページ本文を別途取得して確認する必要がある(closed_detail?)。
+      CLOSED_DETAIL_SELECTOR = "p.content__text"
+      CLOSED_DETAIL_MESSAGE = "こちらの案件は終了しました"
+
       # 案件リンクのhrefは "/freelance/jobs/<数字>" の形だけを案件として扱う
       # （エリア・職種・スキル等の絞り込みリンクは /freelance/jobs/area/13 のように別形式）。
       JOB_PATH_RE = %r{\A/freelance/jobs/(\d+)\z}.freeze
@@ -133,6 +139,13 @@ module FreelanceJobs
         end
 
         postings.values
+      end
+
+      # AC-11: 通信なし（呼び出し側が詳細ページを取得し、本文をここへ渡す）。
+      # p.content__textのいずれかにCLOSED_DETAIL_MESSAGEを含めば募集終了と判定する。
+      def self.closed_detail?(body)
+        document = Nokogiri::HTML(body)
+        document.css(CLOSED_DETAIL_SELECTOR).any? { |paragraph| paragraph.text.include?(CLOSED_DETAIL_MESSAGE) }
       end
 
       # 案件パスと案件名は表示・重複除去の両方に必須なので、欠けたカードは黙って捨てる
