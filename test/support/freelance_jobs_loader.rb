@@ -22,8 +22,10 @@ else
   Dir["#{root}/services/freelance_jobs/sources/*.rb"].sort.each { |source_path| require source_path }
 
   # profileは全取得元クラスを参照するため、必ずsources/**より後に読む。
+  # closure_verifierはsheet_merger・job_postingに依存するため共通基盤の後、
+  # research_serviceより前に読む（research_serviceがclosure_verifierを参照するため）。
   %w[
     engineer_classifier profile
-    research_service
+    closure_verifier research_service
   ].each { |name| require "#{root}/services/freelance_jobs/#{name}" }
 end

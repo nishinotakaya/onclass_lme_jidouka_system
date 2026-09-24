@@ -93,6 +93,11 @@ module FreelanceJobs
       # 既存行にURLが一致する行はJ/K/L/M/O更新のため🌟の有無に関わらず対象にする。
       rows_for_merge = @profile.new_rows_require_star ? filter_new_rows_for_merge(rows, existing_rows) : rows
 
+      # AC-13: 一覧ページに募集終了の印が出ないサイト（closed_detail?を持つsource_class）は、
+      # シートに関係する行（rows_for_merge・existing_rows）だけ詳細ページを取得して確認する。
+      # closed_urlsに合流させ、既存のclosed_urls経路（新規行は追加しない／既存行は削除する）に乗せる。
+      closed_urls |= verify_closures(rows_for_merge, existing_rows, failed_sites)
+
       # 同じURLが別サイトからopenとしても来た場合はclosedを優先する（closed_urlsに入っていれば行は削除される）。
       merge_result = FreelanceJobs::SheetMerger.merge(
         existing_rows: existing_rows,
@@ -153,9 +158,25 @@ module FreelanceJobs
     end
 
     def fetch_from(source_class, options)
-      fetcher = @shared_fetcher || FreelanceJobs::HttpFetcher.new(interval: source_class::REQUEST_INTERVAL,
-                                                                    logger: FreelanceJobs.logger)
-      source_class.new(fetcher: fetcher, today: @today, **options).fetch
+      source_class.new(fetcher: build_fetcher(source_class), today: @today, **options).fetch
+    end
+
+    # fetch_from（一覧取得）とverify_closures（詳細確認）の両方で共有する。
+    # @shared_fetcherがあればそれを返す（テストで注入したfetcherが詳細確認にも使われる）。
+    def build_fetcher(source_class)
+      @shared_fetcher || FreelanceJobs::HttpFetcher.new(interval: source_class::REQUEST_INTERVAL,
+                                                          logger: FreelanceJobs.logger)
+    end
+
+    # AC-13: 取得に失敗したサイト(failed_sites)は既存行を誤って消さないよう対象から外す
+    # （取得失敗＝一覧が来ていない＝既存行の生死をこの実行で判断できる情報が無いため）。
+    def verify_closures(rows_for_merge, existing_rows, failed_sites)
+      target_source_specs = @sources.reject { |source_class, _options| failed_sites.include?(source_class::SITE_NAME) }
+
+      FreelanceJobs::ClosureVerifier.new(
+        source_specs: target_source_specs,
+        fetcher_factory: ->(source_class) { build_fetcher(source_class) }
+      ).call(candidate_rows: rows_for_merge, existing_rows: existing_rows)
     end
 
     # 分類 → 対象外(category nil)を除外 → 行に整形 → URLで重複除去。

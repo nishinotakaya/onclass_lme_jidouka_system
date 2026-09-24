@@ -400,6 +400,40 @@ class FreelanceJobsSourcesEngineerFactoryTest < Minitest::Test
     refute_includes source_classes, FreelanceJobs::Sources::EngineerFactory
   end
 
+  # === AC-11: closed_detail?（通信なし。詳細ページの本文から募集終了を判定する） ===
+  # 一覧ページには募集終了の印が出ないため、詳細ページ本文の p.content__text いずれかに
+  # 「こちらの案件は終了しました」を含むかどうかで判定する。
+
+  DETAIL_CLOSED_FIXTURE_NAME = "engineer_factory_detail_closed.html"
+
+  def test_closed_detail_is_true_when_any_content_text_paragraph_contains_the_closed_message
+    body = read_fixture(DETAIL_CLOSED_FIXTURE_NAME)
+
+    assert FreelanceJobs::Sources::EngineerFactory.closed_detail?(body),
+           "終了文言を含むp.content__textが（他のp.content__textと並んでいても）あればtrueのはず"
+  end
+
+  def test_closed_detail_is_false_for_an_open_listing_page
+    # 一覧ページ本文（p.content__text自体が無い）でも通信なしで安全にfalseを返すことを確認する。
+    body = read_fixture(FIXTURE_NAME)
+
+    refute FreelanceJobs::Sources::EngineerFactory.closed_detail?(body)
+  end
+
+  # 開催中の詳細ページはp.content__textを複数持つが、いずれも終了文言を含まない。
+  # 「p.content__textが1つも無い」ケース(上のテスト)とは別に、any?が「要素はあるが
+  # どれも終了文言を含まない」で正しくfalseになる分岐を固定する。
+  def test_closed_detail_is_false_for_an_open_detail_page_with_multiple_non_closed_paragraphs
+    fragment = <<~HTML
+      <main>
+        <p class="content__text">業務内容: Railsを用いたAPI開発をお願いします。</p>
+        <p class="content__text">必須スキル: Ruby on Railsでの開発経験2年以上</p>
+      </main>
+    HTML
+
+    refute FreelanceJobs::Sources::EngineerFactory.closed_detail?(wrap_html(fragment))
+  end
+
   private
 
   def build_source(fetcher, skill_ids, max_pages: 2)
