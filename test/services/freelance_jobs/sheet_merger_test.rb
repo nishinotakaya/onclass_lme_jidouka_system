@@ -432,6 +432,72 @@ class FreelanceJobsSheetMergerTest < Minitest::Test
     assert_equal [2, 3, 4], surviving_star_counts.sort, "受け入れ可能数3件のうち🌟が多い上位3件だけが選ばれるはず"
   end
 
+  # === AC-27: 品質枠の同着はサイトを交互に取る（1サイトが残枠を独占しないように） ===
+
+  # 品質枠だけを狙って検証するには予算を絞る必要がある。予算 = min(80, 500-生存既存行数)なので、
+  # 既存行488件を新規候補を持たないFillerSite（締切2030-01-01）にまとめて持たせると、
+  # 予算 = min(80, 500-488) = min(80, 12) = 12 になる。FillerSiteは新規候補を持たないので
+  # MAX_ROWS_PER_SITEの影響を受けず、既存行488件は1件も落ちない。
+
+  def test_quality_fill_alternates_between_sites_when_candidates_are_tied
+    filler_existing_rows = Array.new(488) do |index|
+      row(site: "FillerSite", url: "https://example.com/FillerSite/existing-#{index}", deadline_text: "2030-01-01")
+    end
+    # 🌟数（recommend: "🌟"で同一）・締切（"-"で不明のまま同一）を完全に揃え、
+    # row_priority_keyの先頭3要素（🌟数・新規既存・締切）が全候補で同着になるようにする。
+    tied_site_a_rows = Array.new(10) do |index|
+      row(recommend: "🌟", site: "TiedSiteA", url: "https://example.com/TiedSiteA/new-#{index}", deadline_text: "-")
+    end
+    tied_site_b_rows = Array.new(10) do |index|
+      row(recommend: "🌟", site: "TiedSiteB", url: "https://example.com/TiedSiteB/new-#{index}", deadline_text: "-")
+    end
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: filler_existing_rows, new_rows: tied_site_a_rows + tied_site_b_rows,
+      succeeded_sites: ["FillerSite", "TiedSiteA", "TiedSiteB"], today: TODAY
+    )
+
+    tied_site_a_new_row_count = result.rows.count { |merged_row| merged_row[4] == "TiedSiteA" && merged_row[5].include?("/new-") }
+    tied_site_b_new_row_count = result.rows.count { |merged_row| merged_row[4] == "TiedSiteB" && merged_row[5].include?("/new-") }
+
+    # 保証枠3件＋品質枠3件＝6件ずつのはず（品質枠の残予算6件が両サイトの同着候補に3:3で分かれるため）。
+    # 現行実装ではrow_priority_key末尾のURLタイブレークにより、品質枠の並び替えがURL昇順になり
+    # "TiedSiteA" < "TiedSiteB" の文字列順でTiedSiteAが品質枠6件を総取りしてしまい、9対3になる。
+    assert_equal 6, tied_site_a_new_row_count,
+                 "品質枠の同着候補はサイトを交互に取るため、TiedSiteAは保証枠3件+品質枠3件=6件のはず"
+    assert_equal 6, tied_site_b_new_row_count,
+                 "品質枠の同着候補はサイトを交互に取るため、TiedSiteBは保証枠3件+品質枠3件=6件のはず"
+  end
+
+  # 交互取りは優先度が完全に同着のときだけ発動する。🌟数に差がある場合は、従来通り🌟が多い
+  # サイトが品質枠の残りを取り切ることを確認する（AC-27導入後も回帰しないためのテスト）。
+  def test_quality_fill_still_prefers_higher_star_site_over_alternating
+    filler_existing_rows = Array.new(488) do |index|
+      row(site: "FillerSite", url: "https://example.com/FillerSite/existing-#{index}", deadline_text: "2030-01-01")
+    end
+    rich_star_site_rows = Array.new(10) do |index|
+      row(recommend: "🌟🌟", site: "RichStarSite", url: "https://example.com/RichStarSite/new-#{index}", deadline_text: "-")
+    end
+    zero_star_site_rows = Array.new(10) do |index|
+      row(recommend: "", site: "ZeroStarSite", url: "https://example.com/ZeroStarSite/new-#{index}", deadline_text: "-")
+    end
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: filler_existing_rows, new_rows: rich_star_site_rows + zero_star_site_rows,
+      succeeded_sites: ["FillerSite", "RichStarSite", "ZeroStarSite"], today: TODAY
+    )
+
+    rich_star_site_new_row_count = result.rows.count { |merged_row| merged_row[4] == "RichStarSite" && merged_row[5].include?("/new-") }
+    zero_star_site_new_row_count = result.rows.count { |merged_row| merged_row[4] == "ZeroStarSite" && merged_row[5].include?("/new-") }
+
+    # 保証枠は両サイト3件ずつ。品質枠の残予算6件は🌟の多いRichStarSiteが全部取るはず
+    # （交互取りは同着のときだけで、優先度に差があるときは🌟の多い側が残枠を取る）。
+    assert_equal 9, rich_star_site_new_row_count,
+                 "🌟2のRichStarSiteは保証枠3件+品質枠6件=9件のはず（🌟に差があるので交互取りは発動しない）"
+    assert_equal 3, zero_star_site_new_row_count,
+                 "🌟0のZeroStarSiteは保証枠3件のみで、品質枠は🌟の多いRichStarSiteに取られるはず"
+  end
+
   # === ラウンド2 C4: 新規行の並び順（🌟が多い順→締切が遠い順、締切不明は最後） ===
 
   def test_new_row_ordering_prioritizes_star_count_then_farthest_deadline_then_unknown_last

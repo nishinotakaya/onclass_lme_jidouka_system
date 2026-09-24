@@ -326,16 +326,35 @@ module FreelanceJobs
       [guaranteed_floor_rows, taken_count_by_site, remaining_budget]
     end
 
-    # AC-21: 保証枠で取らなかった残り候補を全サイト混ぜてrow_priority_key昇順に並べ直し、
-    # 残予算ぶんを品質順（🌟が多い順→締切が遠い順）に取る。
+    # AC-21・AC-27: 保証枠で取らなかった残り候補を全サイト混ぜてquality_fill_sort_key昇順に並べ直し、
+    # 残予算ぶんを品質順（🌟が多い順→締切が遠い順）に取る。🌟数・締切が同着のときは
+    # quality_fill_sort_key内のサイト内順位で各サイトから交互に取られる（AC-27）。
     def self.select_quality_fill_rows(candidate_rows_by_site, taken_count_by_site, new_row_object_ids, remaining_budget)
       return [] if remaining_budget <= 0
 
-      leftover_candidate_rows = candidate_rows_by_site.flat_map do |site_name, candidate_rows|
+      leftover_candidates_with_rank = candidate_rows_by_site.flat_map do |site_name, candidate_rows|
         candidate_rows.drop(taken_count_by_site[site_name])
+                      .each_with_index.map { |row, within_site_rank| [row, within_site_rank, site_name] }
       end
 
-      leftover_candidate_rows.sort_by { |row| row_priority_key(row, new_row_object_ids, {}) }.first(remaining_budget)
+      leftover_candidates_with_rank
+        .sort_by { |row, within_site_rank, site_name| quality_fill_sort_key(row, new_row_object_ids, within_site_rank, site_name) }
+        .first(remaining_budget)
+        .map { |row, _within_site_rank, _site_name| row }
+    end
+
+    # AC-27: 品質枠専用の並び優先度キー。row_priority_keyの先頭3要素（🌟数・新規既存・締切。
+    # 末尾のURLタイブレークは含めない）までは通常通り優先度で決め、そこが完全に同着の場合だけ
+    # within_site_rank（そのサイトの残り候補内での順位。0が最優先）で比較する。
+    # 同着ならまずwithin_site_rank=0同士が並び、次いでsite_name順に0→1→…と巡回するため、
+    # 結果として複数サイトの同着候補から1件ずつ交互に選ばれる（1サイトが残枠を独占するのを防ぐ）。
+    # 末尾のURL（row[URL_COLUMN_INDEX]）は、within_site_rankがeach_with_indexでサイト内一意・
+    # site_nameがgroup_byでグループごとに一意なため、(within_site_rank, site_name)の組だけで
+    # 既に全候補が一意に区別でき、比較上は到達しない。それでも残しているのは、将来サイト内順位の
+    # 付け方が変わってwithin_site_rankの一意性が崩れた場合でも、sort_byの不安定性（同着の並びが
+    # 実行ごとにブレる問題）が表に出ないようにするための保険。
+    def self.quality_fill_sort_key(row, new_row_object_ids, within_site_rank, site_name)
+      row_priority_key(row, new_row_object_ids, {})[0..2] + [within_site_rank, site_name, row[URL_COLUMN_INDEX].to_s]
     end
 
     def self.renumber(rows)
