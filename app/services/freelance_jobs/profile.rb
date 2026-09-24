@@ -76,7 +76,10 @@ module FreelanceJobs
           # フリーランスエージェント・マッチング（案件単価が明示され、分類の当たりが良い順に置く）。
           # 2026-09-12「エンジニア申込サイト一覧」の実地調査で採用推奨(◎/○)となった8サイトを追加した。
           [FreelanceJobs::Sources::Levtech, {}],
-          [FreelanceJobs::Sources::CoconalaTech, {}],
+          # 実シートのココナラテック19行が全て詳細確認で掲載終了になっていた。募集終了カードを
+          # 取得しないと既存行が新規行にマッチせず60日ルールが効くまで残ってしまうため、
+          # 募集終了も取得してclosed_urls経由で既存行を削除する（AC-02b）。
+          [FreelanceJobs::Sources::CoconalaTech, { include_closed: true }],
           [FreelanceJobs::Sources::Bizlink, {}],
           [FreelanceJobs::Sources::HiproTech, {}],
           [FreelanceJobs::Sources::FindyFreelance, {}],
@@ -97,6 +100,13 @@ module FreelanceJobs
           [FreelanceJobs::Sources::Techdirect, {}],
           [FreelanceJobs::Sources::GeechsJob, {}],
           [FreelanceJobs::Sources::Itpropartners, {}],
+          # re:shine はログイン必須のエージェントで一次サイト群の一つだが、掲載スキルの幅が広く
+          # ノイズになりやすいため、一次サイトの最後（クラウドソーシング群より前）に置く。
+          [FreelanceJobs::Sources::Reshine, {}],
+          # 2026-09-23の案件サイト再調査で採用。どちらも未ログイン・完全SSRで一覧だけから
+          # 単価・スキル・業務内容まで揃うため、一次サイト群の最後（Reshineの直後）に置く。
+          [FreelanceJobs::Sources::Midworks, {}],
+          [FreelanceJobs::Sources::Techcareer, {}],
           # クラウドソーシング（未経験向けプロファイルと同じ取得元をキーワード検索で流用する）。
           [FreelanceJobs::Sources::Crowdworks, {
             search_targets: [

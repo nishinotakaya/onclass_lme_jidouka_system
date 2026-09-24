@@ -143,7 +143,7 @@ module FreelanceJobs
 
         FreelanceJobs::JobPosting.new(
           site: SITE_NAME,
-          url: FreelanceJobs::JobPosting.normalize_url(job_url),
+          url: normalize_job_url(job_url),
           title: title,
           description: FreelanceJobs::JobPosting.normalize_description(
             build_description(squish(definition_items[CONTENT_LABEL]&.text), skills, work_location, tags)
@@ -167,6 +167,19 @@ module FreelanceJobs
         return nil unless href.match?(JOB_URL_RE)
 
         href.start_with?("/") ? "#{BASE_URL}#{href}" : href
+      end
+
+      # AC-10: 案件詳細URLは末尾スラッシュ付きで統一する。
+      # スラッシュ無し（例 https://pe-bank.jp/project/csharp/54339-N08）は301後にhttp側が404になる
+      # 壊れたリンクの実例があり、スラッシュ付きなら200になるため。
+      # JobPosting.normalize_urlは表記を揃えるために末尾スラッシュを落とすので、その後に付け直す
+      # （既に付いていれば二重にはならない）。normalize_url自体は他サイトのURL表記にも使われる
+      # 共通処理のため変更しない。
+      def self.normalize_job_url(url)
+        normalized_url = FreelanceJobs::JobPosting.normalize_url(url)
+        return normalized_url if normalized_url.empty? || normalized_url.end_with?("/")
+
+        "#{normalized_url}/"
       end
 
       # dl.projectListCts の dd を「ラベル => 値の p ノード」のHashにする。

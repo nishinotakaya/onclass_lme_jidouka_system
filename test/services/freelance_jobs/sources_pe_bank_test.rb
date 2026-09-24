@@ -44,7 +44,7 @@ class FreelanceJobsSourcesPeBankTest < Minitest::Test
     first = parse_fixture.first
 
     assert_equal "PE-BANK", first.site
-    assert_equal "https://pe-bank.jp/project/ruby/54618-65", first.url
+    assert_equal "https://pe-bank.jp/project/ruby/54618-65/", first.url
     assert_equal "【Ruby/リモート】口コミ機能開発AI活用Rails案件", first.title
     assert_equal "Ruby", first.category_hint
     assert_equal "80万円～85万円／月", first.reward
@@ -73,7 +73,7 @@ class FreelanceJobsSourcesPeBankTest < Minitest::Test
   # --- スキルは「Ruby , Typescript , Vue.js , React」のカンマ区切り1本のテキストを分割する ---
 
   def test_parse_posting_with_comma_separated_skills
-    posting = parse_fixture.find { |candidate| candidate.url.end_with?("/54808-32") }
+    posting = parse_fixture.find { |candidate| candidate.url.end_with?("/54808-32/") }
 
     refute_nil posting
     assert_equal "【Ruby on Rails/リモート可/ビジネス英語】SaaS開発支援", posting.title
@@ -85,7 +85,7 @@ class FreelanceJobsSourcesPeBankTest < Minitest::Test
 
   # 全55スキルを列挙した「全部盛り」カードもそのまま格納する（分類器はtitle+descriptionも見るため）。
   def test_parse_posting_with_every_skill_listed_keeps_all_skills
-    posting = parse_fixture.find { |candidate| candidate.url.end_with?("/java/53135-H03") }
+    posting = parse_fixture.find { |candidate| candidate.url.end_with?("/java/53135-H03/") }
 
     refute_nil posting
     assert_operator posting.skills.size, :>, 50
@@ -95,7 +95,7 @@ class FreelanceJobsSourcesPeBankTest < Minitest::Test
 
   # 案件コードが数字始まりでない（H5018-H01）URLも案件として扱う。
   def test_parse_accepts_alphanumeric_job_code
-    posting = parse_fixture(PAGE2_FIXTURE_NAME).find { |candidate| candidate.url.end_with?("/php/H5018-H01") }
+    posting = parse_fixture(PAGE2_FIXTURE_NAME).find { |candidate| candidate.url.end_with?("/php/H5018-H01/") }
 
     refute_nil posting
     assert_equal ["PHP", "Ruby", "SQL"], posting.skills
@@ -117,15 +117,33 @@ class FreelanceJobsSourcesPeBankTest < Minitest::Test
   end
 
   # --- URL正規化 ---
+  # AC-10: 案件詳細URLは末尾スラッシュ付きで統一する。
+  # スラッシュ無し（https://pe-bank.jp/project/csharp/54339-N08）は301後にhttp側が404になる
+  # 壊れたリンクの実例があり、スラッシュ付きなら200になるため。
 
-  def test_urls_are_normalized_absolute_without_trailing_slash_or_query
+  def test_urls_are_normalized_absolute_with_trailing_slash_and_without_query
     postings = parse_fixture
 
     assert_equal 50, postings.map(&:url).uniq.size
     postings.each do |posting|
-      assert_match %r{\Ahttps://pe-bank\.jp/project/[\w-]+/[A-Za-z0-9-]+\z}, posting.url,
-                   "末尾スラッシュなし・クエリなしの正規化された絶対URLのはず"
+      assert_match %r{\Ahttps://pe-bank\.jp/project/[\w-]+/[A-Za-z0-9-]+/\z}, posting.url,
+                   "末尾スラッシュ付き・クエリなしの正規化された絶対URLのはず"
     end
+  end
+
+  # 実例(54339-N08)そのもので、hrefにスラッシュが無くてもposting.urlは末尾スラッシュ付きになる想定。
+  def test_parse_normalizes_job_url_to_always_have_a_trailing_slash_even_when_href_lacks_one
+    fragment = build_card_html(href: "https://pe-bank.jp/project/csharp/54339-N08", title: "スラッシュ無しhref")
+    posting = FreelanceJobs::Sources::PeBank.parse(wrap_html(fragment), today: TODAY, category_hint: "Ruby").first
+
+    assert_equal "https://pe-bank.jp/project/csharp/54339-N08/", posting.url
+  end
+
+  def test_parse_keeps_job_url_trailing_slash_when_href_already_has_one
+    fragment = build_card_html(href: "https://pe-bank.jp/project/csharp/54339-N08/", title: "スラッシュ付きhref")
+    posting = FreelanceJobs::Sources::PeBank.parse(wrap_html(fragment), today: TODAY, category_hint: "Ruby").first
+
+    assert_equal "https://pe-bank.jp/project/csharp/54339-N08/", posting.url
   end
 
   # --- category_hint が引数どおり全件に伝わる ---
@@ -162,7 +180,7 @@ class FreelanceJobsSourcesPeBankTest < Minitest::Test
     fragment = build_card_html(href: "/project/ruby/3-A/", title: "相対パス")
     posting = FreelanceJobs::Sources::PeBank.parse(wrap_html(fragment), today: TODAY, category_hint: "Ruby").first
 
-    assert_equal "https://pe-bank.jp/project/ruby/3-A", posting.url
+    assert_equal "https://pe-bank.jp/project/ruby/3-A/", posting.url
   end
 
   # --- 必須要素（案件URL・案件名）が欠けたカードは黙って除外する ---

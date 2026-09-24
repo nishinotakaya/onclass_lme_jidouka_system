@@ -4,23 +4,29 @@ require "date"
 
 module FreelanceJobs
   # 既存のスプレッドシート行と、今回取得した新規行をマージする純粋関数。
-  # 15列の配列（[🌟, No., 分類, 案件名, 掲載サイト, 案件URL, 難易度, 内容, 必要スキル,
-  #             報酬, 形式, 応募状況, 締切, 一言メモ, 取得日時]）を対象にする。
+  # 16列の配列（[🌟, No., 分類, 案件名, 掲載サイト, 案件URL, 難易度, 内容, 必要スキル,
+  #             報酬, 形式, 応募状況, 締切, 一言メモ, 取得日時, 追加日]）を対象にする。
   class SheetMerger
-    COLUMN_COUNT = 15
+    COLUMN_COUNT = 16
     URL_COLUMN_INDEX = 5
     SITE_COLUMN_INDEX = 4
     CATEGORY_COLUMN_INDEX = 2
     DEADLINE_TEXT_COLUMN_INDEX = 12
     FETCHED_ON_COLUMN_INDEX = 14
+    # AC-03: 追加日。既存行がいつシートに追加されたかを表す列で、AUTO_UPDATE_COLUMN_INDEXESには
+    # 含めない（含めると既存行の追加日が今回の取得日で上書きされてしまうため）。
+    ADDED_ON_COLUMN_INDEX = 15
     NUMBER_COLUMN_INDEX = 1
 
-    # 既存行のうち自動更新して良い列（報酬・形式・応募状況・締切・取得日時）。
+    # 既存行のうち自動更新して良い列（案件URL表記・報酬・形式・応募状況・締切・取得日時）。
     # A・C・D・G・H・I・N（🌟/分類/案件名/難易度/内容/必要スキル/メモ）は手入力を保持する。
-    AUTO_UPDATE_COLUMN_INDEXES = [9, 10, 11, 12, 14].freeze
+    # AC-10: URL表記(F列)も対象に含める。マッチング自体は両側normalize_urlで行うため
+    # キーの一致は崩れず、表記だけを今回取得した値（末尾スラッシュ付きの正しいURL等）へ揃えられる。
+    AUTO_UPDATE_COLUMN_INDEXES = [URL_COLUMN_INDEX, 9, 10, 11, 12, 14].freeze
 
     CATEGORY_ORDER = ["HTML/CSS", "Excel・スプレッドシート"].freeze
-    MAX_TOTAL_ROWS = 300
+    # AC-05: 300行→500行に引き上げ。
+    MAX_TOTAL_ROWS = 500
     # 1回の実行で追加する新規行の上限（ラウンド2 C3）。超過分は今回は見送り、
     # 次回以降の実行で再度候補になれば追加され得る。
     MAX_NEW_ROWS_PER_RUN = 80
@@ -34,10 +40,16 @@ module FreelanceJobs
     # 取得に失敗したサイトの既存行は、更新も期限切れ削除もせずそのまま残す（A1）。
     # 対象外サイトの既存行は更新されない（新規行が来ないため）が、期限切れ削除（should_remove?）は適用する。
     # 取得日時（O列）はRowBuilderが構築時点で書き込み済みのため、ここでは受け取らない。
-    def self.merge(existing_rows:, new_rows:, succeeded_sites:, today:, excluded_sites: [], category_order: CATEGORY_ORDER)
+    # closed_urls: 今回募集終了と判明したURLの集合（省略時は[]で現行の挙動を変えない）。
+    # 該当する既存行は更新も期限切れ削除も待たず最優先で削除し、新規行としても追加しない。
+    def self.merge(existing_rows:, new_rows:, succeeded_sites:, today:, excluded_sites: [], category_order: CATEGORY_ORDER,
+                    closed_urls: [])
       normalized_existing_rows = existing_rows.map { |row| normalize_row(row) }
       deduped_new_rows = dedupe_by_url(new_rows)
       new_rows_by_url = index_by_url(deduped_new_rows)
+      normalized_closed_urls = closed_urls.each_with_object({}) do |url, memo|
+        memo[FreelanceJobs::JobPosting.normalize_url(url)] = true
+      end
 
       existing_url_seen = {}
       surviving_existing_rows = []
@@ -49,6 +61,15 @@ module FreelanceJobs
 
         if url.empty?
           surviving_existing_rows << row # F列が空：キーにせずそのまま保持
+          next
+        end
+
+        # closed_urls判定を最優先にする（重複URLの2件目以降判定・更新・取得失敗サイト保護・締切ルールより先）。
+        # 同じURLの行がシート上に複数残っていても、募集終了と分かった行は全て削除する必要があるため、
+        # 重複判定でスキップされてしまう前にここで判定する。
+        # 募集終了と分かった行を新規行の値で更新してしまうと「募集終了」の情報が消えるため。
+        if normalized_closed_urls[url]
+          removed += 1
           next
         end
 
@@ -81,7 +102,8 @@ module FreelanceJobs
       end
 
       brand_new_rows_all = deduped_new_rows.reject do |row|
-        existing_url_seen[FreelanceJobs::JobPosting.normalize_url(row[URL_COLUMN_INDEX])]
+        url = FreelanceJobs::JobPosting.normalize_url(row[URL_COLUMN_INDEX])
+        existing_url_seen[url] || normalized_closed_urls[url]
       end
       brand_new_rows = cap_new_rows_per_run(brand_new_rows_all)
       brand_new_object_ids = brand_new_rows.each_with_object({}) { |row, memo| memo[row.object_id] = true }
@@ -199,7 +221,7 @@ module FreelanceJobs
 
     # 全行(新規+既存)共通の並び優先度キー（昇順ソートで上位＝残す/先頭に出す対象になる）。
     # 優先順位: 🌟が多い順 → 新規行が既存行より先 → 締切が遠い順(不明は最後) →
-    # 既存行同士は元の順（ラウンド2 C10）。80件/300件の上限で残す行の選定にも同じキーを使う。
+    # 既存行同士は元の順（ラウンド2 C10）。80件/500件の上限で残す行の選定にも同じキーを使う。
     # new_row_object_ids: brand_new_rowsのobject_id集合。existing_original_index: 既存行のobject_id => 元の並び順index。
     def self.row_priority_key(row, new_row_object_ids, existing_original_index)
       deadline = deadline_sort_key(row[DEADLINE_TEXT_COLUMN_INDEX])
@@ -218,7 +240,7 @@ module FreelanceJobs
       brand_new_rows.sort_by { |row| row_priority_key(row, new_row_object_ids, {}) }.first(MAX_NEW_ROWS_PER_RUN)
     end
 
-    # 300行上限は新規行にのみ適用する（既存行は上限で落とさない）。
+    # 500行上限は新規行にのみ適用する（既存行は上限で落とさない）。
     # 超過分は新規行の中で優先度（row_priority_key）が低いものから落とす。
     def self.cap_rows(ordered_rows, brand_new_rows)
       return ordered_rows if ordered_rows.size <= MAX_TOTAL_ROWS

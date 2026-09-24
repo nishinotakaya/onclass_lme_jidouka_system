@@ -1,0 +1,193 @@
+{
+  "breadCrumbText": "Ruby",
+  "h1Text": "Rubyのフリーランス案件・副業求人一覧",
+  "requestInfo": {
+    "baseUrl": "https://sokudan.work/top/projects",
+    "query": "page=2",
+    "name": "/top/projects?page=2",
+    "imageUrl": null,
+    "id": null,
+    "label": null
+  },
+  "pageUrlList": [],
+  "projectList": [
+    {
+      "id": 20644,
+      "title": "【フルリモ】楽天市場経験者募集＊EC運用ディレクター募集！",
+      "isRemotable": true,
+      "state": "closed",
+      "contractType": "outsourcing",
+      "isCorpNameSecret": false,
+      "createdAt": "2026-09-02T17:37:04.468+09:00",
+      "updatedAt": "2026-09-16T18:02:42.805+09:00",
+      "sideJobRestriction": false,
+      "isLike": false,
+      "isCorpWorker": false,
+      "corpNameHidden": false,
+      "minWorkingHoursLabel": "週40h",
+      "remoteType": {
+        "id": 1,
+        "name": "full_remote",
+        "label": "フルリモート(在宅OK)"
+      },
+      "projectAvailableTime": {
+        "id": 6,
+        "name": "forty_hours",
+        "label": "週5日（週40h）"
+      },
+      "maxBudget": {
+        "id": 800000,
+        "name": "",
+        "label": "80万"
+      },
+      "minBudget": {
+        "id": 500000,
+        "name": "",
+        "label": "50万"
+      },
+      "coverImage": {
+        "name": "thumbnail_%E5%9B%B310_2_.webp",
+        "baseUrl": "https://img.sokudan.work/uploads/project/cover_image/20644/thumbnail_%E5%9B%B310_2_.webp",
+        "query": ""
+      },
+      "prefecture": {
+        "id": 100,
+        "name": "",
+        "label": "全国"
+      },
+      "tags": [
+        {
+          "id": 10,
+          "emphasizedStyle": false,
+          "name": "freelancers_welcome",
+          "label": "フリーランス歓迎"
+        },
+        {
+          "id": 4,
+          "emphasizedStyle": false,
+          "name": "",
+          "label": "フルリモート"
+        },
+        {
+          "id": 6,
+          "emphasizedStyle": false,
+          "name": "high_salary",
+          "label": "高単価"
+        }
+      ],
+      "professions": [
+        {
+          "id": 116,
+          "name": "webdirector",
+          "label": "WEBディレクター"
+        },
+        {
+          "id": 106,
+          "name": "marketing",
+          "label": "マーケティング"
+        }
+      ],
+      "corporation": {
+        "id": null,
+        "detail": null,
+        "name": "＊＊＊＊＊",
+        "logoUrl": "https://sokudan.work/images/fallback/corporation_image_default.jpg",
+        "premiumScheme": false
+      }
+    },
+    {
+      "id": 20612,
+      "title": "【週3～OK/月96h程度】通信会社のWebデザイナー募集！（派遣）",
+      "isRemotable": true,
+      "state": "closed",
+      "contractType": "fixed_term",
+      "isCorpNameSecret": false,
+      "createdAt": "2026-09-01T11:58:51.770+09:00",
+      "updatedAt": "2026-09-04T11:03:35.298+09:00",
+      "sideJobRestriction": false,
+      "isLike": false,
+      "isCorpWorker": false,
+      "corpNameHidden": false,
+      "minWorkingHoursLabel": "週24h",
+      "remoteType": {
+        "id": 3,
+        "name": "no_remote",
+        "label": "リモート不可"
+      },
+      "projectAvailableTime": {
+        "id": 4,
+        "name": "over_twenty_four_hours",
+        "label": "週3日（週24~31h）"
+      },
+      "maxBudget": {
+        "id": 450000,
+        "name": "",
+        "label": "45万"
+      },
+      "minBudget": {
+        "id": 400000,
+        "name": "",
+        "label": "40万"
+      },
+      "coverImage": {
+        "name": "thumbnail_glenn-carstens-peters-npxXWgQ33ZQ-unsplash.webp",
+        "baseUrl": "https://img.sokudan.work/uploads/project/cover_image/20612/thumbnail_glenn-carstens-peters-npxXWgQ33ZQ-unsplash.webp",
+        "query": ""
+      },
+      "prefecture": {
+        "id": 101,
+        "name": "",
+        "label": "首都圏"
+      },
+      "tags": [
+        {
+          "id": 13,
+          "emphasizedStyle": false,
+          "name": "",
+          "label": "長期"
+        },
+        {
+          "id": 22,
+          "emphasizedStyle": false,
+          "name": "urgent",
+          "label": "急募"
+        },
+        {
+          "id": 16,
+          "emphasizedStyle": false,
+          "name": "",
+          "label": "女性歓迎"
+        }
+      ],
+      "professions": [
+        {
+          "id": 118,
+          "name": "designer",
+          "label": "デザイナー"
+        }
+      ],
+      "corporation": {
+        "id": null,
+        "detail": null,
+        "name": "＊＊＊＊＊",
+        "logoUrl": "https://sokudan.work/images/fallback/corporation_image_default.jpg",
+        "premiumScheme": false
+      }
+    }
+  ],
+  "specialPageUrlList": [],
+  "benefitsLatestCreatedAt": "2026-09-22T00:00:00.000+09:00",
+  "footerProjectList": [],
+  "magazineList": [],
+  "magazineTitle": "",
+  "breadCrumbList": [],
+  "metatag": {
+    "title": "テスト用フィクスチャ",
+    "description": "",
+    "ogTitle": "",
+    "ogDescription": "",
+    "ogImage": "",
+    "canonicalUrl": "https://sokudan.work/top/projects"
+  },
+  "projectListStructuredData": {}
+}

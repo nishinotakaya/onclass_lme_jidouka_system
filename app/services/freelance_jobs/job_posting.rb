@@ -18,7 +18,20 @@ module FreelanceJobs
     :tags,               # Array<String> 例 ["初心者歓迎","マニュアルあり","継続発注あり","PR"]
     :posted_on,          # Date or nil
     keyword_init: true
-  ) do
+  )
+
+  # Struct.new(...) do ... end のブロックは定義位置（module FreelanceJobs）が
+  # 定数の所属先になり、JobPosting::CLOSED_STATUSにはならない。
+  # そのためStruct生成後にclassを開き直し、定数がJobPostingに属するようにする。
+  class JobPosting
+    # 応募状況(application_status)が募集終了を示す表示用文字列。
+    CLOSED_STATUS = "募集終了"
+
+    # application_statusが募集終了を示すかどうか（完全一致。部分一致・nilはfalse）。
+    def closed?
+      application_status == CLOSED_STATUS
+    end
+
     # マージキー用のURL正規化。
     # scheme/hostを小文字化してhttpsに統一し、クエリ・フラグメント・末尾スラッシュを除去する。
     def self.normalize_url(url)

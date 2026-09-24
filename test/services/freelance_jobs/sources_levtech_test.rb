@@ -140,6 +140,63 @@ class FreelanceJobsSourcesLevtechTest < Minitest::Test
     assert_equal 10, postings.size, "同じURLの案件が2キーワード分返っても重複排除され10件のままのはず"
   end
 
+  # === AC-01: 募集終了カード（h3.nameGroup > span.closedLabel）の扱い ===
+  # fixtureは実HTML(levtech_search_ruby_live_2026-09-23.html)から募集中2件・募集終了2件を
+  # 抜き出したもの。637377と607916が募集終了カード由来。
+
+  CLOSED_CARD_URLS = [
+    "https://freelance.levtech.jp/project/detail/637377",
+    "https://freelance.levtech.jp/project/detail/607916"
+  ].freeze
+
+  def test_parse_fixture_with_closed_cards_does_not_drop_closed_cards
+    body = read_fixture("levtech_search_with_closed.html")
+    postings = FreelanceJobs::Sources::Levtech.parse(body, today: TODAY, category_hint: "Ruby")
+
+    assert_equal 4, postings.size, "募集終了カード2件を含めて4件返るはず（落とさない）"
+  end
+
+  def test_closed_cards_have_closed_application_status
+    body = read_fixture("levtech_search_with_closed.html")
+    postings = FreelanceJobs::Sources::Levtech.parse(body, today: TODAY, category_hint: "Ruby")
+
+    closed_postings = postings.select { |posting| CLOSED_CARD_URLS.include?(posting.url) }
+
+    assert_equal 2, closed_postings.size
+    closed_postings.each do |posting|
+      assert_equal "募集終了", posting.application_status,
+                   "span.closedLabelを持つカード由来のpostingは応募状況が「募集終了」のはず"
+    end
+  end
+
+  # 現行実装は application_status: "-" 固定だが、"-"固定を期待値にせず
+  # 「募集終了ではないこと」だけをassertする（将来 "-" 以外の表示に変わっても壊れない）。
+  def test_open_cards_application_status_is_not_closed
+    body = read_fixture("levtech_search_with_closed.html")
+    postings = FreelanceJobs::Sources::Levtech.parse(body, today: TODAY, category_hint: "Ruby")
+
+    open_postings = postings.reject { |posting| CLOSED_CARD_URLS.include?(posting.url) }
+
+    assert_equal 2, open_postings.size
+    open_postings.each do |posting|
+      refute_equal "募集終了", posting.application_status, "募集中カード由来のpostingは募集終了扱いにならないはず"
+    end
+  end
+
+  def test_closed_cards_still_have_correct_url_and_title
+    body = read_fixture("levtech_search_with_closed.html")
+    postings = FreelanceJobs::Sources::Levtech.parse(body, today: TODAY, category_hint: "Ruby")
+
+    ec_platform_posting = postings.find { |posting| posting.url == "https://freelance.levtech.jp/project/detail/637377" }
+    infra_maintenance_posting = postings.find { |posting| posting.url == "https://freelance.levtech.jp/project/detail/607916" }
+
+    refute_nil ec_platform_posting
+    assert_equal "【PHP/Java/Ruby】ECプラットフォーム開発のフリーランス求人・案件", ec_platform_posting.title
+
+    refute_nil infra_maintenance_posting
+    assert_equal "【Java】基幹システム運用維持保守業務のフリーランス求人・案件", infra_maintenance_posting.title
+  end
+
   # --- Profile::ENGINEER にLevtechが含まれる（BEGINNERには含まれない） ---
 
   def test_engineer_profile_includes_levtech_source

@@ -7,12 +7,14 @@ require "date"
 class FreelanceJobsSheetMergerTest < Minitest::Test
   TODAY = Date.new(2026, 9, 4)
 
-  # 15列のテスト用行を組み立てる（列インデックスはSheetMergerのコメント通り）。
+  # 16列のテスト用行を組み立てる（列インデックスはSheetMergerのコメント通り。
+  # AC-03で末尾に「追加日」(index15)が増えた）。
   def row(recommend: "", category: "HTML/CSS", title: "title", site: "CrowdWorks", url:, difficulty: "★☆☆",
           summary: "summary", skills: "skills", reward: "reward", work_format: "work_format",
-          application_status: "status", deadline_text: "-", memo: "memo", fetched_on: "2026-09-04 09:00")
+          application_status: "status", deadline_text: "-", memo: "memo", fetched_on: "2026-09-04 09:00",
+          added_on: "2026-09-04")
     [recommend, 0, category, title, site, url, difficulty, summary, skills, reward, work_format,
-     application_status, deadline_text, memo, fetched_on]
+     application_status, deadline_text, memo, fetched_on, added_on]
   end
 
   # --- 既存行の自動更新列(J/K/L/M/O)だけが更新され、手入力列(A/C/D/G/H/I/N)は保持される ---
@@ -140,10 +142,10 @@ class FreelanceJobsSheetMergerTest < Minitest::Test
     assert_equal 1, result.rows.size
   end
 
-  # --- 300件上限は新規行にだけ効く（既存行は上限で落ちない） ---
+  # --- 500件上限は新規行にだけ効く（既存行は上限で落ちない）（AC-05: 300→500に引き上げ） ---
 
-  def test_300_row_cap_only_drops_new_rows_never_existing_rows
-    existing_rows = Array.new(290) do |index|
+  def test_500_row_cap_only_drops_new_rows_never_existing_rows
+    existing_rows = Array.new(490) do |index|
       row(site: "CrowdWorks", url: "https://crowdworks.jp/public/jobs/existing-#{index}", deadline_text: "2030-01-01")
     end
     new_rows = Array.new(30) do |index|
@@ -155,10 +157,10 @@ class FreelanceJobsSheetMergerTest < Minitest::Test
     result = FreelanceJobs::SheetMerger.merge(existing_rows: existing_rows, new_rows: new_rows,
                                                succeeded_sites: ["CrowdWorks"], today: TODAY)
 
-    assert_equal 300, result.total
+    assert_equal 500, result.total
     assert_equal 10, result.added
     existing_urls_present = result.rows.count { |r| r[5].start_with?("https://crowdworks.jp/public/jobs/existing-") }
-    assert_equal 290, existing_urls_present, "既存行は300件上限の影響を受けない"
+    assert_equal 490, existing_urls_present, "既存行は500件上限の影響を受けない"
 
     surviving_new_urls = result.rows.map { |r| r[5] }.select { |url| url.include?("/new-") }
     assert_equal 10, surviving_new_urls.size
@@ -214,8 +216,8 @@ class FreelanceJobsSheetMergerTest < Minitest::Test
     assert_equal (20..99).to_a.sort, surviving_indexes.sort, "締切が最も遠い上位80件だけが残る"
   end
 
-  def test_added_reflects_actual_count_after_both_80_cap_and_300_cap
-    existing_rows = Array.new(250) do |index|
+  def test_added_reflects_actual_count_after_both_80_cap_and_500_cap
+    existing_rows = Array.new(450) do |index|
       row(site: "CrowdWorks", url: "https://crowdworks.jp/public/jobs/existing-#{index}", deadline_text: "2030-01-01")
     end
     new_rows = Array.new(100) do |index|
@@ -226,8 +228,8 @@ class FreelanceJobsSheetMergerTest < Minitest::Test
     result = FreelanceJobs::SheetMerger.merge(existing_rows: existing_rows, new_rows: new_rows,
                                                succeeded_sites: ["CrowdWorks"], today: TODAY)
 
-    assert_equal 300, result.total
-    assert_equal 50, result.added, "80件キャップ後、さらに300件上限で削られた実数になっているべき"
+    assert_equal 500, result.total
+    assert_equal 50, result.added, "80件キャップ後、さらに500件上限で削られた実数になっているべき"
     surviving_indexes = result.rows.map { |r| r[5] }.select { |url| url.include?("/new-") }
                                .map { |url| url[%r{new-(\d+)}, 1].to_i }
     assert_equal (50..99).to_a.sort, surviving_indexes.sort, "元の100件のうち上位50件（締切が遠い順）と一致するはず"
@@ -406,5 +408,197 @@ class FreelanceJobsSheetMergerTest < Minitest::Test
 
     assert_equal ["HTML/CSS", "Excel・スプレッドシート"], result.rows.map { |merged_row| merged_row[2] },
                  "category_order省略時は既存のCATEGORY_ORDER（HTML/CSS→Excel）のまま変わらない想定"
+  end
+
+  # === AC-02: closed_urls キーワード引数 ===
+
+  def test_closed_urls_default_is_empty_and_behavior_is_unchanged
+    existing = row(site: "CrowdWorks", url: "https://crowdworks.jp/public/jobs/1")
+
+    result = FreelanceJobs::SheetMerger.merge(existing_rows: [existing], new_rows: [],
+                                               succeeded_sites: ["CrowdWorks"], today: TODAY)
+
+    assert_equal 1, result.rows.size
+    assert_equal 0, result.removed
+  end
+
+  def test_closed_urls_removes_matching_existing_row_instead_of_updating_it
+    existing = row(site: "レバテックフリーランス", url: "https://freelance.levtech.jp/project/detail/637377",
+                    application_status: "OLD_L")
+    new_row = row(site: "レバテックフリーランス", url: "https://freelance.levtech.jp/project/detail/637377",
+                   application_status: "募集終了")
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: [existing], new_rows: [new_row],
+      succeeded_sites: ["レバテックフリーランス"], today: TODAY,
+      closed_urls: ["https://freelance.levtech.jp/project/detail/637377"]
+    )
+
+    assert_equal 0, result.rows.size, "closed_urlsに含まれる既存行は更新されず削除されるはず"
+    assert_equal 1, result.removed
+    assert_equal 0, result.updated
+  end
+
+  def test_closed_urls_row_is_not_added_as_new_row_either
+    new_row = row(site: "レバテックフリーランス", url: "https://freelance.levtech.jp/project/detail/999",
+                   application_status: "募集終了")
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: [], new_rows: [new_row],
+      succeeded_sites: ["レバテックフリーランス"], today: TODAY,
+      closed_urls: ["https://freelance.levtech.jp/project/detail/999"]
+    )
+
+    assert_equal 0, result.rows.size, "closed_urlsに含まれるURLは新規行としても追加されないはず"
+    assert_equal 0, result.added
+  end
+
+  def test_closed_urls_removal_takes_priority_over_failed_site_protection
+    existing = row(site: "レバテックフリーランス", url: "https://freelance.levtech.jp/project/detail/1")
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: [existing], new_rows: [],
+      succeeded_sites: [], today: TODAY, # 取得失敗サイト扱い（succeeded_sitesに含まれない）
+      closed_urls: ["https://freelance.levtech.jp/project/detail/1"]
+    )
+
+    assert_equal 0, result.rows.size, "closed_urlsは取得失敗サイトの保護よりも優先されるはず"
+    assert_equal 1, result.removed
+  end
+
+  def test_closed_urls_removal_takes_priority_over_should_remove_deadline_rule
+    future_deadline_text = (TODAY + 30).strftime("%Y-%m-%d")
+    existing = row(site: "レバテックフリーランス", url: "https://freelance.levtech.jp/project/detail/2",
+                    deadline_text: future_deadline_text)
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: [existing], new_rows: [],
+      succeeded_sites: ["レバテックフリーランス"], today: TODAY,
+      closed_urls: ["https://freelance.levtech.jp/project/detail/2"]
+    )
+
+    assert_equal 0, result.rows.size, "締切が先でもclosed_urlsに含まれていれば削除されるはず"
+    assert_equal 1, result.removed
+  end
+
+  def test_closed_urls_matches_regardless_of_normalization_differences
+    existing = row(site: "レバテックフリーランス", url: "https://freelance.levtech.jp/project/detail/3")
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: [existing], new_rows: [],
+      succeeded_sites: ["レバテックフリーランス"], today: TODAY,
+      # 末尾スラッシュ・クエリ付き・大文字ホストという正規化差のあるURLで指定する。
+      closed_urls: ["https://FREELANCE.LEVTECH.JP/project/detail/3/?utm_source=x"]
+    )
+
+    assert_equal 0, result.rows.size, "URL正規化の差異があってもマッチして削除されるはず"
+    assert_equal 1, result.removed
+  end
+
+  # 既存行に同じ案件URLが2行ある状態でclosed_urls判定が2件目以降に到達しない不具合の再現テスト。
+  # 既存行ループは「同じURLの2件目以降はexisting_url_seenで即skip」する分岐が
+  # closed_urls判定より前にあるため、2行目がclosed_urls判定を通らず残ってしまう。
+  def test_closed_urls_removes_all_occurrences_of_a_duplicated_existing_url
+    duplicated_url = "https://freelance.levtech.jp/project/detail/4"
+    first_occurrence = row(site: "レバテックフリーランス", url: duplicated_url, application_status: "OLD_L_1")
+    second_occurrence = row(site: "レバテックフリーランス", url: duplicated_url, application_status: "OLD_L_2")
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: [first_occurrence, second_occurrence], new_rows: [],
+      succeeded_sites: ["レバテックフリーランス"], today: TODAY,
+      closed_urls: [duplicated_url]
+    )
+
+    assert_equal 0, result.rows.size, "同じURLの既存行が複数あっても、募集終了なら全件削除されるはず"
+    assert_equal 2, result.removed, "重複していた2行分がremovedに計上されるはず"
+  end
+
+  # 表記ゆれ（末尾スラッシュの有無）で重複している既存行でも、normalize_url照合で両方消えることを確認する。
+  def test_closed_urls_removes_all_occurrences_even_with_url_normalization_differences_between_duplicates
+    first_occurrence = row(site: "レバテックフリーランス",
+                            url: "https://freelance.levtech.jp/project/detail/5", application_status: "OLD_L_1")
+    second_occurrence = row(site: "レバテックフリーランス",
+                             url: "https://freelance.levtech.jp/project/detail/5/", application_status: "OLD_L_2")
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: [first_occurrence, second_occurrence], new_rows: [],
+      succeeded_sites: ["レバテックフリーランス"], today: TODAY,
+      closed_urls: ["https://freelance.levtech.jp/project/detail/5"]
+    )
+
+    assert_equal 0, result.rows.size, "URL表記が末尾スラッシュ違いで重複していても両方削除されるはず"
+    assert_equal 2, result.removed
+  end
+
+  # === AC-03: 行モデルに「追加日」列(index 15)を足して16列にする ===
+
+  def test_column_count_is_16
+    assert_equal 16, FreelanceJobs::SheetMerger::COLUMN_COUNT
+  end
+
+  # 旧レイアウト（追加日列がまだ無い14列の行）を読んだ場合も、normalize_rowが16列に揃える想定。
+  def test_normalize_row_pads_a_row_shorter_than_16_columns_with_empty_strings
+    short_row = row(url: "https://crowdworks.jp/public/jobs/short")[0, 14]
+
+    normalized = FreelanceJobs::SheetMerger.normalize_row(short_row)
+
+    assert_equal 16, normalized.size
+    assert_equal "", normalized[14], "取得日時が無い分は空文字で埋める"
+    assert_equal "", normalized[15], "追加日が無い分は空文字で埋める"
+  end
+
+  def test_normalize_row_keeps_16_column_rows_unchanged
+    full_row = row(url: "https://crowdworks.jp/public/jobs/full", added_on: "2026-09-01")
+
+    normalized = FreelanceJobs::SheetMerger.normalize_row(full_row)
+
+    assert_equal full_row, normalized
+  end
+
+  # 追加日(index15)はAUTO_UPDATE_COLUMN_INDEXESに含めない（既存行の追加日を保持する）。
+  def test_auto_update_column_indexes_excludes_added_on_column
+    refute_includes FreelanceJobs::SheetMerger::AUTO_UPDATE_COLUMN_INDEXES, 15
+  end
+
+  def test_matched_existing_row_keeps_its_own_added_on_value_instead_of_the_new_rows_value
+    existing = row(url: "https://crowdworks.jp/public/jobs/added-on-1", added_on: "2026-01-01")
+    new_row = row(url: "https://crowdworks.jp/public/jobs/added-on-1", added_on: "2026-09-04")
+
+    result = FreelanceJobs::SheetMerger.merge(existing_rows: [existing], new_rows: [new_row],
+                                               succeeded_sites: ["CrowdWorks"], today: TODAY)
+
+    assert_equal "2026-01-01", result.rows.first[15],
+                 "追加日(P列)は既存行の値を保持し、新規行の値で上書きしないはず"
+  end
+
+  # === AC-05: 1回の実行で保持する上限をトータル500行まで引き上げる（MAX_NEW_ROWS_PER_RUNは80のまま） ===
+
+  def test_max_total_rows_is_500
+    assert_equal 500, FreelanceJobs::SheetMerger::MAX_TOTAL_ROWS
+  end
+
+  def test_max_new_rows_per_run_remains_80
+    assert_equal 80, FreelanceJobs::SheetMerger::MAX_NEW_ROWS_PER_RUN
+  end
+
+  # === AC-10: PE-BANKのURLリンク切れ修正。URL表記(F列)も自動更新対象に含める ===
+
+  def test_auto_update_column_indexes_includes_url_column
+    assert_includes FreelanceJobs::SheetMerger::AUTO_UPDATE_COLUMN_INDEXES, FreelanceJobs::SheetMerger::URL_COLUMN_INDEX
+  end
+
+  # 既存行のURL表記が末尾スラッシュ無し（301後に404になる壊れた実例）で、新規行が
+  # 末尾スラッシュ付き（正しいURL）のとき、両者はnormalize_urlで同一とみなされてマッチし、
+  # マージ後の表記は新規行（正しい方）で上書きされる想定。
+  def test_matched_existing_row_url_text_is_overwritten_by_new_rows_url_text
+    existing = row(url: "https://pe-bank.jp/project/csharp/54339-N08")
+    new_row = row(url: "https://pe-bank.jp/project/csharp/54339-N08/")
+
+    result = FreelanceJobs::SheetMerger.merge(existing_rows: [existing], new_rows: [new_row],
+                                               succeeded_sites: ["CrowdWorks"], today: TODAY)
+
+    assert_equal 1, result.updated
+    assert_equal "https://pe-bank.jp/project/csharp/54339-N08/", result.rows.first[5],
+                 "URL表記はAUTO_UPDATE対象になり、新規行の表記（末尾スラッシュ付き）で上書きされるはず"
   end
 end

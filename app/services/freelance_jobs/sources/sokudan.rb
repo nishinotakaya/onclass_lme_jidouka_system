@@ -7,35 +7,43 @@ require "date"
 module FreelanceJobs
   module Sources
     # SOKUDAN（企業と直接契約するマッチング型。週1〜2日・リモートの副業案件が中心）。
-    # Next.js Pages Router の SSR ページで、案件データは `script#__NEXT_DATA__`（type="application/json"）
-    # の JSON にのみ存在し、DOM にカード要素は描画されない（a[href*="/top/projects/<数字>"] は0件）。
-    # そのため一覧・詳細ともにHTMLパースはせず、Findy Freelance と同じく埋め込みJSONを読む。
+    # 一覧は JSON API（/api/v2/top/projects）を読む。ページングが効く（実測。SSRの
+    # `__NEXT_DATA__` はページングが効かなかったため、一覧はAPI・詳細はSSRの二本立てになっている）。
+    # 詳細ページは従来どおり Next.js Pages Router の SSR ページで、案件データは
+    # `script#__NEXT_DATA__`（type="application/json"）の JSON にのみ存在するため、
+    # Findy Freelance と同じく埋め込みJSONを読む（HTMLパースはしない）。
     #
-    # 取得の流れ（「埋め込みJSON（一覧）＋詳細ページJSON」型）:
-    #   1. スキル別一覧（/top/projects/required_skills/<slug>）と全体新着一覧（/top/projects）から
-    #      募集中かつ業務委託系の案件IDを集める（一覧には使用技術・本文が無い）
+    # 取得の流れ（「一覧API（ページング）＋詳細ページJSON」型）:
+    #   1. スキルidの組み合わせごとの一覧（/api/v2/top/projects?search_project[...][]=<id>&page=<n>）と
+    #      全体新着一覧（/api/v2/top/projects?page=1、ページングしない）から、募集中かつ業務委託系の
+    #      案件IDを集める（一覧には使用技術・本文が無い）
     #   2. createdAt 降順に並べ、上位 MAX_DETAIL_FETCHES 件だけ詳細（/top/projects/<id>）を取り、
     #      使用技術・本文・掲載日で一覧の結果を上書きする
     #
-    # HTML/JSON構造の前提（壊れたらここを疑う）:
-    #   - script#__NEXT_DATA__ は1ページに1個。中身はJSON全体（buildId・page・query等も含む）
-    #   - 一覧: props.pageProps.staticProjectSearchResult.projectList … 案件の配列（40件/頁）
-    #     各要素: id(Integer) / title / state("opened"|"closed") / contractType / createdAt /
-    #             minBudget.id・maxBudget.id（円の整数。label は "65万"）/ remoteType.label /
-    #             projectAvailableTime.label / minWorkingHoursLabel / prefecture.label /
-    #             tags[].label / professions[].label / corporation.name（未ログインでは "＊＊＊＊＊" にマスク）
-    #   - 詳細: props.pageProps.staticProject … 一覧要素と同じキーに加えて
-    #             detail(本文全文、改行は "\r\n") / requiredSkills[].label（name は常に空）/
-    #             applicationOpenAt / projectDetailStructuredData.jobPosting（JSON-LD。datePosted と
-    #             baseSalary.value.unitText "MONTH"|"HOUR" を使う。validThrough は無い）
-    #   - スキル別一覧のスラッグは props.pageProps.searchConditions.searchProgramLanguageList
-    #     .conditions[].baseUrl（例 "/top/projects/required_skills/ruby_on_rails"）から再導出できる
-    #   - 詳細URLは必ず /top/projects/<id>。`/projects/<id>` は /login へ 302 するので使わない
+    # 一覧APIの前提（壊れたらここを疑う）:
+    #   - GET /api/v2/top/projects。Cookie不要だが `x-requested-with: XMLHttpRequest` ヘッダが要る
+    #     （無いと通常のSSRページが返る）
+    #   - クエリ: `search_project[searchable_language_skill_ids][]=<id>` をスキルidの数だけ繰り返し、
+    #     末尾に `page=<n>`（1始まり）。スキル未指定なら全体新着（`?page=1` のみ、ページングしない）
+    #   - 応答本文はJSONそのもの（HTMLラッパーもscriptタグも無い）。`projectList` キーが案件の配列
+    #   - projectList は必ず opened → closed の順（createdAt降順ではない）。page=2以降はclosedのみになる
+    #     ことがあるので、そのページの生の projectList に state=="opened" が1件も無くなるまで、
+    #     最大3ページ読み進める（打ち切り判定は契約形態フィルタ後ではなく生のprojectListで行う。
+    #     詳しくは #skill_list_postings のコメントを参照）
+    #   - 案件1件のキーは詳細ページのstaticProjectと共通: id(Integer) / title /
+    #     state("opened"|"closed") / contractType / createdAt / minBudget.id・maxBudget.id
+    #     （円の整数。label は "65万"）/ remoteType.label / projectAvailableTime.label /
+    #     minWorkingHoursLabel / prefecture.label / tags[].label / professions[].label /
+    #     corporation.name（未ログインでは "＊＊＊＊＊" にマスク）
+    #   - スキルid: HTML=8 / CSS=1 / Ruby=3 / TypeScript=5 / React=15 / Ruby on Rails=19
     #
-    # ページングは使えない（実測）: `?search_project[searchable_language_skill_ids][]=N&page=2` は
-    # HTTP 200 だが SSR がクエリを無視し1ページ目と同一内容を返す。各一覧は「募集中（createdAt降順）→
-    # 募集終了」の並びで1ページ目40件に募集終了が混ざる＝募集中は全件1ページ目に収まるため、
-    # 1一覧=1リクエスト固定で page パラメータは使わない。
+    # 詳細ページ（SSR。据え置き）の前提:
+    #   - script#__NEXT_DATA__ は1ページに1個。中身はJSON全体（buildId・page・query等も含む）
+    #   - props.pageProps.staticProject … 一覧要素と同じキーに加えて
+    #     detail(本文全文、改行は "\r\n") / requiredSkills[].label（name は常に空）/
+    #     applicationOpenAt / projectDetailStructuredData.jobPosting（JSON-LD。datePosted と
+    #     baseSalary.value.unitText "MONTH"|"HOUR" を使う。validThrough は無い）
+    #   - 詳細URLは必ず /top/projects/<id>。`/projects/<id>` は /login へ 302 するので使わない
     #
     # 注意（Cloudflare）: 全応答が server: cloudflare。日本の家庭IPからは全件 HTTP 200 だったが、
     # 本番（Heroku の US データセンターIP）では bot 判定で弾かれる可能性がある。
@@ -47,21 +55,28 @@ module FreelanceJobs
       REQUEST_INTERVAL = 1.5
       BASE_URL = "https://sokudan.work"
       LIST_PATH = "/top/projects"
+      # 一覧JSON APIのパス（詳細ページのLIST_PATHとは別物）。
+      LIST_API_PATH = "/api/v2/top/projects"
+      # 一覧APIに必須のヘッダ。無いとSSRの通常ページが返り projectList が読めない。
+      LIST_REQUEST_HEADERS = { "x-requested-with" => "XMLHttpRequest" }.freeze
+      # スキル一覧1本あたりのページ送り上限（サイトへの配慮。全体新着はページングしないので対象外）。
+      MAX_LIST_PAGES_PER_TARGET = 3
 
-      # スキル別一覧のスラッグ。Ruby と ruby_on_rails は結果が一部重複するが、URLキーの重複除去で吸収される。
-      # nextjs スラッグは募集中0件（2026-09-13実測）のため入れていない。
+      # スキルidの組み合わせ。skill_ids は searchable_language_skill_ids のクエリに配列順で渡す
+      # （Ruby と Ruby on Rails は結果が一部重複するが、候補のURLキーによる重複除去で吸収される）。
+      # HTML/CSS は特定の技術カテゴリに寄らないため category_hint は nil にし、分類（EngineerClassifier）に任せる。
       DEFAULT_SEARCH_TARGETS = [
-        { skill_slug: "Ruby",          category_hint: "Ruby" },
-        { skill_slug: "ruby_on_rails", category_hint: "Ruby" },
-        { skill_slug: "TypeScript",    category_hint: "TypeScript" },
-        { skill_slug: "React",         category_hint: "React" }
+        { skill_ids: [3, 19], category_hint: "Ruby" },
+        { skill_ids: [5],     category_hint: "TypeScript" },
+        { skill_ids: [15],    category_hint: "React" },
+        { skill_ids: [8, 1],  category_hint: nil }
       ].freeze
 
       # 1回のバッチ実行でこの取得元が発行してよいHTTPリクエスト数の上限（サイトへの配慮）。
       REQUEST_BUDGET = 40
-      # 詳細ページを取る上限。一覧5本（スラッグ4＋全体新着1）＋詳細35 = 40 で予算に収まる。
-      # 2026-09-13実測ではスラッグ由来7件＋全体新着由来約18件で約30リクエスト。
-      MAX_DETAIL_FETCHES = 35
+      # 詳細ページを取る上限。一覧は最悪ケースでスキル4グループ×最大3ページ＋全体新着1本＝13本、
+      # 詳細27件で合計40（予算内）に収まる（detail_fetch_limit 参照）。
+      MAX_DETAIL_FETCHES = 27
       # 全体新着一覧（/top/projects）由来の候補は、createdAt がこの日数以内のものだけ詳細を取る。
       # スラッグ一覧は投稿者のスキルタグ依存で新着を取りこぼす（例: 「物流DX×TypeScript」が
       # required_skills/TypeScript に載らない）ため全体新着を併用するが、40件全部を毎日取り直すと
@@ -110,7 +125,9 @@ module FreelanceJobs
         postings
       end
 
-      # 通信なし（テスト用）。一覧1ページ分のHTML本文から、募集中かつ業務委託系の案件一覧を作る。
+      # 通信なし（テスト用）。一覧APIの応答本文（JSON）から、業務委託系の案件一覧を作る。
+      # ページの写しに徹する（募集終了(closed)も含めて返す。除外するかは呼び出し側 fetch の判断。
+      # Sources::CoconalaTech / Sources::Levtech と同じ流儀）。
       # 一覧には使用技術・本文が無いため skills は []、posted_on は createdAt になる。
       # todayは全取得元共通のインターフェースとして受け取るが、締切の概念が無いためここでは参照しない。
       def self.parse(body, today:, category_hint: nil)
@@ -138,14 +155,17 @@ module FreelanceJobs
         build_posting(project, category_hint)
       end
 
-      # 一覧JSONから案件配列を取り出す。script要素が無い・JSONが壊れている・期待キーが配列でない
-      # 場合は例外にせず空配列を返す（サイト構造が変わったときは「0件になる」形で表面化させ、
-      # バッチ全体を落とさない）。
+      # 一覧APIの応答本文（JSON）から案件配列を取り出す。JSONが壊れている・`projectList` キーが
+      # 無い・期待キーが配列でない場合は例外にせず空配列を返す（サイト構造が変わったときは
+      # 「0件になる」形で表面化させ、バッチ全体を落とさない）。
       def self.project_list(body)
-        project_list = dig_nested_hash(
-          next_data(body), "props", "pageProps", "staticProjectSearchResult", "projectList"
-        )
+        payload = JSON.parse(body)
+        return [] unless payload.is_a?(Hash)
+
+        project_list = payload["projectList"]
         project_list.is_a?(Array) ? project_list.select { |project| project.is_a?(Hash) } : []
+      rescue JSON::ParserError
+        []
       end
 
       def self.next_data(body)
@@ -170,9 +190,11 @@ module FreelanceJobs
         current_value
       end
 
-      # 募集中かつ業務委託系（正社員・契約社員は副業案件でないので除外）。
+      # 業務委託系（正社員・契約社員は副業案件でないので除外）。stateでの絞り込みはしない
+      # （一覧はページの写しに徹する。募集終了は application_status が CLOSED_STATUS になり、
+      # 上位の ResearchService が closed_urls として既存行の削除に使う）。
       def self.side_job_project?(project)
-        project["state"] == OPENED_STATE && SIDE_JOB_CONTRACT_TYPES.include?(project["contractType"])
+        SIDE_JOB_CONTRACT_TYPES.include?(project["contractType"])
       end
 
       # 一覧要素と詳細の staticProject は同じキー名で、詳細が一覧の上位集合になっている。
@@ -197,7 +219,7 @@ module FreelanceJobs
           category_hint: category_hint,
           reward: reward,
           work_format: work_format(reward, unit_suffix),
-          application_status: project["state"] == OPENED_STATE ? "募集中" : "募集終了",
+          application_status: project["state"] == OPENED_STATE ? "募集中" : FreelanceJobs::JobPosting::CLOSED_STATUS,
           deadline_text: "-", # 締切の概念が無いサイト（JSON-LD にも validThrough が無い）
           deadline_on: nil,
           skills: skills,
@@ -335,19 +357,19 @@ module FreelanceJobs
       private
 
       # 一覧を順に読み、URLキーで候補を集める（同一案件は最初に出た一覧の category_hint を保持。
-      # 並びは search_targets → 全体新着なので、スラッグ由来の hint が優先される）。
+      # 並びは search_targets → 全体新着なので、スキル一覧由来の hint が優先される）。
       # 全体新着一覧にしか無い案件は createdAt が直近 latest_lookback_days 日のものだけ採る。
       def collect_candidates(fetch_failures)
         candidates = {}
 
         @search_targets.each do |target|
-          list_postings(skill_list_url(target[:skill_slug]), target[:category_hint], fetch_failures).each do |posting|
+          skill_list_postings(target[:skill_ids], target[:category_hint], fetch_failures).each do |posting|
             candidates[posting.url] ||= posting
           end
         end
 
         if @include_latest_list
-          list_postings(latest_list_url, nil, fetch_failures).each do |posting|
+          latest_list_postings(fetch_failures).each do |posting|
             next if candidates.key?(posting.url) || !recently_created?(posting)
 
             candidates[posting.url] = posting
@@ -357,11 +379,37 @@ module FreelanceJobs
         candidates.values
       end
 
-      def list_postings(url, category_hint, fetch_failures)
-        body = fetch_body(url, fetch_failures, "この一覧をスキップします")
+      # スキル一覧はページ送りが効くので、1ページ目から最大 MAX_LIST_PAGES_PER_TARGET ページまで
+      # 読み進める。打ち切り判定は「そのページの生の projectList に state=="opened" が1件も無いか」
+      # で行う（契約形態フィルタ後の postings で判定すると、opened だが業務委託系でない案件
+      # （正社員等）しか無いページで postings が空になり、まだ次ページに opened が残っているのに
+      # 誤って打ち切ってしまうため）。
+      def skill_list_postings(skill_ids, category_hint, fetch_failures)
+        postings = []
+
+        (1..MAX_LIST_PAGES_PER_TARGET).each do |page_number|
+          body = fetch_list_body(skill_list_page_url(skill_ids, page_number), fetch_failures)
+          break if body.nil?
+
+          raw_project_list = self.class.project_list(body)
+          postings.concat(self.class.parse(body, today: @today, category_hint: category_hint))
+          break unless raw_project_list.any? { |project| project["state"] == OPENED_STATE }
+        end
+
+        postings
+      end
+
+      # 全体新着一覧はページングしない（1ページ目のみ）。
+      def latest_list_postings(fetch_failures)
+        body = fetch_list_body(latest_list_page_url, fetch_failures)
         return [] if body.nil?
 
-        self.class.parse(body, today: @today, category_hint: category_hint)
+        self.class.parse(body, today: @today, category_hint: nil)
+      end
+
+      # 一覧APIの取得。x-requested-with ヘッダを付けないとSSRの通常ページが返ってしまう。
+      def fetch_list_body(url, fetch_failures)
+        fetch_body(url, fetch_failures, "この一覧をスキップします", headers: LIST_REQUEST_HEADERS)
       end
 
       # 一覧の posted_on は createdAt 由来。日付が読めない案件は新着かどうか判断できないので採らない。
@@ -389,9 +437,10 @@ module FreelanceJobs
         end
       end
 
-      # 詳細に使えるリクエスト数。一覧の本数を差し引いて REQUEST_BUDGET を超えないようにする。
+      # 詳細に使えるリクエスト数。一覧の本数（最悪ケース＝全ページ opened が続いた場合）を
+      # 差し引いて REQUEST_BUDGET を超えないようにする。
       def detail_fetch_limit
-        list_request_count = @search_targets.size + (@include_latest_list ? 1 : 0)
+        list_request_count = @search_targets.size * MAX_LIST_PAGES_PER_TARGET + (@include_latest_list ? 1 : 0)
         [@max_detail_fetches, REQUEST_BUDGET - list_request_count].min.clamp(0..)
       end
 
@@ -406,8 +455,9 @@ module FreelanceJobs
       # 1回だけ取り直しても失敗したURLは、失敗を記録して nil を返す（その単位だけ打ち切る）。
       # rescueの範囲が@fetcher.getの1回だけなので、StandardErrorで受けてもパース側のバグは覆い隠さない
       # （HTTPエラーのFetchErrorだけでなく、通信層のタイムアウト・切断も同じ扱いにしたいため広く受ける）。
-      def fetch_body(url, fetch_failures, skip_message)
-        get_with_single_retry(url)
+      # headersは一覧APIのみ渡す（詳細ページ取得は従来どおりヘッダなし）。
+      def fetch_body(url, fetch_failures, skip_message, headers: {})
+        get_with_single_retry(url, headers)
       rescue FreelanceJobs::AccessBlockedError
         raise
       rescue StandardError => error
@@ -419,21 +469,24 @@ module FreelanceJobs
       # 散発的な失敗は1回だけ取り直す。HttpFetcherが2回目以降のリクエスト前に
       # REQUEST_INTERVAL秒 sleep するため、ここで追加のsleepは要らない。
       # WAFのアクセス制限は取り直しても解消しないので、AccessBlockedErrorはそのまま送出する。
-      def get_with_single_retry(url)
-        @fetcher.get(url)
+      def get_with_single_retry(url, headers)
+        @fetcher.get(url, headers: headers)
       rescue FreelanceJobs::AccessBlockedError
         raise
       rescue StandardError => error
         FreelanceJobs.logger.warn("[FreelanceJobs::Sources::Sokudan] #{error.message} 1回だけ再取得します")
-        @fetcher.get(url)
+        @fetcher.get(url, headers: headers)
       end
 
-      def skill_list_url(skill_slug)
-        "#{BASE_URL}#{LIST_PATH}/required_skills/#{skill_slug}"
+      # スキル一覧APIのURL。searchable_language_skill_ids を skill_ids の配列順に繰り返し、末尾に page を付ける。
+      def skill_list_page_url(skill_ids, page_number)
+        query = skill_ids.map { |skill_id| "search_project[searchable_language_skill_ids][]=#{skill_id}" }.join("&")
+        "#{BASE_URL}#{LIST_API_PATH}?#{query}&page=#{page_number}"
       end
 
-      def latest_list_url
-        "#{BASE_URL}#{LIST_PATH}"
+      # 全体新着一覧APIのURL（スキル指定なし）。
+      def latest_list_page_url(page_number = 1)
+        "#{BASE_URL}#{LIST_API_PATH}?page=#{page_number}"
       end
     end
   end
