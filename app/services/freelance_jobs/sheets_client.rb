@@ -134,6 +134,13 @@ module FreelanceJobs
       "_backup_gid#{@sheet_gid}"
     end
 
+    # read_rowsで読み取ったチェック状態のうち、チェック済み(true)のURLだけを返す。
+    # SheetMerger.mergeへprotected_urls:として渡し、容量都合の退避対象から外すために使う。
+    # read_rows未実行の間は@checkbox_states_by_urlが空のまま（initializeを参照）なので[]を返す。
+    def checked_urls
+      @checkbox_states_by_url.select { |_url, checked| checked }.keys
+    end
+
     private
 
     # チェックボックス列を持つシートでは、本体の列が1つ右にずれる。

@@ -30,12 +30,13 @@ module FreelanceJobs
     # 1回の実行で追加する新規行の合計上限（ラウンド2 C3）。サイト別の保証枠・品質枠への配分は
     # select_new_rowsで行う（AC-21）。超過分は今回は見送り、次回以降の実行で再度候補になれば追加され得る。
     MAX_NEW_ROWS_PER_RUN = 80
-    # AC-21: 1サイトが持てる合計行数のソフト上限。新規行の受け入れ判定にだけ使う
-    # （既存行はこの上限では落とさない。落とすと手入力で保持している情報が消えてしまうため）。
+    # AC-21: 1サイトが持てる合計行数のソフト上限。新規行の受け入れ判定に使うほか、
+    # この上限を超えているサイトの既存行に限り、他サイトの保証枠(NEW_ROWS_FLOOR_PER_SITE)を
+    # 満たすのに予算が足りないとき、不足分だけ退避（evict）する対象にもなる
+    # （evict_overflow_rows_for_guaranteed_floorを参照。チェック済み行(protected_urls)は退避しない）。
     # 稼働サイトは約27で500÷27≒18なので、40は「1サイトがシートを埋め尽くさない」ための
-    # 余裕を持たせたソフト上限。レバテック91件のような既存の偏りは60日ルール・募集終了判定で
-    # 自然に減っていく想定なので、既存行側で強制的に削る必要はない。
-    # （稼働サイト数・レバテックの件数は2026-09時点の参考値。増減した場合は見直しを検討する）
+    # 余裕を持たせたソフト上限。
+    # （稼働サイト数は2026-09時点の参考値。増減した場合は見直しを検討する）
     MAX_ROWS_PER_SITE = 40
     # AC-21: 1回の実行で各サイトに保証する新規行数。🌟の少ないサイトでも毎回この件数だけは
     # 必ずシートに載るようにし、🌟の多い1〜2サイトがMAX_NEW_ROWS_PER_RUNの枠を独占して
@@ -44,7 +45,7 @@ module FreelanceJobs
     REMOVE_UNKNOWN_DEADLINE_AFTER_DAYS = 60
     FAR_FUTURE_SENTINEL = Date.new(9999, 12, 31)
 
-    Result = Struct.new(:rows, :added, :updated, :removed, :total, keyword_init: true)
+    Result = Struct.new(:rows, :added, :updated, :removed, :evicted, :total, keyword_init: true)
 
     # succeeded_sites: 今回取得に成功したサイト表示名の配列。
     # excluded_sites: 環境変数等で取得対象外にしたサイト表示名の配列（新規行は来ない）。
@@ -53,12 +54,18 @@ module FreelanceJobs
     # 取得日時（O列）はRowBuilderが構築時点で書き込み済みのため、ここでは受け取らない。
     # closed_urls: 今回募集終了と判明したURLの集合（省略時は[]で現行の挙動を変えない）。
     # 該当する既存行は更新も期限切れ削除も待たず最優先で削除し、新規行としても追加しない。
+    # protected_urls: チェックボックスがチェック済みのURLの集合（省略時は[]）。
+    # 容量都合の退避(evict_overflow_rows_for_guaranteed_floor)の対象から外す（利用者が確認中の
+    # 案件を、保証枠の都合で勝手にシートから消してしまわないため）。
     def self.merge(existing_rows:, new_rows:, succeeded_sites:, today:, excluded_sites: [], category_order: CATEGORY_ORDER,
-                    closed_urls: [])
+                    closed_urls: [], protected_urls: [])
       normalized_existing_rows = existing_rows.map { |row| normalize_row(row) }
       deduped_new_rows = dedupe_by_url(new_rows)
       new_rows_by_url = index_by_url(deduped_new_rows)
       normalized_closed_urls = closed_urls.each_with_object({}) do |url, memo|
+        memo[FreelanceJobs::JobPosting.normalize_url(url)] = true
+      end
+      normalized_protected_urls = protected_urls.each_with_object({}) do |url, memo|
         memo[FreelanceJobs::JobPosting.normalize_url(url)] = true
       end
 
@@ -116,6 +123,13 @@ module FreelanceJobs
         url = FreelanceJobs::JobPosting.normalize_url(row[URL_COLUMN_INDEX])
         existing_url_seen[url] || normalized_closed_urls[url]
       end
+
+      # 40超サイトが保証枠の予算を食い潰している場合に限り、不足分だけ既存行を退避する
+      # （evictedはremovedと別集計。期限切れ・募集終了ではなく容量都合の入れ替えのため）。
+      surviving_existing_rows, evicted_rows = evict_overflow_rows_for_guaranteed_floor(
+        surviving_existing_rows, brand_new_rows_all, normalized_protected_urls
+      )
+
       brand_new_rows = select_new_rows(brand_new_rows_all, surviving_existing_rows)
       brand_new_object_ids = brand_new_rows.each_with_object({}) { |row, memo| memo[row.object_id] = true }
 
@@ -127,7 +141,7 @@ module FreelanceJobs
       added = ordered_rows.count { |row| brand_new_object_ids[row.object_id] }
 
       Result.new(rows: renumbered_rows, added: added, updated: updated, removed: removed,
-                 total: renumbered_rows.size)
+                 evicted: evicted_rows.size, total: renumbered_rows.size)
     end
 
     def self.normalize_row(row)
@@ -250,8 +264,11 @@ module FreelanceJobs
     # 既存行の多いサイトを先に処理すると、予算が保証枠の途中で尽きたときに後回しのサイトが
     # また0件になってしまう。
     # なぜMAX_ROWS_PER_SITE(40)は新規行にだけ効くのか: 既存行を上限で機械的に落とすと、
-    # 手入力で保持している情報（🌟評価・分類・案件名など）が消えてしまうため。
-    # 500行上限（MAX_TOTAL_ROWS）は予算計算（budget）だけで担保し、既存行は一切落とさない。
+    # 手入力で保持している情報（🌟評価・分類・案件名など）が消えてしまうため。ただし
+    # 40を超えているサイトに限っては、保証枠の予算が足りないときだけ不足分をevict_overflow_
+    # rows_for_guaranteed_floorで先に退避しており（本メソッドが呼ばれる時点で退避は完了済み）、
+    # ここではその後の生存数を前提に受け入れ可能数を計算するだけでよい。
+    # 500行上限（MAX_TOTAL_ROWS）は予算計算（budget）だけで担保する。
     def self.select_new_rows(brand_new_rows_all, surviving_existing_rows)
       budget = new_row_budget(surviving_existing_rows.size)
       return [] if budget <= 0
@@ -273,14 +290,87 @@ module FreelanceJobs
     end
 
     # AC-21: 1回の実行で追加できる新規行数の上限。全体上限(MAX_TOTAL_ROWS)からはみ出さないよう
-    # 生存既存行数を差し引く（既存行だけで500件を超えている場合は負になり、新規行は0件になる。
-    # 既存行は絶対に落とさない方針のため）。
+    # 生存既存行数を差し引く（既存行だけで500件を超えている場合は負になり、新規行は0件になる）。
+    # evict_overflow_rows_for_guaranteed_floorで既存行が退避された後に呼ばれる場合は、
+    # その分だけ生存既存行数が減っているため、退避で確保した枠がそのまま予算に反映される。
     def self.new_row_budget(surviving_existing_row_count)
       [MAX_NEW_ROWS_PER_RUN, MAX_TOTAL_ROWS - surviving_existing_row_count].min
     end
 
     def self.count_rows_by_site(rows)
       rows.each_with_object(Hash.new(0)) { |row, memo| memo[row[SITE_COLUMN_INDEX]] += 1 }
+    end
+
+    # 40超サイトの既存行のうち、他サイトの保証枠(NEW_ROWS_FLOOR_PER_SITE)を満たす予算が
+    # 足りない分だけを退避する。「既存行は絶対に落とさない」方針を緩め、40超サイトの行に
+    # 限って「保証枠の不足分だけ」退避することで、🌟評価の高いサイトが40行を大幅に超えて
+    # シートを埋め尽くし、新しく追加したサイトが1行も載らない状態を防ぐ。
+    # チェック済み行(protected_urls)は退避対象にしない。
+    #
+    # 退避後もそのサイトはMAX_ROWS_PER_SITE(40)以上のままなので、group_new_candidates_
+    # within_site_capacity上の受け入れ可能数は0のまま変わらない。したがって、この実行で
+    # 退避したサイトの新規行が同じ実行で入ることはない（次回以降の実行で改めて候補になる）。
+    def self.evict_overflow_rows_for_guaranteed_floor(surviving_existing_rows, brand_new_rows_all, normalized_protected_urls)
+      budget = new_row_budget(surviving_existing_rows.size)
+      new_row_object_ids = brand_new_rows_all.each_with_object({}) { |row, memo| memo[row.object_id] = true }
+      surviving_existing_count_by_site = count_rows_by_site(surviving_existing_rows)
+      candidate_rows_by_site = group_new_candidates_within_site_capacity(
+        brand_new_rows_all, new_row_object_ids, surviving_existing_count_by_site
+      )
+      guaranteed_floor_demand = candidate_rows_by_site.values.sum do |candidate_rows|
+        [NEW_ROWS_FLOOR_PER_SITE, candidate_rows.size].min
+      end
+
+      shortfall = guaranteed_floor_demand - budget
+      return [surviving_existing_rows, []] if shortfall <= 0
+
+      # 退避する行の優先度判定（row_priority_key）を、退避前の元の並び順に固定する
+      # （退避が進むにつれてremaining_rowsの並びが変わっても、判定基準がブレないようにするため）。
+      existing_original_index = surviving_existing_rows.each_with_index.each_with_object({}) do |(row, index), memo|
+        memo[row.object_id] = index
+      end
+
+      remaining_rows = surviving_existing_rows.dup
+      evicted_rows = []
+
+      shortfall.times do
+        row_to_evict = pick_row_to_evict_for_overflow(remaining_rows, normalized_protected_urls, existing_original_index)
+        break unless row_to_evict # 退避できる行が尽きたら、shortfallが残っていても打ち切る
+
+        remaining_rows.delete_at(remaining_rows.index { |row| row.equal?(row_to_evict) })
+        evicted_rows << row_to_evict
+      end
+
+      [remaining_rows, evicted_rows]
+    end
+
+    # 現在の超過幅（生存数-MAX_ROWS_PER_SITE）が最大のサイト（同点はサイト名の文字列昇順）から、
+    # そのサイト内で最も優先度の低い（＝チェックされておらず、退避しても惜しくない）行を1件選ぶ。
+    # 退避可能な行が1件も残っていないサイトは、超過していても選ばない
+    # （チェック済み行だけが残っている場合はそのサイトを諦め、他サイトを探す）。
+    def self.pick_row_to_evict_for_overflow(remaining_rows, normalized_protected_urls, existing_original_index)
+      rows_by_site = remaining_rows.group_by { |row| row[SITE_COLUMN_INDEX] }
+      overflow_by_site = rows_by_site.each_with_object({}) do |(site_name, rows_of_site), memo|
+        overflow = rows_of_site.size - MAX_ROWS_PER_SITE
+        memo[site_name] = overflow if overflow.positive?
+      end
+
+      evictable_site_names = overflow_by_site.keys.select do |site_name|
+        evictable_rows_of_site(rows_by_site[site_name], normalized_protected_urls).any?
+      end
+      return nil if evictable_site_names.empty?
+
+      target_site_name = evictable_site_names.sort_by { |site_name| [-overflow_by_site[site_name], site_name] }.first
+      candidate_rows = evictable_rows_of_site(rows_by_site[target_site_name], normalized_protected_urls)
+      candidate_rows.max_by { |row| row_priority_key(row, {}, existing_original_index) }
+    end
+
+    # protected_urls(チェック済みURL)を除いた、退避してよい行だけを返す。
+    def self.evictable_rows_of_site(rows_of_site, normalized_protected_urls)
+      (rows_of_site || []).reject do |row|
+        url = FreelanceJobs::JobPosting.normalize_url(row[URL_COLUMN_INDEX])
+        normalized_protected_urls[url]
+      end
     end
 
     # AC-22: サイトごとに新規候補をrow_priority_key昇順（優先度が高い順）に並べ、

@@ -818,6 +818,26 @@ class FreelanceJobsSheetsClientTest < Minitest::Test
     assert_equal "2026-09-10", rows.first[15], "既存の追加日の値をそのまま行モデルに差し戻す想定"
   end
 
+  # --- checked_urls（チェック済みURLだけをprotected_urls用に返す） ---
+
+  def test_checked_urls_returns_only_urls_whose_checkbox_state_is_true
+    client_instance = FreelanceJobs::SheetsClient.allocate
+    client_instance.instance_variable_set(:@checkbox_states_by_url, {
+      "https://example.com/checked-1" => true,
+      "https://example.com/unchecked" => false,
+      "https://example.com/checked-2" => true
+    })
+
+    assert_equal ["https://example.com/checked-1", "https://example.com/checked-2"], client_instance.checked_urls
+  end
+
+  def test_checked_urls_is_empty_before_read_rows_is_called
+    client_instance = FreelanceJobs::SheetsClient.allocate
+    client_instance.instance_variable_set(:@checkbox_states_by_url, {})
+
+    assert_equal [], client_instance.checked_urls
+  end
+
   # --- backup_sheet_name（gidごとに一意。@serviceに依存しない純粋メソッド） ---
 
   def test_backup_sheet_name_includes_gid_for_beginner_sheet

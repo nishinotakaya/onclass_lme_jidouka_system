@@ -106,7 +106,10 @@ module FreelanceJobs
         excluded_sites: @excluded_sites,
         category_order: @profile.category_order,
         today: @today,
-        closed_urls: closed_urls
+        closed_urls: closed_urls,
+        # チェック済み(確認中)の案件を、容量都合の退避(evict_overflow_rows_for_guaranteed_floor)の
+        # 対象から外す。read_rowsの後なので@checkbox_states_by_urlは揃っている。
+        protected_urls: sheets_client.checked_urls
       )
 
       starred_row_indexes = merge_result.rows.each_index.select { |index| merge_result.rows[index][0].to_s.include?("🌟") }
@@ -135,6 +138,7 @@ module FreelanceJobs
         added: merge_result.added,
         updated: merge_result.updated,
         removed: merge_result.removed,
+        evicted: merge_result.evicted,
         total: merge_result.total,
         failures: failures,
         succeeded_sites: succeeded_sites,
@@ -244,11 +248,13 @@ module FreelanceJobs
       parts.join("｜")
     end
 
-    # 増減があるときだけ " +3 −1" のように付ける（0のときは何も出さない）。
+    # 増減・入替があるときだけ " +3 −1 入替2" のように付ける（0のときは何も出さない）。
+    # 入替(evicted)は容量都合の退避件数で、+/−の後ろに付ける。
     def row_difference_text(merge_result)
       difference = []
       difference << "+#{merge_result.added}" if merge_result.added.positive?
       difference << "−#{merge_result.removed}" if merge_result.removed.positive?
+      difference << "入替#{merge_result.evicted}" if merge_result.evicted.positive?
       difference.empty? ? "" : " #{difference.join(" ")}"
     end
 
@@ -264,6 +270,7 @@ module FreelanceJobs
         added: 0,
         updated: 0,
         removed: 0,
+        evicted: 0,
         total: 0,
         failures: failures,
         succeeded_sites: succeeded_sites,

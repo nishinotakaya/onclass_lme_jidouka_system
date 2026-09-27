@@ -47,8 +47,10 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
   class FakeSheetsClient
     attr_reader :replace_sheet_calls, :read_rows_calls
 
-    def initialize(existing_values:)
+    # checked_urls: SheetMerger.mergeへprotected_urls:として渡される値をテストから注入するため。
+    def initialize(existing_values:, checked_urls: [])
       @existing_values = existing_values
+      @checked_urls = checked_urls
       @replace_sheet_calls = []
       @read_rows_calls = []
     end
@@ -56,6 +58,10 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     def read_rows(max_row_count: 2000)
       @read_rows_calls << max_row_count
       @existing_values
+    end
+
+    def checked_urls
+      @checked_urls
     end
 
     def replace_sheet(**kwargs)
@@ -554,6 +560,72 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     new_today_row_indexes = sheets_client.replace_sheet_calls.first[:new_today_row_indexes]
     assert_equal [new_today_row_index], new_today_row_indexes
     refute_includes new_today_row_indexes, existing_row_index
+  end
+
+  # === 容量都合の退避（evicted）をsummary・バナーへ反映する ===
+
+  def build_evict_test_existing_row(site:, url:)
+    row = Array.new(16, "")
+    row[2] = "テスト分類"
+    row[3] = "既存の案件名(手入力保持)"
+    row[4] = site
+    row[5] = url
+    row
+  end
+
+  # OverflowSite(460件)がMAX_ROWS_PER_SITE(40)を大幅に超えており、予算が0のため、
+  # NewSiteの保証枠3件を確保するにはOverflowSiteから3件退避する必要がある構成。
+  def test_call_evicts_overflow_site_rows_and_reports_evicted_in_summary_and_banner
+    overflow_site_rows = Array.new(460) { |index| build_evict_test_existing_row(site: "OverflowSite", url: "https://example.com/OverflowSite/existing-#{index}") }
+    filler_site_rows = Array.new(40) { |index| build_evict_test_existing_row(site: "FillerSite", url: "https://example.com/FillerSite/existing-#{index}") }
+    new_postings = Array.new(5) do |index|
+      build_job_posting(site: "NewSite", url: "https://example.com/NewSite/new-#{index}", title: "新規案件#{index}")
+    end
+    classifier = RecordingClassifier.new
+    profile = build_test_profile(
+      source_specs: [[FixedPostingsSource, { postings: new_postings }]],
+      classifier: classifier
+    )
+    sheets_client = FakeSheetsClient.new(
+      existing_values: [FreelanceJobs::RowBuilder::HEADER] + overflow_site_rows + filler_site_rows
+    )
+
+    service = FreelanceJobs::ResearchService.new(profile: profile, run_window_label: "テスト実行",
+                                                  fetcher: nil, sheets_client: sheets_client, now: NOW)
+    summary = service.call
+
+    refute summary[:aborted]
+    assert_equal 3, summary[:evicted], "OverflowSiteから保証枠の不足分(3件)だけ退避されるはず"
+    assert_equal 3, summary[:added]
+
+    banner_text = sheets_client.replace_sheet_calls.first[:banner_text]
+    assert_includes banner_text, "入替3", "容量都合の退避件数がバナーに入替Nとして表示されるはず"
+  end
+
+  def test_call_success_path_summary_includes_zero_evicted_when_no_eviction_happens
+    fetcher = RoutingFakeFetcher.new(routes: real_fixture_routes)
+    sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
+
+    service = FreelanceJobs::ResearchService.new(profile: FreelanceJobs::Profile::BEGINNER,
+                                                  run_window_label: "毎朝 06:00〜06:30（日本時間）",
+                                                  fetcher: fetcher, sheets_client: sheets_client, now: NOW)
+    summary = service.call
+
+    refute summary[:aborted]
+    assert_equal 0, summary[:evicted]
+    refute_includes sheets_client.replace_sheet_calls.first[:banner_text], "入替", "退避が無いときはバナーに入替を出さない想定"
+  end
+
+  def test_call_aborted_summary_includes_zero_evicted
+    sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
+    service = FreelanceJobs::ResearchService.new(profile: FreelanceJobs::Profile::BEGINNER,
+                                                  run_window_label: "毎朝 06:00〜06:30（日本時間）",
+                                                  fetcher: AlwaysFailingFetcher.new, sheets_client: sheets_client, now: NOW)
+
+    summary = service.call
+
+    assert summary[:aborted]
+    assert_equal 0, summary[:evicted]
   end
 
   # === AC-13: ClosureVerifierをResearchServiceへ組み込む（エンジニアファクトリー由来）===
