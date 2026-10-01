@@ -14,7 +14,8 @@ else
   require "#{root}/services/freelance_jobs"
   # 取得元(sources/**)はJobPostingに依存するため、先に共通基盤を読む。
   %w[
-    http_fetcher job_posting classifier row_builder sheet_merger sheets_client
+    http_fetcher job_posting classifier row_builder sheets_service_factory sheet_merger
+    site_list_counts site_list_sheet sheets_client
   ].each { |name| require "#{root}/services/freelance_jobs/#{name}" }
 
   # 取得元は1ファイル1サイトで互いに依存しないため、ファイル名順にまとめて読む

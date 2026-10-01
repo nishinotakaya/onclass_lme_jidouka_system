@@ -213,6 +213,17 @@ class FreelanceJobsProfileTest < Minitest::Test
     assert(techcareer_index < crowdworks_index, "Midworks・テクフリはクラウドソーシング群(Crowdworks)より前に置くはず")
   end
 
+  # --- AC-05: 案件数を書き戻す「サイト一覧」タブのgid ---
+
+  def test_engineer_definition_has_site_list_sheet_gid
+    assert_equal 969_307_625, FreelanceJobs::Profile::ENGINEER.site_list_sheet_gid
+    assert_equal 969_307_625, FreelanceJobs::Profile.find("engineer").site_list_sheet_gid
+  end
+
+  def test_beginner_definition_has_no_site_list_sheet_gid
+    assert_nil FreelanceJobs::Profile::BEGINNER.site_list_sheet_gid
+  end
+
   # --- deep_freeze はコピーを作る（元の定数を破壊しない） ---
 
   def test_deep_freeze_does_not_freeze_the_original_row_builder_header_constant_object

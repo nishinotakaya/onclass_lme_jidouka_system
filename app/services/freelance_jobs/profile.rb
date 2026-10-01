@@ -8,7 +8,7 @@ module FreelanceJobs
   class Profile
     Definition = Struct.new(
       :key, :label, :sheet_gid, :header, :category_order, :classifier, :source_specs, :new_rows_require_star,
-      :checkbox_column, :hidden_level_marker,
+      :checkbox_column, :hidden_level_marker, :site_list_sheet_gid,
       keyword_init: true
     )
 
@@ -60,7 +60,9 @@ module FreelanceJobs
         ],
         new_rows_require_star: true,
         checkbox_column: false,
-        hidden_level_marker: nil
+        hidden_level_marker: nil,
+        # 未経験向けの「申込サイト一覧」には件数列が無い。
+        site_list_sheet_gid: nil
       )
     )
 
@@ -99,6 +101,8 @@ module FreelanceJobs
           # 公式ファセットを持ち、ITプロパートナーズは週2日〜の副業前提。
           [FreelanceJobs::Sources::Techdirect, {}],
           [FreelanceJobs::Sources::GeechsJob, {}],
+          # 一覧ページに募集終了の印が無く終了案件が載り続けるため、終了判定は詳細ページ
+          # （closed_detail?）で行う（エンジニアファクトリーと同じ理由）。
           [FreelanceJobs::Sources::Itpropartners, {}],
           # re:shine はログイン必須のエージェントで一次サイト群の一つだが、掲載スキルの幅が広く
           # ノイズになりやすいため、一次サイトの最後（クラウドソーシング群より前）に置く。
@@ -134,7 +138,9 @@ module FreelanceJobs
         # 既定のフィルターで畳むレベル表記（部分一致）。上級(★★★)まで並ぶと応募できる案件が
         # 埋もれるため、開いた直後は中級以下だけが見える状態にする。
         # フィルターを外せば上級も見られる（行は消していない）。
-        hidden_level_marker: "★★★"
+        hidden_level_marker: "★★★",
+        # 「エンジニア申込サイト一覧」タブ。A列の案件数をバッチが更新する。
+        site_list_sheet_gid: 969_307_625
       )
     )
 

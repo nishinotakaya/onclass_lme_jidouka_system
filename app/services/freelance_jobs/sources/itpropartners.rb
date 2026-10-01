@@ -6,7 +6,9 @@ require "date"
 module FreelanceJobs
   module Sources
     # ITプロパートナーズ: 技術スラッグ別の一覧ページ（article.itp-job-card のカード）をHTMLパースする。
-    # 完全SSRで一覧の情報だけで案件名・単価・スキル・求める経験が揃うため、詳細ページは取得しない。
+    # 完全SSRで一覧の情報だけで案件名・単価・スキル・求める経験が揃うため、一覧取得では詳細ページを見ない。
+    # ただし一覧には募集終了の印が出ず終了案件が載り続けるため、募集終了の判定（ClosureVerifier）
+    # のためだけに詳細ページを見る（closed_detail?）。
     #
     # 絞り込みの経路について（重要）:
     # robots.txt は `Disallow: /job*?*` でクエリ付きURLを一括禁止したうえで、
@@ -48,6 +50,11 @@ module FreelanceJobs
       TAG_SELECTOR = ".itp-job-card__tags .itp-job-card__tag"
       AGENT_COMMENT_SELECTOR = ".itp-job-card__agent-text"
       UPDATED_SELECTOR = ".itp-job-card__updated"
+
+      # 一覧カードには募集終了の印が無く、詳細ページだけで分かる。終了した詳細ページは応募ボタンが
+      # disabled になり「募集終了」と表示される（募集中は onclick="toRegister();" で disabled 無し）。
+      CLOSED_DETAIL_BUTTON_SELECTOR = "button.itp-job-detail__btn--apply[disabled]"
+      CLOSED_DETAIL_LABEL = "募集終了"
 
       # 「開発環境」欄はリンク付きの技術名（Ruby / Next.js 等）が並ぶため、これを skills に使う。
       SKILL_DETAIL_LABEL = "開発環境"
@@ -107,6 +114,13 @@ module FreelanceJobs
         end
 
         postings.values
+      end
+
+      # disabled な応募ボタンのいずれかにCLOSED_DETAIL_LABELを含めば募集終了と判定する。
+      # 通信なし（呼び出し側が詳細ページを取得し、本文をここへ渡す）。
+      def self.closed_detail?(body)
+        document = Nokogiri::HTML(body)
+        document.css(CLOSED_DETAIL_BUTTON_SELECTOR).any? { |button| button.text.include?(CLOSED_DETAIL_LABEL) }
       end
 
       # カード1件をJobPostingに組み立てる。案件タイトルの見出しがリンクの中に無いカードは

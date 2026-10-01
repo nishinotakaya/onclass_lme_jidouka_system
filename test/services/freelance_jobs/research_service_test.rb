@@ -422,12 +422,13 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     )
   end
 
-  def build_test_profile(source_specs:, classifier:)
+  def build_test_profile(source_specs:, classifier:, site_list_sheet_gid: nil)
     FreelanceJobs::Profile::Definition.new(
       key: "test_profile", label: "テスト", sheet_gid: 999_999,
       header: FreelanceJobs::RowBuilder::HEADER, category_order: ["テスト分類"],
       classifier: classifier, source_specs: source_specs,
-      new_rows_require_star: false, checkbox_column: false, hidden_level_marker: nil
+      new_rows_require_star: false, checkbox_column: false, hidden_level_marker: nil,
+      site_list_sheet_gid: site_list_sheet_gid
     )
   end
 
@@ -741,5 +742,115 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
                      "一覧取得が失敗したサイトの既存行は、詳細を確認すれば募集終了と判定されるものでも削除されないはず"
     refute_includes fetcher.requested_urls, ef_url,
                     "一覧取得が失敗したサイトは詳細確認の対象からも除外され、詳細URLへのリクエスト自体が発生しないはず"
+  end
+
+  # === AC-05: サイト一覧タブへの案件数書き戻し ===
+
+  # update の引数を記録するだけのFake。raise_error を渡すと update で例外を投げる。
+  class FakeSiteListSheet
+    attr_reader :update_calls
+
+    def initialize(raise_error: nil)
+      @raise_error = raise_error
+      @update_calls = []
+    end
+
+    def update(**kwargs)
+      @update_calls << kwargs
+      raise @raise_error if @raise_error
+
+      kwargs[:sheet_rows].size
+    end
+  end
+
+  # 一覧取得で必ず失敗するFakeソース（failed_sitesに入る）。
+  class AlwaysFailingSource
+    SITE_NAME = "失敗ソース"
+    REQUEST_INTERVAL = 0
+
+    def initialize(fetcher:, today:, **)
+    end
+
+    def fetch
+      raise FreelanceJobs::FetchError, "boom"
+    end
+  end
+
+  # 除外指定されるだけで一度も取得されないFakeソース。
+  class ExcludedTargetSource
+    SITE_NAME = "除外ソース"
+    REQUEST_INTERVAL = 0
+
+    def initialize(fetcher:, today:, **)
+    end
+
+    def fetch
+      []
+    end
+  end
+
+  def site_list_test_profile(site_list_sheet_gid:)
+    open_posting = build_job_posting(site: "テストソース", url: "https://example.com/jobs/site-list-1", title: "募集中案件")
+    build_test_profile(
+      source_specs: [
+        [FixedPostingsSource, { postings: [open_posting] }],
+        [AlwaysFailingSource, {}],
+        [ExcludedTargetSource, {}]
+      ],
+      classifier: RecordingClassifier.new,
+      site_list_sheet_gid: site_list_sheet_gid
+    )
+  end
+
+  def run_site_list_service(site_list_sheet_gid:, site_list_sheet:)
+    sheets_client = FakeSheetsClient.new(existing_values: header_only_existing_values)
+    service = FreelanceJobs::ResearchService.new(
+      profile: site_list_test_profile(site_list_sheet_gid: site_list_sheet_gid),
+      run_window_label: "テスト実行", fetcher: nil, sheets_client: sheets_client,
+      site_list_sheet: site_list_sheet, excluded_sites: ["除外ソース"], now: NOW
+    )
+    [service.call, sheets_client]
+  end
+
+  def test_call_updates_site_list_with_fetched_counts_failed_sites_excluded_sites_and_merged_rows
+    site_list_sheet = FakeSiteListSheet.new
+
+    summary, sheets_client = run_site_list_service(site_list_sheet_gid: 123, site_list_sheet: site_list_sheet)
+
+    refute summary[:aborted]
+    assert_equal 1, site_list_sheet.update_calls.size
+    update_call = site_list_sheet.update_calls.first
+    assert_equal({ "テストソース" => 1 }, update_call[:fetched_counts])
+    assert_equal ["失敗ソース"], update_call[:failed_sites]
+    assert_equal ["除外ソース"], update_call[:excluded_sites]
+    assert_equal sheets_client.replace_sheet_calls.first[:rows], update_call[:sheet_rows],
+                 "シートへ書いたマージ後の行をそのまま渡すはず"
+  end
+
+  def test_call_reports_site_list_updated_true_on_success
+    summary, = run_site_list_service(site_list_sheet_gid: 123, site_list_sheet: FakeSiteListSheet.new)
+
+    assert_equal true, summary[:site_list_updated]
+  end
+
+  def test_call_does_not_touch_site_list_when_profile_has_no_site_list_sheet_gid
+    site_list_sheet = FakeSiteListSheet.new
+
+    summary, = run_site_list_service(site_list_sheet_gid: nil, site_list_sheet: site_list_sheet)
+
+    assert_equal [], site_list_sheet.update_calls
+    assert summary.key?(:site_list_updated), "対象外でもキー自体は持つはず（値はnil）"
+    assert_nil summary[:site_list_updated]
+  end
+
+  def test_call_succeeds_with_site_list_updated_false_when_site_list_update_raises
+    site_list_sheet = FakeSiteListSheet.new(raise_error: FreelanceJobs::FetchError.new("tab missing"))
+
+    summary, sheets_client = run_site_list_service(site_list_sheet_gid: 123, site_list_sheet: site_list_sheet)
+
+    refute summary[:aborted], "サイト一覧の更新失敗でメインの結果を失敗にしない"
+    assert_equal false, summary[:site_list_updated]
+    assert_equal 1, sheets_client.replace_sheet_calls.size
+    assert_equal 1, site_list_sheet.update_calls.size
   end
 end

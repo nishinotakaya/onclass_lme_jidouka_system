@@ -322,4 +322,42 @@ class FreelanceJobsSourcesItpropartnersTest < Minitest::Test
 
     assert_match(/実務経験3年以上/, result.memo)
   end
+
+  # === closed_detail?（通信なし。詳細ページの応募ボタンから募集終了を判定する） ===
+  # 一覧ページには募集終了の印が出ないため、詳細ページの disabled な応募ボタンの
+  # テキストに「募集終了」を含むかどうかで判定する。
+
+  DETAIL_CLOSED_FIXTURE_NAME = "itpp_detail_closed.html"
+
+  def test_closed_detail_constants_are_pinned
+    assert_equal "button.itp-job-detail__btn--apply[disabled]", FreelanceJobs::Sources::Itpropartners::CLOSED_DETAIL_BUTTON_SELECTOR
+    assert_equal "募集終了", FreelanceJobs::Sources::Itpropartners::CLOSED_DETAIL_LABEL
+  end
+
+  def test_closed_detail_is_true_for_a_closed_detail_page
+    assert FreelanceJobs::Sources::Itpropartners.closed_detail?(read_fixture(DETAIL_CLOSED_FIXTURE_NAME)),
+           "disabledな応募ボタンに「募集終了」があればtrueのはず"
+  end
+
+  def test_closed_detail_is_false_for_a_listing_page
+    # 一覧ページ（応募ボタン自体が無い）でも通信なしで安全にfalseを返すことを確認する。
+    refute FreelanceJobs::Sources::Itpropartners.closed_detail?(read_fixture(FIXTURE_NAME))
+  end
+
+  def test_closed_detail_is_false_for_an_open_detail_page
+    fragment = <<~HTML
+      <button class="itp-job-detail__btn itp-job-detail__btn--apply" onclick="toRegister();"> 募集状況を聞く（無料） </button>
+    HTML
+
+    refute FreelanceJobs::Sources::Itpropartners.closed_detail?(wrap_html(fragment))
+  end
+
+  # セレクタ（disabled）だけで判定していないことを固定する。
+  def test_closed_detail_is_false_for_a_disabled_button_without_the_closed_label
+    fragment = <<~HTML
+      <button class="itp-job-detail__btn itp-job-detail__btn--apply" disabled> 準備中 </button>
+    HTML
+
+    refute FreelanceJobs::Sources::Itpropartners.closed_detail?(wrap_html(fragment))
+  end
 end

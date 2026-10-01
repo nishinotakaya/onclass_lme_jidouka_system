@@ -22,6 +22,7 @@ module FreelanceJobs
                     excluded_sites: self.class.excluded_sites_from_env,
                     fetcher: nil,
                     sheets_client: nil,
+                    site_list_sheet: nil,
                     now: Time.now.getlocal("+09:00"))
       @profile = profile
       @run_window_label = run_window_label
@@ -33,6 +34,7 @@ module FreelanceJobs
       @sources = @profile.source_specs.reject { |source_class, _options| @excluded_sites.include?(source_class::SITE_NAME) }
       @shared_fetcher = fetcher
       @sheets_client = sheets_client
+      @site_list_sheet = site_list_sheet
       @now = now
       @today = now.to_date
     end
@@ -128,6 +130,7 @@ module FreelanceJobs
         new_today_row_indexes: new_today_row_indexes,
         backup_values: raw_values
       )
+      site_list_updated = update_site_list(fetched_counts, failed_sites, merge_result.rows)
 
       {
         aborted: false,
@@ -145,7 +148,8 @@ module FreelanceJobs
         excluded_sites: @excluded_sites,
         profile: @profile.key,
         sheet_gid: @profile.sheet_gid,
-        backup_sheet: sheets_client.backup_sheet_name
+        backup_sheet: sheets_client.backup_sheet_name,
+        site_list_updated: site_list_updated
       }
     end
 
@@ -231,6 +235,24 @@ module FreelanceJobs
       @sheets_client ||= FreelanceJobs::SheetsClient.new(spreadsheet_id: @spreadsheet_id, sheet_gid: @profile.sheet_gid,
                                                           checkbox_column: @profile.checkbox_column,
                                                           hidden_level_marker: @profile.hidden_level_marker)
+    end
+
+    def site_list_sheet
+      @site_list_sheet ||= FreelanceJobs::SiteListSheet.new(spreadsheet_id: @spreadsheet_id,
+                                                             sheet_gid: @profile.site_list_sheet_gid)
+    end
+
+    # 申込サイト一覧タブの件数更新。付随処理なので失敗してもメインの結果は成功扱いにし、
+    # ログに残すだけにする。対象外（gid無し）は nil、成功は true、失敗は false を返す。
+    def update_site_list(fetched_counts, failed_sites, sheet_rows)
+      return nil if @profile.site_list_sheet_gid.nil?
+
+      site_list_sheet.update(fetched_counts: fetched_counts, sheet_rows: sheet_rows,
+                             failed_sites: failed_sites, excluded_sites: @excluded_sites)
+      true
+    rescue StandardError => error
+      FreelanceJobs.logger.warn("[FreelanceJobs::ResearchService] 申込サイト一覧の件数更新に失敗: #{error.class}: #{error.message}")
+      false
     end
 
     # バナーは一目で読み切れる長さに絞る。失敗の原因（HTTPステータス・URL）や実行間隔の但し書きは
