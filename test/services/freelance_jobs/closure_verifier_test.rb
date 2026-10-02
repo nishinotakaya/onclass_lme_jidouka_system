@@ -82,9 +82,9 @@ class FreelanceJobsClosureVerifierTest < Minitest::Test
     FreelanceJobs::ClosureVerifier.new(source_specs: source_specs, fetcher_factory: fetcher_factory, logger: logger)
   end
 
-  # --- 確認順序: 新規行(candidateのみ)が既存行(existing)より先に確認される ---
+  # --- 確認順序: 既存行(existing)が新規候補行(candidateのみ)より先に確認される ---
 
-  def test_new_candidate_rows_are_checked_before_existing_rows
+  def test_existing_rows_are_checked_before_new_candidate_rows
     site_name = DetailCheckableSource::SITE_NAME
     new_url = "https://example.com/jobs/new-1"
     matched_url = "https://example.com/jobs/matched-1"
@@ -98,8 +98,8 @@ class FreelanceJobsClosureVerifierTest < Minitest::Test
 
     verifier.call(candidate_rows: candidate_rows, existing_rows: existing_rows)
 
-    assert_equal [new_url, matched_url, existing_only_url], fetcher.requested_urls,
-                 "新規行(new_url)が最初に確認され、続けてexisting_rowsの並び順(matched_url→existing_only_url)で確認されるはず"
+    assert_equal [matched_url, existing_only_url, new_url], fetcher.requested_urls,
+                 "existing_rowsの並び順(matched_url→existing_only_url)で先に確認され、新規候補(new_url)は最後に確認されるはず"
   end
 
   # --- existing_rows側の同サイト行も確認される ---
@@ -183,6 +183,26 @@ class FreelanceJobsClosureVerifierTest < Minitest::Test
       logger.warnings.any? { |message| message.include?(site_name) && message.include?("上限(80)") && message.include?("1 件") },
       "上限超過の警告ログが出るはず: #{logger.warnings.inspect}"
     )
+  end
+
+  # --- 上限超過時でも既存行(シートに載っている行)が必ず先に確認される ---
+
+  def test_existing_rows_are_always_checked_first_even_when_new_candidates_exceed_the_limit
+    site_name = DetailCheckableSource::SITE_NAME
+    existing_urls = (1..3).map { |sequence_number| "https://example.com/jobs/existing-priority-#{sequence_number}" }
+    new_candidate_urls = (1..100).map { |sequence_number| "https://example.com/jobs/new-flood-#{sequence_number}" }
+
+    fetcher = ScriptedDetailFetcher.new
+    verifier = build_verifier(source_specs: [[DetailCheckableSource, {}]], fetcher_factory: ->(_source_class) { fetcher })
+
+    verifier.call(
+      candidate_rows: new_candidate_urls.map { |url| build_row(site_name, url) },
+      existing_rows: existing_urls.map { |url| build_row(site_name, url) }
+    )
+
+    assert_equal existing_urls, fetcher.requested_urls.first(3),
+                 "新規候補が上限を超えても、既存行3件が先頭で確認されるはず"
+    assert_equal 80, fetcher.requested_urls.size, "全体はMAX_CHECKS_PER_SITE(80)件で打ち切られるはず"
   end
 
   # --- AccessBlockedErrorが出たらそのサイトの確認を打ち切るが、既に閉鎖判定した分は戻り値に残る ---

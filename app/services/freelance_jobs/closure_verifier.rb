@@ -42,9 +42,10 @@ module FreelanceJobs
     end
 
     # 確認対象URL（行に入っている表記のまま）を、
-    # ①candidate_rowsのうちexisting_rowsに無い新規行→②existing_rowsの同サイト行、の順で並べる。
-    # 新規行を先にするのは、MAX_CHECKS_PER_SITEに当たっても、今日追加される行の確認が
-    # 必ず済むようにするため（既存行の再確認より新規行の確認を優先する）。
+    # ①existing_rowsの同サイト行→②candidate_rowsのうちexisting_rowsに無い新規候補行、の順で並べる。
+    # 既存行を先にするのは、今シートに載っていて利用者に見えている行ほど終了の見逃しの害が大きく、
+    # かつ件数が少ない（サイトあたり最大40行程度）のでMAX_CHECKS_PER_SITEの内に必ず収まるため。
+    # 新規候補が上限で未確認のまま追加されても、翌日の実行では既存行として先に確認されるので回収される。
     def target_urls_for(site_name, candidate_rows, existing_rows)
       candidate_urls = raw_urls_for_site(candidate_rows, site_name)
       existing_urls = raw_urls_for_site(existing_rows, site_name)
@@ -56,7 +57,7 @@ module FreelanceJobs
         existing_normalized_urls[FreelanceJobs::JobPosting.normalize_url(url)]
       end
 
-      dedupe_by_normalized_url(new_candidate_urls + existing_urls)
+      dedupe_by_normalized_url(existing_urls + new_candidate_urls)
     end
 
     # 対象サイトの行のURL列を、正規化後が空文字の行を除いて元の並び順のまま取り出す。
