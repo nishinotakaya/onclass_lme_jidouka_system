@@ -853,7 +853,7 @@ class FreelanceJobsSheetMergerTest < Minitest::Test
     assert_equal 3, FreelanceJobs::SheetMerger::NEW_ROWS_FLOOR_PER_SITE
   end
 
-  # === 容量都合の退避（evict_overflow_rows_for_guaranteed_floor） ===
+  # === 容量都合の退避（evict_rows_for_guaranteed_floor） ===
   # 40件超のサイトが保証枠の予算を食い潰しているとき、不足分だけ既存行を退避して
   # 新しく追加したサイトにも保証枠が確実に入るようにする。
 
@@ -909,8 +909,9 @@ class FreelanceJobsSheetMergerTest < Minitest::Test
     assert_equal 200, result.rows.count { |merged_row| merged_row[4] == "SiteA" }, "SiteAは40超だが予算が足りているので退避されない"
   end
 
-  # どのサイトもMAX_ROWS_PER_SITE(40)以下なら、予算不足でも退避対象が無く退避されない。
-  def test_does_not_evict_from_any_site_when_no_site_exceeds_40_rows
+  # どのサイトもMAX_ROWS_PER_SITE(40)以下でシートが飽和しているときは、行数が最多のサイトから
+  # 退避する。最多のサイトは退避のたびに再評価されるので、同数ならサイト名昇順に1件ずつ減っていく。
+  def test_evicts_from_the_largest_sites_when_saturated_and_no_site_exceeds_40_rows
     filler_site_names = Array.new(13) { |site_index| format("FillerSite%02d", site_index + 1) }
     filler_rows = filler_site_names.flat_map do |site_name|
       Array.new(38) { |index| row(site: site_name, url: "https://example.com/#{site_name}/existing-#{index}", deadline_text: "2030-01-01") }
@@ -928,8 +929,78 @@ class FreelanceJobsSheetMergerTest < Minitest::Test
     )
 
     assert_equal 500, filler_rows.size + site_z_rows.size, "前提: 既存行がちょうど500件"
-    assert_equal 0, result.evicted, "退避可能なサイト(40超)が無いので退避されないはず"
-    assert_equal 0, result.added, "予算が0のうえ退避もできないので新規行は1件も入らないはず"
+    assert_equal 3, result.evicted
+    assert_equal 3, result.added, "SiteCは保証枠3件だけ入るはず"
+    assert_equal 500, result.total
+    count_of_site = ->(site_name) { result.rows.count { |merged_row| merged_row[4] == site_name } }
+    assert_equal 6, count_of_site.call("SiteZ"), "行数の少ないSiteZからは退避されないはず"
+    # 38行のサイトが同数なのでFillerSite01から1件退避→37行になり、次は38行のFillerSite02→FillerSite03の順。
+    assert_equal [37, 37, 37], filler_site_names.first(3).map { |site_name| count_of_site.call(site_name) }
+    assert_equal [38] * 10, filler_site_names.last(10).map { |site_name| count_of_site.call(site_name) }
+    assert_equal 3, count_of_site.call("SiteC")
+  end
+
+  # 保証枠の需要が1回の新規行上限(MAX_NEW_ROWS_PER_RUN=80)を超えても、退避は80件までにとどめる
+  # （それ以上退避しても新規行は80件までしか入らず、合計行数が無駄に減るだけのため）。
+  def test_eviction_is_capped_at_max_new_rows_per_run_when_the_guaranteed_floor_demand_exceeds_it
+    existing_site_names = Array.new(12) { |site_index| format("FillerSite%02d", site_index + 1) }
+    existing_rows = existing_site_names.flat_map do |site_name|
+      Array.new(40) { |index| row(site: site_name, url: "https://example.com/#{site_name}/existing-#{index}", deadline_text: "2030-01-01") }
+    end
+    existing_rows += Array.new(20) do |index|
+      row(site: "SiteZ", url: "https://example.com/SiteZ/existing-#{index}", deadline_text: "2030-01-01")
+    end
+    new_site_names = Array.new(30) { |site_index| format("NewSite%02d", site_index + 1) }
+    new_rows = new_site_names.flat_map do |site_name|
+      Array.new(3) do |index|
+        row(site: site_name, url: "https://example.com/#{site_name}/new-#{index}", deadline_text: (TODAY + index + 1).strftime("%Y-%m-%d"))
+      end
+    end
+    assert_equal 500, existing_rows.size, "前提: 既存行がちょうど500件"
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: existing_rows, new_rows: new_rows,
+      succeeded_sites: existing_site_names + ["SiteZ"] + new_site_names, today: TODAY
+    )
+
+    assert_equal 80, result.evicted, "保証枠の需要は90件だが、退避は上限の80件まで"
+    assert_equal 80, result.added
+    assert_equal 500, result.total
+  end
+
+  # 飽和して超過サイトが無い場合でも、チェック済み行(protected_urls)は退避されない。
+  # 最多サイトの行を全て保護すると、次に行数の多いサイトから退避される。
+  def test_protected_rows_of_the_largest_site_are_not_evicted_when_saturated_and_no_site_exceeds_40_rows
+    largest_site_rows = Array.new(40) do |index|
+      row(site: "LargestSite", url: "https://example.com/LargestSite/existing-#{index}", deadline_text: "2030-01-01")
+    end
+    protected_urls = largest_site_rows.map { |protected_row| protected_row[FreelanceJobs::SheetMerger::URL_COLUMN_INDEX] }
+    filler_site_names = Array.new(11) { |site_index| format("FillerSite%02d", site_index + 1) }
+    filler_rows = filler_site_names.flat_map do |site_name|
+      Array.new(39) { |index| row(site: site_name, url: "https://example.com/#{site_name}/existing-#{index}", deadline_text: "2030-01-01") }
+    end
+    extra_filler_rows = Array.new(31) do |index|
+      row(site: "FillerExtra", url: "https://example.com/FillerExtra/existing-#{index}", deadline_text: "2030-01-01")
+    end
+    new_rows = Array.new(3) do |index|
+      row(site: "SiteC", url: "https://example.com/SiteC/new-#{index}", deadline_text: (TODAY + index + 1).strftime("%Y-%m-%d"))
+    end
+    existing_rows = largest_site_rows + filler_rows + extra_filler_rows
+    assert_equal 500, existing_rows.size, "前提: 既存行がちょうど500件"
+
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: existing_rows, new_rows: new_rows,
+      succeeded_sites: ["LargestSite"] + filler_site_names + ["FillerExtra", "SiteC"], today: TODAY,
+      protected_urls: protected_urls
+    )
+
+    count_of_site = ->(site_name) { result.rows.count { |merged_row| merged_row[4] == site_name } }
+    assert_equal 3, result.evicted
+    assert_equal 40, count_of_site.call("LargestSite"), "全行が保護された最多サイトからは退避されないはず"
+    assert_equal [38, 38, 38], filler_site_names.first(3).map { |site_name| count_of_site.call(site_name) },
+                 "次に多い39行のサイトからサイト名昇順に1件ずつ退避されるはず"
+    assert_equal 3, result.added
+    assert_equal 500, result.total
   end
 
   # チェック済み行(protected_urls)は退避対象から除外する。

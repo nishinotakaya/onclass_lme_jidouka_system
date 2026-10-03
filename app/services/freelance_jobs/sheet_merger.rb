@@ -31,9 +31,10 @@ module FreelanceJobs
     # select_new_rowsで行う（AC-21）。超過分は今回は見送り、次回以降の実行で再度候補になれば追加され得る。
     MAX_NEW_ROWS_PER_RUN = 80
     # AC-21: 1サイトが持てる合計行数のソフト上限。新規行の受け入れ判定に使うほか、
-    # この上限を超えているサイトの既存行に限り、他サイトの保証枠(NEW_ROWS_FLOOR_PER_SITE)を
-    # 満たすのに予算が足りないとき、不足分だけ退避（evict）する対象にもなる
-    # （evict_overflow_rows_for_guaranteed_floorを参照。チェック済み行(protected_urls)は退避しない）。
+    # 他サイトの保証枠(NEW_ROWS_FLOOR_PER_SITE)を満たすのに予算が足りないとき、
+    # この上限を超えているサイトがあればその既存行から、無ければ行数が最多のサイトの既存行から、
+    # 不足分だけ退避（evict）する際の優先順位にも使う
+    # （evict_rows_for_guaranteed_floorを参照。チェック済み行(protected_urls)は退避しない）。
     # 稼働サイトは約27で500÷27≒18なので、40は「1サイトがシートを埋め尽くさない」ための
     # 余裕を持たせたソフト上限。
     # （稼働サイト数は2026-09時点の参考値。増減した場合は見直しを検討する）
@@ -55,7 +56,7 @@ module FreelanceJobs
     # closed_urls: 今回募集終了と判明したURLの集合（省略時は[]で現行の挙動を変えない）。
     # 該当する既存行は更新も期限切れ削除も待たず最優先で削除し、新規行としても追加しない。
     # protected_urls: チェックボックスがチェック済みのURLの集合（省略時は[]）。
-    # 容量都合の退避(evict_overflow_rows_for_guaranteed_floor)の対象から外す（利用者が確認中の
+    # 容量都合の退避(evict_rows_for_guaranteed_floor)の対象から外す（利用者が確認中の
     # 案件を、保証枠の都合で勝手にシートから消してしまわないため）。
     def self.merge(existing_rows:, new_rows:, succeeded_sites:, today:, excluded_sites: [], category_order: CATEGORY_ORDER,
                     closed_urls: [], protected_urls: [])
@@ -124,9 +125,10 @@ module FreelanceJobs
         existing_url_seen[url] || normalized_closed_urls[url]
       end
 
-      # 40超サイトが保証枠の予算を食い潰している場合に限り、不足分だけ既存行を退避する
+      # 保証枠の予算が足りないときは、40超のサイトがあればそこから、無ければ行数が最多のサイトから、
+      # 不足分だけ既存行を退避する
       # （evictedはremovedと別集計。期限切れ・募集終了ではなく容量都合の入れ替えのため）。
-      surviving_existing_rows, evicted_rows = evict_overflow_rows_for_guaranteed_floor(
+      surviving_existing_rows, evicted_rows = evict_rows_for_guaranteed_floor(
         surviving_existing_rows, brand_new_rows_all, normalized_protected_urls
       )
 
@@ -265,8 +267,7 @@ module FreelanceJobs
     # また0件になってしまう。
     # なぜMAX_ROWS_PER_SITE(40)は新規行にだけ効くのか: 既存行を上限で機械的に落とすと、
     # 手入力で保持している情報（🌟評価・分類・案件名など）が消えてしまうため。ただし
-    # 40を超えているサイトに限っては、保証枠の予算が足りないときだけ不足分をevict_overflow_
-    # rows_for_guaranteed_floorで先に退避しており（本メソッドが呼ばれる時点で退避は完了済み）、
+    # 保証枠の予算が足りないときだけ、不足分をevict_rows_for_guaranteed_floorで先に退避しており（本メソッドが呼ばれる時点で退避は完了済み）、
     # ここではその後の生存数を前提に受け入れ可能数を計算するだけでよい。
     # 500行上限（MAX_TOTAL_ROWS）は予算計算（budget）だけで担保する。
     def self.select_new_rows(brand_new_rows_all, surviving_existing_rows)
@@ -291,7 +292,7 @@ module FreelanceJobs
 
     # AC-21: 1回の実行で追加できる新規行数の上限。全体上限(MAX_TOTAL_ROWS)からはみ出さないよう
     # 生存既存行数を差し引く（既存行だけで500件を超えている場合は負になり、新規行は0件になる）。
-    # evict_overflow_rows_for_guaranteed_floorで既存行が退避された後に呼ばれる場合は、
+    # evict_rows_for_guaranteed_floorで既存行が退避された後に呼ばれる場合は、
     # その分だけ生存既存行数が減っているため、退避で確保した枠がそのまま予算に反映される。
     def self.new_row_budget(surviving_existing_row_count)
       [MAX_NEW_ROWS_PER_RUN, MAX_TOTAL_ROWS - surviving_existing_row_count].min
@@ -301,16 +302,23 @@ module FreelanceJobs
       rows.each_with_object(Hash.new(0)) { |row, memo| memo[row[SITE_COLUMN_INDEX]] += 1 }
     end
 
-    # 40超サイトの既存行のうち、他サイトの保証枠(NEW_ROWS_FLOOR_PER_SITE)を満たす予算が
-    # 足りない分だけを退避する。「既存行は絶対に落とさない」方針を緩め、40超サイトの行に
-    # 限って「保証枠の不足分だけ」退避することで、🌟評価の高いサイトが40行を大幅に超えて
+    # 他サイトの保証枠(NEW_ROWS_FLOOR_PER_SITE)を満たす予算が足りない分だけ、既存行を退避する。
+    # 「既存行は絶対に落とさない」方針を緩め、「保証枠の不足分だけ」退避することで、特定サイトが
     # シートを埋め尽くし、新しく追加したサイトが1行も載らない状態を防ぐ。
-    # チェック済み行(protected_urls)は退避対象にしない。
+    # 退避元は、40超のサイトがあればそこから、無ければ行数が最多のサイトから選ぶ
+    # （pick_row_to_evictを参照）。チェック済み行(protected_urls)は退避対象にしない。
+    # 不足分は、1回に入れられる新規行の上限(MAX_NEW_ROWS_PER_RUN)までに丸める
+    # （それ以上退避しても新規行は入らず、合計行数が無駄に減るだけのため）。
     #
-    # 退避後もそのサイトはMAX_ROWS_PER_SITE(40)以上のままなので、group_new_candidates_
-    # within_site_capacity上の受け入れ可能数は0のまま変わらない。したがって、この実行で
-    # 退避したサイトの新規行が同じ実行で入ることはない（次回以降の実行で改めて候補になる）。
-    def self.evict_overflow_rows_for_guaranteed_floor(surviving_existing_rows, brand_new_rows_all, normalized_protected_urls)
+    # 退避したサイトがMAX_ROWS_PER_SITE(40)以上のままなら、group_new_candidates_
+    # within_site_capacity上の受け入れ可能数は0のまま変わらない。したがって、その場合は
+    # この実行で退避したサイトの新規行が同じ実行で入ることはない（次回以降の実行で改めて候補になる）。
+    def self.evict_rows_for_guaranteed_floor(surviving_existing_rows, brand_new_rows_all, normalized_protected_urls)
+      # 既にMAX_TOTAL_ROWSを「超えている」シートは、手作業の行追加などによる異常系として扱う。
+      # 退避で上限まで削るのではなく、従来どおり既存行を全部残し、新規行は入れない（予算が負になるため）。
+      # ちょうどMAX_TOTAL_ROWS（超えてはいない）の場合は対象外で、通常どおり退避する。
+      return [surviving_existing_rows, []] if surviving_existing_rows.size > MAX_TOTAL_ROWS
+
       budget = new_row_budget(surviving_existing_rows.size)
       new_row_object_ids = brand_new_rows_all.each_with_object({}) { |row, memo| memo[row.object_id] = true }
       surviving_existing_count_by_site = count_rows_by_site(surviving_existing_rows)
@@ -321,7 +329,7 @@ module FreelanceJobs
         [NEW_ROWS_FLOOR_PER_SITE, candidate_rows.size].min
       end
 
-      shortfall = guaranteed_floor_demand - budget
+      shortfall = [guaranteed_floor_demand, MAX_NEW_ROWS_PER_RUN].min - budget
       return [surviving_existing_rows, []] if shortfall <= 0
 
       # 退避する行の優先度判定（row_priority_key）を、退避前の元の並び順に固定する
@@ -330,11 +338,16 @@ module FreelanceJobs
         memo[row.object_id] = index
       end
 
+      # 退避を始める時点で40超のサイトがあるかどうかで、退避元の選び方を実行中ずっと固定する
+      # （超過が解消した途端に最多サイトへ切り替わり、40行ちょうどのサイトまで削ってしまうのを防ぐため）。
+      overflow_sites_only = surviving_existing_count_by_site.values.any? { |row_count| row_count > MAX_ROWS_PER_SITE }
+
       remaining_rows = surviving_existing_rows.dup
       evicted_rows = []
 
       shortfall.times do
-        row_to_evict = pick_row_to_evict_for_overflow(remaining_rows, normalized_protected_urls, existing_original_index)
+        row_to_evict = pick_row_to_evict(remaining_rows, normalized_protected_urls, existing_original_index,
+                                         overflow_sites_only: overflow_sites_only)
         break unless row_to_evict # 退避できる行が尽きたら、shortfallが残っていても打ち切る
 
         remaining_rows.delete_at(remaining_rows.index { |row| row.equal?(row_to_evict) })
@@ -344,25 +357,36 @@ module FreelanceJobs
       [remaining_rows, evicted_rows]
     end
 
-    # 現在の超過幅（生存数-MAX_ROWS_PER_SITE）が最大のサイト（同点はサイト名の文字列昇順）から、
-    # そのサイト内で最も優先度の低い（＝チェックされておらず、退避しても惜しくない）行を1件選ぶ。
-    # 退避可能な行が1件も残っていないサイトは、超過していても選ばない
-    # （チェック済み行だけが残っている場合はそのサイトを諦め、他サイトを探す）。
-    def self.pick_row_to_evict_for_overflow(remaining_rows, normalized_protected_urls, existing_original_index)
+    # 退避元のサイトを毎回選び直し、そのサイト内で最も優先度の低い（＝チェックされておらず、
+    # 退避しても惜しくない）行を1件選ぶ。退避元のサイトはpick_site_to_evict_fromで決める。
+    def self.pick_row_to_evict(remaining_rows, normalized_protected_urls, existing_original_index, overflow_sites_only:)
       rows_by_site = remaining_rows.group_by { |row| row[SITE_COLUMN_INDEX] }
-      overflow_by_site = rows_by_site.each_with_object({}) do |(site_name, rows_of_site), memo|
-        overflow = rows_of_site.size - MAX_ROWS_PER_SITE
-        memo[site_name] = overflow if overflow.positive?
-      end
+      target_site_name = pick_site_to_evict_from(rows_by_site, normalized_protected_urls,
+                                                 overflow_sites_only: overflow_sites_only)
+      return nil unless target_site_name
 
-      evictable_site_names = overflow_by_site.keys.select do |site_name|
-        evictable_rows_of_site(rows_by_site[site_name], normalized_protected_urls).any?
-      end
-      return nil if evictable_site_names.empty?
-
-      target_site_name = evictable_site_names.sort_by { |site_name| [-overflow_by_site[site_name], site_name] }.first
       candidate_rows = evictable_rows_of_site(rows_by_site[target_site_name], normalized_protected_urls)
       candidate_rows.max_by { |row| row_priority_key(row, {}, existing_original_index) }
+    end
+
+    # 退避元のサイト名を返す（無ければnil）。退避可能な行が1件も残っていないサイトは、
+    # 超過していても選ばない（チェック済み行だけが残っている場合はそのサイトを諦め、他サイトを探す）。
+    # overflow_sites_only: trueのとき（退避開始時にMAX_ROWS_PER_SITE超のサイトがあった）は、
+    #   現在もMAX_ROWS_PER_SITEを超えているサイトのうち、超過幅（生存数-40）が最大のサイト
+    #   （同点はサイト名の文字列昇順）だけを選び、超過が解消したらnilを返す。
+    # overflow_sites_only: falseのとき（どのサイトも40以下）は、退避可能な行を持つサイトのうち
+    #   生存数が最多のサイト（同点はサイト名の文字列昇順）を選ぶ。40ちょうどのサイトばかりで
+    #   シートが飽和していても、新規サイトの保証枠を確保できるようにするため。
+    #   退避のたびに再評価するので、最多のサイトが1件減れば次は別のサイトが選ばれる。
+    def self.pick_site_to_evict_from(rows_by_site, normalized_protected_urls, overflow_sites_only:)
+      evictable_site_names = rows_by_site.keys.select do |site_name|
+        evictable_rows_of_site(rows_by_site[site_name], normalized_protected_urls).any?
+      end
+      if overflow_sites_only
+        evictable_site_names = evictable_site_names.select { |site_name| rows_by_site[site_name].size > MAX_ROWS_PER_SITE }
+      end
+
+      evictable_site_names.min_by { |site_name| [-rows_by_site[site_name].size, site_name] }
     end
 
     # protected_urls(チェック済みURL)を除いた、退避してよい行だけを返す。

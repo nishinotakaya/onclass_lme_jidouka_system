@@ -109,7 +109,7 @@ module FreelanceJobs
         category_order: @profile.category_order,
         today: @today,
         closed_urls: closed_urls,
-        # チェック済み(確認中)の案件を、容量都合の退避(evict_overflow_rows_for_guaranteed_floor)の
+        # チェック済み(確認中)の案件を、容量都合の退避(evict_rows_for_guaranteed_floor)の
         # 対象から外す。read_rowsの後なので@checkbox_states_by_urlは揃っている。
         protected_urls: sheets_client.checked_urls
       )
