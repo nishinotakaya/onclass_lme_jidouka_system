@@ -111,6 +111,15 @@ module FreelanceJobs
           # 単価・スキル・業務内容まで揃うため、一次サイト群の最後（Reshineの直後）に置く。
           [FreelanceJobs::Sources::Midworks, {}],
           [FreelanceJobs::Sources::Techcareer, {}],
+          # 2026-10-03の案件サイト再調査で追加した4サイト。
+          # Workshipはキーワード頁がSSRで一覧を取れるが、一覧に単価が無いため要確認固定（詳細は取らない）。
+          # Offersはrobots.txtがクエリ付きURLを禁止しているため、パス型ファセットの1頁だけを取る。
+          # Forkwell Jobsは業務委託が13件ほどの小規模サイト。
+          # DYMテックは最新30件を一覧で拾い（単価は一覧由来）、詳細ページでskills・本文・掲載日を補完する。
+          [FreelanceJobs::Sources::Workship, {}],
+          [FreelanceJobs::Sources::Offers, {}],
+          [FreelanceJobs::Sources::ForkwellJobs, {}],
+          [FreelanceJobs::Sources::DymTech, {}],
           # クラウドソーシング（未経験向けプロファイルと同じ取得元をキーワード検索で流用する）。
           [FreelanceJobs::Sources::Crowdworks, {
             search_targets: [

@@ -213,6 +213,48 @@ class FreelanceJobsProfileTest < Minitest::Test
     assert(techcareer_index < crowdworks_index, "Midworks・テクフリはクラウドソーシング群(Crowdworks)より前に置くはず")
   end
 
+  # --- AC-05(2026-10-03再調査): Workship・Offers・Forkwell Jobs・DYMテックはTechcareerの直後・Crowdworksより前 ---
+
+  def test_engineer_source_specs_places_four_new_sources_in_order_right_after_techcareer_and_before_crowdsourcing_group
+    source_classes = FreelanceJobs::Profile::ENGINEER.source_specs.map(&:first)
+
+    techcareer_index = source_classes.index(FreelanceJobs::Sources::Techcareer)
+    refute_nil techcareer_index
+    assert_equal(
+      [
+        FreelanceJobs::Sources::Workship,
+        FreelanceJobs::Sources::Offers,
+        FreelanceJobs::Sources::ForkwellJobs,
+        FreelanceJobs::Sources::DymTech
+      ],
+      source_classes[techcareer_index + 1, 4],
+      "Techcareerの直後にWorkship, Offers, ForkwellJobs, DymTechの順で並ぶはず"
+    )
+    assert_equal FreelanceJobs::Sources::Crowdworks, source_classes[techcareer_index + 5],
+                 "4サイトの直後はクラウドソーシング群の先頭(Crowdworks)のはず"
+  end
+
+  def test_engineer_four_new_sources_have_empty_options
+    specs = FreelanceJobs::Profile::ENGINEER.source_specs
+    [
+      FreelanceJobs::Sources::Workship,
+      FreelanceJobs::Sources::Offers,
+      FreelanceJobs::Sources::ForkwellJobs,
+      FreelanceJobs::Sources::DymTech
+    ].each do |source_class|
+      spec = specs.find { |candidate_class, _options| candidate_class == source_class }
+      refute_nil spec, "#{source_class}がENGINEERのsource_specsに無い"
+      assert_equal({}, spec.last, "#{source_class}のオプションは{}のはず")
+    end
+  end
+
+  def test_engineer_source_specs_has_thirty_three_unique_sources
+    source_classes = FreelanceJobs::Profile::ENGINEER.source_specs.map(&:first)
+
+    assert_equal 33, source_classes.size
+    assert_equal source_classes.size, source_classes.uniq.size, "同じソースが重複登録されている"
+  end
+
   # --- AC-05: 案件数を書き戻す「サイト一覧」タブのgid ---
 
   def test_engineer_definition_has_site_list_sheet_gid
