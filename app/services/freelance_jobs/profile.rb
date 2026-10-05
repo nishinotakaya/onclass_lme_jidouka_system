@@ -120,6 +120,10 @@ module FreelanceJobs
           [FreelanceJobs::Sources::Offers, {}],
           [FreelanceJobs::Sources::ForkwellJobs, {}],
           [FreelanceJobs::Sources::DymTech, {}],
+          # 2026-10-05追加: Remogu・アットエンジニア・mijicaフリーランス。
+          [FreelanceJobs::Sources::Remogu, {}],
+          [FreelanceJobs::Sources::AtEngineer, {}],
+          [FreelanceJobs::Sources::MijicaFreelance, {}],
           # クラウドソーシング（未経験向けプロファイルと同じ取得元をキーワード検索で流用する）。
           [FreelanceJobs::Sources::Crowdworks, {
             search_targets: [

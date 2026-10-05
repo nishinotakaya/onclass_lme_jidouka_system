@@ -230,8 +230,8 @@ class FreelanceJobsProfileTest < Minitest::Test
       source_classes[techcareer_index + 1, 4],
       "Techcareerの直後にWorkship, Offers, ForkwellJobs, DymTechの順で並ぶはず"
     )
-    assert_equal FreelanceJobs::Sources::Crowdworks, source_classes[techcareer_index + 5],
-                 "4サイトの直後はクラウドソーシング群の先頭(Crowdworks)のはず"
+    assert_equal FreelanceJobs::Sources::Crowdworks, source_classes[techcareer_index + 8],
+                 "4サイトとその直後の3サイト(Remogu・AtEngineer・MijicaFreelance)の後はクラウドソーシング群の先頭(Crowdworks)のはず"
   end
 
   def test_engineer_four_new_sources_have_empty_options
@@ -248,10 +248,29 @@ class FreelanceJobsProfileTest < Minitest::Test
     end
   end
 
-  def test_engineer_source_specs_has_thirty_three_unique_sources
+  # --- Remogu・アットエンジニア・mijicaフリーランスはDymTechの直後 ---
+
+  def test_engineer_source_specs_places_three_sources_right_after_dym_tech_with_empty_options
+    specs = FreelanceJobs::Profile::ENGINEER.source_specs
+    source_classes = specs.map(&:first)
+    expected_classes = [
+      FreelanceJobs::Sources::Remogu,
+      FreelanceJobs::Sources::AtEngineer,
+      FreelanceJobs::Sources::MijicaFreelance
+    ]
+
+    dym_tech_index = source_classes.index(FreelanceJobs::Sources::DymTech)
+    refute_nil dym_tech_index
+    assert_equal expected_classes, source_classes[dym_tech_index + 1, 3]
+    assert_equal FreelanceJobs::Sources::Crowdworks, source_classes[dym_tech_index + 4]
+    assert_equal [{}, {}, {}], specs[dym_tech_index + 1, 3].map(&:last)
+    assert_equal ["Remogu", "アットエンジニア", "mijicaフリーランス"], expected_classes.map { |klass| klass::SITE_NAME }
+  end
+
+  def test_engineer_source_specs_has_thirty_six_unique_sources
     source_classes = FreelanceJobs::Profile::ENGINEER.source_specs.map(&:first)
 
-    assert_equal 33, source_classes.size
+    assert_equal 36, source_classes.size
     assert_equal source_classes.size, source_classes.uniq.size, "同じソースが重複登録されている"
   end
 
