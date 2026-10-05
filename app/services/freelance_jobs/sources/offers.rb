@@ -11,8 +11,11 @@ module FreelanceJobs
     #
     # robots.txt について（重要）: User-Agent: * に `Disallow: /jobs*?` があり、クエリ付きの
     # /jobs URL は禁止されている。そのため `?page=N` などのクエリは絶対に付けず、ページ送りもしない。
-    # パス型のファセット `/jobs/skills/{スキルID}/side-job`（業務委託・副業に絞った一覧）の
-    # 1ページ目（20件）だけを取得する。新着差分取りには十分なため、全件はたどらない。
+    # 副業ファセット `/jobs/skills/{スキルID}/side-job` は 2026-10-05 に HTTP 410 で廃止された。
+    # 雇用形態で絞るパス型ファセットは無くなったため、全件一覧 `/jobs/skills/{スキルID}` と
+    # リモート一覧 `/jobs/skills/{スキルID}/remote` の2ページ（各20件）を3スキル分取得し、
+    # 雇用形態に「業務委託」を含むものだけ残す。正社員求人が大半なので絞り込みは必須。
+    # 新着差分取りには十分なため、全件はたどらない。
     class Offers
       SITE_NAME = "Offers"
       # ResearchService が HttpFetcher の間隔として参照するため、全ソースが持つ必要がある。
@@ -40,6 +43,8 @@ module FreelanceJobs
 
       WORK_FORMAT_PREFIX = "雇用形態:"
       CLOSED_MARK = "募集停止"
+      # 雇用形態にこの文言を含むカード（業務委託・業務委託から正社員）だけを fetch で残す。
+      CONTRACT_WORK_MARK = "業務委託"
 
       def initialize(fetcher:, today:, search_targets: DEFAULT_SEARCH_TARGETS, **_options)
         @fetcher = fetcher
@@ -47,15 +52,18 @@ module FreelanceJobs
         @search_targets = search_targets
       end
 
-      # 通信あり。スキルごとに1ページだけ取得し、URLキーで重複排除する。
-      # 同じ案件が複数スキルに出るため重複排除は必須で、先に出たスキルのhintを残す。
+      # 通信あり。スキルごとに全件一覧とリモート一覧の2ページを取得し、業務委託だけに絞ってURLキーで重複排除する。
+      # 同じ案件が複数スキル・複数一覧に出るため重複排除は必須で、先に出たスキルのhintを残す。
       def fetch
         postings_by_url = {}
 
         @search_targets.each do |search_target|
-          body = @fetcher.get(search_url(search_target[:skill_id]))
-          self.class.parse(body, today: @today, category_hint: search_target[:hint]).each do |posting|
-            postings_by_url[posting.url] ||= posting
+          search_urls(search_target[:skill_id]).each do |url|
+            body = @fetcher.get(url)
+            postings = self.class.parse(body, today: @today, category_hint: search_target[:hint])
+            postings.select { |posting| posting.work_format.include?(CONTRACT_WORK_MARK) }.each do |posting|
+              postings_by_url[posting.url] ||= posting
+            end
           end
         end
 
@@ -151,11 +159,11 @@ module FreelanceJobs
         text.to_s.gsub(/\s+/, " ").strip
       end
 
-      # 一覧URL。robots.txt でクエリ付きが禁止のため、パスだけで組み立てる。
-      def search_url(skill_id)
-        "#{BASE_URL}/jobs/skills/#{skill_id}/side-job"
+      # 一覧URL（全件・リモート可の順）。robots.txt でクエリ付きが禁止のため、パスだけで組み立てる。
+      def search_urls(skill_id)
+        ["#{BASE_URL}/jobs/skills/#{skill_id}", "#{BASE_URL}/jobs/skills/#{skill_id}/remote"]
       end
-      private :search_url
+      private :search_urls
     end
   end
 end

@@ -10,6 +10,7 @@ class FreelanceJobsSourcesOffersTest < Minitest::Test
 
   TODAY = Date.new(2026, 10, 3)
   FIXTURE_NAME = "offers_sidejob_ruby.html"
+  SKILL_FIXTURE_NAME = "offers_skill_typescript.html"
   SOURCE = FreelanceJobs::Sources::Offers
 
   def parse_fixture(category_hint: "Ruby")
@@ -181,15 +182,18 @@ class FreelanceJobsSourcesOffersTest < Minitest::Test
     end
   end
 
-  def test_fetch_requests_each_default_skill_once_with_path_url_and_no_query
+  def test_fetch_requests_the_all_and_remote_lists_for_each_default_skill_without_query
     fetcher = UrlMapFetcher.new(default_body: read_fixture(FIXTURE_NAME))
 
     SOURCE.new(fetcher: fetcher, today: TODAY).fetch
 
     assert_equal [
-      "https://offers.jp/jobs/skills/229/side-job",
-      "https://offers.jp/jobs/skills/252/side-job",
-      "https://offers.jp/jobs/skills/261/side-job"
+      "https://offers.jp/jobs/skills/229",
+      "https://offers.jp/jobs/skills/229/remote",
+      "https://offers.jp/jobs/skills/252",
+      "https://offers.jp/jobs/skills/252/remote",
+      "https://offers.jp/jobs/skills/261",
+      "https://offers.jp/jobs/skills/261/remote"
     ], fetcher.requested_urls
     assert(fetcher.requested_urls.none? { |url| url.include?("?") }, "robots.txt が /jobs*? を禁止するためクエリ禁止")
   end
@@ -198,8 +202,9 @@ class FreelanceJobsSourcesOffersTest < Minitest::Test
     fetcher = UrlMapFetcher.new(default_body: read_fixture(FIXTURE_NAME))
 
     postings = SOURCE.new(fetcher: fetcher, today: TODAY).fetch
+    contract_count = parse_fixture.count { |posting| posting.work_format.include?(SOURCE::CONTRACT_WORK_MARK) }
 
-    assert_equal 20, postings.size
+    assert_equal contract_count, postings.size
     assert_equal "Ruby", postings.first.category_hint, "先に出たskillのhintを残すはず"
   end
 
@@ -207,8 +212,8 @@ class FreelanceJobsSourcesOffersTest < Minitest::Test
     ruby_body = wrap_cards(extract_fixture_card_html(0))
     react_body = wrap_cards(extract_fixture_card_html(1))
     fetcher = UrlMapFetcher.new(bodies_by_url: {
-      "https://offers.jp/jobs/skills/229/side-job" => ruby_body,
-      "https://offers.jp/jobs/skills/261/side-job" => react_body
+      "https://offers.jp/jobs/skills/229" => ruby_body,
+      "https://offers.jp/jobs/skills/261/remote" => react_body
     })
 
     hints_by_url = SOURCE.new(fetcher: fetcher, today: TODAY).fetch.to_h do |posting|
@@ -224,6 +229,35 @@ class FreelanceJobsSourcesOffersTest < Minitest::Test
     source = SOURCE.new(fetcher: fetcher, today: TODAY, search_targets: [{ skill_id: 999, hint: "Go" }])
 
     assert_equal [], source.fetch
-    assert_equal ["https://offers.jp/jobs/skills/999/side-job"], fetcher.requested_urls
+    assert_equal ["https://offers.jp/jobs/skills/999", "https://offers.jp/jobs/skills/999/remote"],
+                 fetcher.requested_urls
+  end
+
+  def test_fetch_keeps_only_contract_work_postings
+    fetcher = UrlMapFetcher.new(default_body: read_fixture(SKILL_FIXTURE_NAME))
+
+    postings = SOURCE.new(fetcher: fetcher, today: TODAY).fetch
+
+    assert_equal 14, postings.size
+    assert(postings.all? { |posting| posting.work_format.include?("業務委託") })
+    refute(postings.any? { |posting| posting.work_format == "正社員" })
+  end
+
+  def test_parse_returns_regular_employee_cards_too
+    postings = SOURCE.parse(read_fixture(SKILL_FIXTURE_NAME), today: TODAY, category_hint: "TypeScript")
+
+    assert_equal 20, postings.size
+    assert_equal 6, postings.count { |posting| posting.work_format.include?("正社員") && !posting.work_format.include?("業務委託") }
+  end
+
+  def test_fetch_deduplicates_between_all_and_remote_lists
+    body = read_fixture(SKILL_FIXTURE_NAME)
+    fetcher = UrlMapFetcher.new(bodies_by_url: {
+      "https://offers.jp/jobs/skills/229" => body,
+      "https://offers.jp/jobs/skills/229/remote" => body
+    })
+    source = SOURCE.new(fetcher: fetcher, today: TODAY, search_targets: [{ skill_id: 229, hint: "Ruby" }])
+
+    assert_equal 14, source.fetch.size
   end
 end
