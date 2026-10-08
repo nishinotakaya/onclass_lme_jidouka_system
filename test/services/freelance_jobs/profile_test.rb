@@ -311,7 +311,7 @@ class FreelanceJobsProfileTest < Minitest::Test
     definition = FreelanceJobs::Profile::HOKKAIDO
 
     assert_equal "hokkaido", definition.key
-    assert_equal "北海道 出社・ハイブリッド", definition.label
+    assert_equal "北海道 出社・ハイブリッド（正社員含む）", definition.label
     assert_equal 1_565_795_057, definition.sheet_gid
     assert_equal FreelanceJobs::Profile.build_engineer_header, definition.header
     assert_equal ["Ruby", "TypeScript", "React", "その他"], definition.category_order
@@ -330,9 +330,11 @@ class FreelanceJobsProfileTest < Minitest::Test
   # 北海道は都道府県一覧URLを直接たどるため、キーワードではなく都道府県ターゲットで3サイトを指定する。
   # フルリモート案件は分類器側で落とすので提供元は問わず拾うが、PE-BANKは Sources::PeBank で直接取るため
   # フリーランスHub経由の「Pe-BANK フリーランス」提供案件だけ除外する（ボードの北海道一覧に該当案件は無い）。
-  def test_hokkaido_source_specs_are_three_prefecture_listings
+  # 先頭の求人ボックスは正社員込みのRuby求人（2026-10-08の社長要求）。先頭に置くのは重複時に先の行を残すため。
+  def test_hokkaido_source_specs_are_kyujin_box_then_three_prefecture_listings
     assert_equal(
       [
+        [FreelanceJobs::Sources::KyujinBox, {}],
         [FreelanceJobs::Sources::FreelanceBoard,
          { search_targets: [{ prefecture_slug: "hokkaido" }], max_pages: 3, excluded_providers: [] }],
         [FreelanceJobs::Sources::FreelanceHub,
@@ -342,6 +344,13 @@ class FreelanceJobsProfileTest < Minitest::Test
       ],
       FreelanceJobs::Profile::HOKKAIDO.source_specs
     )
+  end
+
+  def test_hokkaido_row_limits_are_widened_and_others_use_defaults
+    assert_equal({ max_total_rows: 900, max_new_rows_per_run: 900, max_rows_per_site: 800 },
+                 FreelanceJobs::Profile::HOKKAIDO.row_limits)
+    assert_nil FreelanceJobs::Profile::BEGINNER.row_limits
+    assert_nil FreelanceJobs::Profile::ENGINEER.row_limits
   end
 
   def test_hokkaido_definition_is_deeply_frozen

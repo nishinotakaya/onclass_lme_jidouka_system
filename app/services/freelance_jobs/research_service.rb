@@ -111,7 +111,9 @@ module FreelanceJobs
         closed_urls: closed_urls,
         # チェック済み(確認中)の案件を、容量都合の退避(evict_rows_for_guaranteed_floor)の
         # 対象から外す。read_rowsの後なので@checkbox_states_by_urlは揃っている。
-        protected_urls: sheets_client.checked_urls
+        protected_urls: sheets_client.checked_urls,
+        # 北海道タブだけ行数上限を広げる（nilなら SheetMerger の既定値）。
+        **(@profile.row_limits || {})
       )
 
       starred_row_indexes = merge_result.rows.each_index.select { |index| merge_result.rows[index][0].to_s.include?("🌟") }

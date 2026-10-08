@@ -1135,6 +1135,49 @@ class FreelanceJobsSheetMergerTest < Minitest::Test
     assert_equal 40, surviving_site_a_urls.size, "41件から🌟無しの1件だけ退避されて40件になるはず"
   end
 
+  # === 行数上限の上書き（北海道タブは既定の500/80/40より広げる） ===
+
+  def build_site_rows(site_name, count)
+    Array.new(count) { |index| row(site: site_name, url: "https://example.com/#{site_name}/#{index}", deadline_text: "2030-01-01") }
+  end
+
+  def test_default_limits_cap_new_rows_per_site_at_forty
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: [], new_rows: build_site_rows("SiteA", 100), succeeded_sites: ["SiteA"], today: TODAY
+    )
+
+    assert_equal 40, result.total
+  end
+
+  def test_max_rows_per_site_override_allows_more_rows_from_one_site
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: [], new_rows: build_site_rows("SiteA", 100), succeeded_sites: ["SiteA"], today: TODAY,
+      max_rows_per_site: 90, max_new_rows_per_run: 200, max_total_rows: 200
+    )
+
+    assert_equal 90, result.total
+  end
+
+  def test_max_new_rows_per_run_override_caps_added_rows
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: [], new_rows: build_site_rows("SiteA", 100), succeeded_sites: ["SiteA"], today: TODAY,
+      max_rows_per_site: 90, max_new_rows_per_run: 25, max_total_rows: 200
+    )
+
+    assert_equal 25, result.added
+  end
+
+  def test_max_total_rows_override_caps_total_with_existing_rows
+    result = FreelanceJobs::SheetMerger.merge(
+      existing_rows: build_site_rows("SiteB", 30), new_rows: build_site_rows("SiteA", 100),
+      succeeded_sites: %w[SiteA SiteB], today: TODAY,
+      max_rows_per_site: 90, max_new_rows_per_run: 200, max_total_rows: 50
+    )
+
+    assert_equal 50, result.total
+    assert_equal 20, result.added
+  end
+
   # === AC-10: PE-BANKのURLリンク切れ修正。URL表記(F列)も自動更新対象に含める ===
 
   def test_auto_update_column_indexes_includes_url_column

@@ -16,6 +16,44 @@ class FreelanceJobsJobPostingTest < Minitest::Test
                  FreelanceJobs::JobPosting.normalize_url("https://example.com/path?foo=1&bar=2#section")
   end
 
+  # --- 識別用クエリを残すホスト（求人ボックス経由の転載求人） ---
+
+  def test_normalize_url_keeps_job_id_query_for_bizreach
+    assert_equal "https://www.bizreach.jp/lp/members_register?job_id=9549222",
+                 FreelanceJobs::JobPosting.normalize_url(
+                   "https://www.bizreach.jp/lp/members_register/?job_id=9549222&job_category=1#top"
+                 )
+  end
+
+  def test_normalize_url_keeps_jno_query_for_mynavi_agent
+    assert_equal "https://mynavi-agent.jp/entry?jno=10750486",
+                 FreelanceJobs::JobPosting.normalize_url("http://MYNAVI-AGENT.jp/entry/?jno=10750486&x=1")
+  end
+
+  def test_normalize_url_keeps_rid_query_for_aidea_career
+    assert_equal "https://aidea-career.co.jp/recruitment_form_02?rid=22012491",
+                 FreelanceJobs::JobPosting.normalize_url("https://aidea-career.co.jp/recruitment_form_02/?utm=1&rid=22012491")
+  end
+
+  def test_normalize_url_distinguishes_bizreach_urls_by_job_id
+    first_key = FreelanceJobs::JobPosting.normalize_url("https://www.bizreach.jp/lp/members_register/?job_id=1")
+    second_key = FreelanceJobs::JobPosting.normalize_url("https://www.bizreach.jp/lp/members_register/?job_id=2")
+
+    refute_equal first_key, second_key
+  end
+
+  def test_normalize_url_drops_query_for_target_host_when_identifying_key_is_missing
+    assert_equal "https://www.bizreach.jp/lp/members_register",
+                 FreelanceJobs::JobPosting.normalize_url("https://www.bizreach.jp/lp/members_register/?job_category=1")
+    assert_equal "https://www.bizreach.jp/lp/members_register",
+                 FreelanceJobs::JobPosting.normalize_url("https://www.bizreach.jp/lp/members_register/")
+  end
+
+  def test_normalize_url_still_drops_job_id_query_for_other_hosts
+    assert_equal "https://example.com/path",
+                 FreelanceJobs::JobPosting.normalize_url("https://example.com/path?job_id=1&jno=2&rid=3")
+  end
+
   def test_normalize_url_strips_trailing_slash
     assert_equal "https://example.com/path",
                  FreelanceJobs::JobPosting.normalize_url("https://example.com/path/")

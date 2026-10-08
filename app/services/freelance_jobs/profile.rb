@@ -9,6 +9,9 @@ module FreelanceJobs
     Definition = Struct.new(
       :key, :label, :sheet_gid, :header, :category_order, :classifier, :source_specs, :new_rows_require_star,
       :checkbox_column, :hidden_level_marker, :site_list_sheet_gid,
+      # SheetMerger.merge の行数上限の上書き（{ max_total_rows:, max_new_rows_per_run:, max_rows_per_site: }）。
+      # nil は SheetMerger の既定値（500/80/40）。
+      :row_limits,
       keyword_init: true
     )
 
@@ -62,7 +65,8 @@ module FreelanceJobs
         checkbox_column: false,
         hidden_level_marker: nil,
         # 未経験向けの「申込サイト一覧」には件数列が無い。
-        site_list_sheet_gid: nil
+        site_list_sheet_gid: nil,
+        row_limits: nil
       )
     )
 
@@ -157,7 +161,8 @@ module FreelanceJobs
         # フィルターを外せば上級も見られる（行は消していない）。
         hidden_level_marker: "★★★",
         # 「エンジニア申込サイト一覧」タブ。A列の案件数をバッチが更新する。
-        site_list_sheet_gid: 969_307_625
+        site_list_sheet_gid: 969_307_625,
+        row_limits: nil
       )
     )
 
@@ -167,15 +172,20 @@ module FreelanceJobs
     # 一覧は新着順なので3頁（毎朝の新着差分）だけ取る。提供元の除外はフリーランスHubの
     # 「Pe-BANK フリーランス」だけ（PE-BANKは Sources::PeBank で直接取るため、URLが違うだけの同一案件が重複する）。
     # ボードの北海道一覧にPE-BANK提供案件は無いので除外なし。
+    # 2026-10-08の社長要求「正社員でもいいのでRubyをできるだけ多く」を受け、正社員求人を含む求人ボックスを
+    # 先頭に追加した（業務委託3取得元ではRubyが120行中1件だった。求人ボックスは北海道Rubyが2,296件）。
+    # 先に並べた取得元の行が重複時に残るため先頭に置く。行数は既定の500/80/40では収まらないので
+    # row_limits で広げる（シートの読み取り上限 SheetsClient::MAX_READ_ROW_COUNT=2000、タブのグリッドは1000行）。
     HOKKAIDO = deep_freeze(
       Definition.new(
         key: "hokkaido",
-        label: "北海道 出社・ハイブリッド",
+        label: "北海道 出社・ハイブリッド（正社員含む）",
         sheet_gid: 1_565_795_057,
         header: build_engineer_header,
         category_order: ["Ruby", "TypeScript", "React", "その他"],
         classifier: FreelanceJobs::HokkaidoClassifier,
         source_specs: [
+          [FreelanceJobs::Sources::KyujinBox, {}],
           [FreelanceJobs::Sources::FreelanceBoard, {
             search_targets: [{ prefecture_slug: "hokkaido" }], max_pages: 3, excluded_providers: []
           }],
@@ -189,7 +199,8 @@ module FreelanceJobs
         new_rows_require_star: false,
         checkbox_column: true,
         hidden_level_marker: nil,
-        site_list_sheet_gid: nil
+        site_list_sheet_gid: nil,
+        row_limits: { max_total_rows: 900, max_new_rows_per_run: 900, max_rows_per_site: 800 }
       )
     )
 

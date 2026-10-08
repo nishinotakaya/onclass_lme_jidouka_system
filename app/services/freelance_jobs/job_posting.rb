@@ -32,14 +32,24 @@ module FreelanceJobs
       application_status == CLOSED_STATUS
     end
 
+    # クエリでしか求人を区別できない掲載元のホストと、残す識別用クエリのキー。
+    # 求人ボックス経由の転載求人（2026-10-08実測）でビズリーチ・マイナビエージェント・AIdea Careerの
+    # 登録フォームURLは全求人が同じパスで、クエリを落とすと別求人が1行に潰れてしまうため、この3ホストだけ残す。
+    IDENTIFYING_QUERY_KEY_BY_HOST = {
+      "www.bizreach.jp" => "job_id",
+      "mynavi-agent.jp" => "jno",
+      "aidea-career.co.jp" => "rid"
+    }.freeze
+
     # マージキー用のURL正規化。
     # scheme/hostを小文字化してhttpsに統一し、クエリ・フラグメント・末尾スラッシュを除去する。
+    # ただしIDENTIFYING_QUERY_KEY_BY_HOSTのホストだけは、識別用クエリ1つを "?<key>=<value>" として残す。
     def self.normalize_url(url)
       text = url.to_s.strip
       return "" if text.empty?
 
       text = text.sub(%r{\Ahttps?://}i, "https://")
-      text = text.split("?", 2).first
+      text, query = text.split("?", 2)
       text = text.split("#", 2).first
       text = text.sub(%r{/\z}, "")
 
@@ -47,8 +57,22 @@ module FreelanceJobs
       return text unless match
 
       host, rest = match.captures
-      "https://#{host.downcase}#{rest}"
+      host = host.downcase
+      "https://#{host}#{rest}#{identifying_query(host, query)}"
     end
+
+    # 識別用クエリ（"?job_id=123"）。対象ホストでない・該当キーが無い場合は空文字。
+    def self.identifying_query(host, query)
+      key = IDENTIFYING_QUERY_KEY_BY_HOST[host]
+      return "" unless key && query
+
+      value = query.split("#", 2).first.split("&").filter_map do |pair|
+        pair_key, pair_value = pair.split("=", 2)
+        pair_value if pair_key == key
+      end.first
+      value.nil? || value.empty? ? "" : "?#{key}=#{value}"
+    end
+    private_class_method :identifying_query
 
     DESCRIPTION_URL_RE = %r{https?://[^\s]+}i.freeze
 

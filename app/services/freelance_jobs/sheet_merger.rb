@@ -58,8 +58,12 @@ module FreelanceJobs
     # protected_urls: チェックボックスがチェック済みのURLの集合（省略時は[]）。
     # 容量都合の退避(evict_rows_for_guaranteed_floor)の対象から外す（利用者が確認中の
     # 案件を、保証枠の都合で勝手にシートから消してしまわないため）。
+    # max_total_rows / max_new_rows_per_run / max_rows_per_site: 行数上限の上書き（省略時は同名の定数）。
+    # 北海道タブは正社員込みのRuby求人を数百件単位で載せるため、既定の500/80/40では足りず、
+    # プロファイル側（Profile::Definition#row_limits）から広げた値を渡す。
     def self.merge(existing_rows:, new_rows:, succeeded_sites:, today:, excluded_sites: [], category_order: CATEGORY_ORDER,
-                    closed_urls: [], protected_urls: [])
+                    closed_urls: [], protected_urls: [], max_total_rows: MAX_TOTAL_ROWS,
+                    max_new_rows_per_run: MAX_NEW_ROWS_PER_RUN, max_rows_per_site: MAX_ROWS_PER_SITE)
       normalized_existing_rows = existing_rows.map { |row| normalize_row(row) }
       deduped_new_rows = dedupe_by_url(new_rows)
       new_rows_by_url = index_by_url(deduped_new_rows)
@@ -129,10 +133,14 @@ module FreelanceJobs
       # 不足分だけ既存行を退避する
       # （evictedはremovedと別集計。期限切れ・募集終了ではなく容量都合の入れ替えのため）。
       surviving_existing_rows, evicted_rows = evict_rows_for_guaranteed_floor(
-        surviving_existing_rows, brand_new_rows_all, normalized_protected_urls
+        surviving_existing_rows, brand_new_rows_all, normalized_protected_urls,
+        max_total_rows: max_total_rows, max_new_rows_per_run: max_new_rows_per_run, max_rows_per_site: max_rows_per_site
       )
 
-      brand_new_rows = select_new_rows(brand_new_rows_all, surviving_existing_rows)
+      brand_new_rows = select_new_rows(
+        brand_new_rows_all, surviving_existing_rows,
+        max_total_rows: max_total_rows, max_new_rows_per_run: max_new_rows_per_run, max_rows_per_site: max_rows_per_site
+      )
       brand_new_object_ids = brand_new_rows.each_with_object({}) { |row, memo| memo[row.object_id] = true }
 
       ordered_rows = order_rows(brand_new_rows, surviving_existing_rows, category_order)
@@ -270,14 +278,15 @@ module FreelanceJobs
     # 保証枠の予算が足りないときだけ、不足分をevict_rows_for_guaranteed_floorで先に退避しており（本メソッドが呼ばれる時点で退避は完了済み）、
     # ここではその後の生存数を前提に受け入れ可能数を計算するだけでよい。
     # 500行上限（MAX_TOTAL_ROWS）は予算計算（budget）だけで担保する。
-    def self.select_new_rows(brand_new_rows_all, surviving_existing_rows)
-      budget = new_row_budget(surviving_existing_rows.size)
+    def self.select_new_rows(brand_new_rows_all, surviving_existing_rows, max_total_rows:, max_new_rows_per_run:,
+                             max_rows_per_site:)
+      budget = new_row_budget(surviving_existing_rows.size, max_total_rows, max_new_rows_per_run)
       return [] if budget <= 0
 
       new_row_object_ids = brand_new_rows_all.each_with_object({}) { |row, memo| memo[row.object_id] = true }
       surviving_existing_count_by_site = count_rows_by_site(surviving_existing_rows)
       candidate_rows_by_site = group_new_candidates_within_site_capacity(
-        brand_new_rows_all, new_row_object_ids, surviving_existing_count_by_site
+        brand_new_rows_all, new_row_object_ids, surviving_existing_count_by_site, max_rows_per_site
       )
 
       guaranteed_floor_rows, taken_count_by_site, remaining_budget = select_guaranteed_floor_rows(
@@ -294,8 +303,8 @@ module FreelanceJobs
     # 生存既存行数を差し引く（既存行だけで500件を超えている場合は負になり、新規行は0件になる）。
     # evict_rows_for_guaranteed_floorで既存行が退避された後に呼ばれる場合は、
     # その分だけ生存既存行数が減っているため、退避で確保した枠がそのまま予算に反映される。
-    def self.new_row_budget(surviving_existing_row_count)
-      [MAX_NEW_ROWS_PER_RUN, MAX_TOTAL_ROWS - surviving_existing_row_count].min
+    def self.new_row_budget(surviving_existing_row_count, max_total_rows, max_new_rows_per_run)
+      [max_new_rows_per_run, max_total_rows - surviving_existing_row_count].min
     end
 
     def self.count_rows_by_site(rows)
@@ -313,23 +322,24 @@ module FreelanceJobs
     # 退避したサイトがMAX_ROWS_PER_SITE(40)以上のままなら、group_new_candidates_
     # within_site_capacity上の受け入れ可能数は0のまま変わらない。したがって、その場合は
     # この実行で退避したサイトの新規行が同じ実行で入ることはない（次回以降の実行で改めて候補になる）。
-    def self.evict_rows_for_guaranteed_floor(surviving_existing_rows, brand_new_rows_all, normalized_protected_urls)
+    def self.evict_rows_for_guaranteed_floor(surviving_existing_rows, brand_new_rows_all, normalized_protected_urls,
+                                             max_total_rows:, max_new_rows_per_run:, max_rows_per_site:)
       # 既にMAX_TOTAL_ROWSを「超えている」シートは、手作業の行追加などによる異常系として扱う。
       # 退避で上限まで削るのではなく、従来どおり既存行を全部残し、新規行は入れない（予算が負になるため）。
       # ちょうどMAX_TOTAL_ROWS（超えてはいない）の場合は対象外で、通常どおり退避する。
-      return [surviving_existing_rows, []] if surviving_existing_rows.size > MAX_TOTAL_ROWS
+      return [surviving_existing_rows, []] if surviving_existing_rows.size > max_total_rows
 
-      budget = new_row_budget(surviving_existing_rows.size)
+      budget = new_row_budget(surviving_existing_rows.size, max_total_rows, max_new_rows_per_run)
       new_row_object_ids = brand_new_rows_all.each_with_object({}) { |row, memo| memo[row.object_id] = true }
       surviving_existing_count_by_site = count_rows_by_site(surviving_existing_rows)
       candidate_rows_by_site = group_new_candidates_within_site_capacity(
-        brand_new_rows_all, new_row_object_ids, surviving_existing_count_by_site
+        brand_new_rows_all, new_row_object_ids, surviving_existing_count_by_site, max_rows_per_site
       )
       guaranteed_floor_demand = candidate_rows_by_site.values.sum do |candidate_rows|
         [NEW_ROWS_FLOOR_PER_SITE, candidate_rows.size].min
       end
 
-      shortfall = [guaranteed_floor_demand, MAX_NEW_ROWS_PER_RUN].min - budget
+      shortfall = [guaranteed_floor_demand, max_new_rows_per_run].min - budget
       return [surviving_existing_rows, []] if shortfall <= 0
 
       # 退避する行の優先度判定（row_priority_key）を、退避前の元の並び順に固定する
@@ -340,14 +350,14 @@ module FreelanceJobs
 
       # 退避を始める時点で40超のサイトがあるかどうかで、退避元の選び方を実行中ずっと固定する
       # （超過が解消した途端に最多サイトへ切り替わり、40行ちょうどのサイトまで削ってしまうのを防ぐため）。
-      overflow_sites_only = surviving_existing_count_by_site.values.any? { |row_count| row_count > MAX_ROWS_PER_SITE }
+      overflow_sites_only = surviving_existing_count_by_site.values.any? { |row_count| row_count > max_rows_per_site }
 
       remaining_rows = surviving_existing_rows.dup
       evicted_rows = []
 
       shortfall.times do
         row_to_evict = pick_row_to_evict(remaining_rows, normalized_protected_urls, existing_original_index,
-                                         overflow_sites_only: overflow_sites_only)
+                                         overflow_sites_only: overflow_sites_only, max_rows_per_site: max_rows_per_site)
         break unless row_to_evict # 退避できる行が尽きたら、shortfallが残っていても打ち切る
 
         remaining_rows.delete_at(remaining_rows.index { |row| row.equal?(row_to_evict) })
@@ -359,10 +369,12 @@ module FreelanceJobs
 
     # 退避元のサイトを毎回選び直し、そのサイト内で最も優先度の低い（＝チェックされておらず、
     # 退避しても惜しくない）行を1件選ぶ。退避元のサイトはpick_site_to_evict_fromで決める。
-    def self.pick_row_to_evict(remaining_rows, normalized_protected_urls, existing_original_index, overflow_sites_only:)
+    def self.pick_row_to_evict(remaining_rows, normalized_protected_urls, existing_original_index, overflow_sites_only:,
+                               max_rows_per_site:)
       rows_by_site = remaining_rows.group_by { |row| row[SITE_COLUMN_INDEX] }
       target_site_name = pick_site_to_evict_from(rows_by_site, normalized_protected_urls,
-                                                 overflow_sites_only: overflow_sites_only)
+                                                 overflow_sites_only: overflow_sites_only,
+                                                 max_rows_per_site: max_rows_per_site)
       return nil unless target_site_name
 
       candidate_rows = evictable_rows_of_site(rows_by_site[target_site_name], normalized_protected_urls)
@@ -378,12 +390,12 @@ module FreelanceJobs
     #   生存数が最多のサイト（同点はサイト名の文字列昇順）を選ぶ。40ちょうどのサイトばかりで
     #   シートが飽和していても、新規サイトの保証枠を確保できるようにするため。
     #   退避のたびに再評価するので、最多のサイトが1件減れば次は別のサイトが選ばれる。
-    def self.pick_site_to_evict_from(rows_by_site, normalized_protected_urls, overflow_sites_only:)
+    def self.pick_site_to_evict_from(rows_by_site, normalized_protected_urls, overflow_sites_only:, max_rows_per_site:)
       evictable_site_names = rows_by_site.keys.select do |site_name|
         evictable_rows_of_site(rows_by_site[site_name], normalized_protected_urls).any?
       end
       if overflow_sites_only
-        evictable_site_names = evictable_site_names.select { |site_name| rows_by_site[site_name].size > MAX_ROWS_PER_SITE }
+        evictable_site_names = evictable_site_names.select { |site_name| rows_by_site[site_name].size > max_rows_per_site }
       end
 
       evictable_site_names.min_by { |site_name| [-rows_by_site[site_name].size, site_name] }
@@ -400,12 +412,12 @@ module FreelanceJobs
     # AC-22: サイトごとに新規候補をrow_priority_key昇順（優先度が高い順）に並べ、
     # MAX_ROWS_PER_SITEから生存既存行数を引いた受け入れ可能数で切り詰める。
     def self.group_new_candidates_within_site_capacity(brand_new_rows_all, new_row_object_ids,
-                                                         surviving_existing_count_by_site)
+                                                         surviving_existing_count_by_site, max_rows_per_site)
       grouped_by_site = brand_new_rows_all.group_by { |row| row[SITE_COLUMN_INDEX] }
 
       grouped_by_site.each_with_object({}) do |(site_name, candidate_rows), candidate_rows_by_site|
         sorted_candidate_rows = candidate_rows.sort_by { |row| row_priority_key(row, new_row_object_ids, {}) }
-        acceptable_count = [MAX_ROWS_PER_SITE - surviving_existing_count_by_site[site_name], 0].max
+        acceptable_count = [max_rows_per_site - surviving_existing_count_by_site[site_name], 0].max
         candidate_rows_by_site[site_name] = sorted_candidate_rows.first(acceptable_count)
       end
     end
