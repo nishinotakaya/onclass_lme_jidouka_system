@@ -86,15 +86,15 @@ class FreelanceJobsResearchWorkerTest < Minitest::Test
   end
 
   def test_perform_without_profile_key_runs_all_profiles_in_order
-    stub_research_service_new(results_by_profile_key: { "beginner" => {}, "engineer" => {} }) do |received_kwargs|
+    stub_research_service_new(results_by_profile_key: { "beginner" => {}, "engineer" => {}, "hokkaido" => {} }) do |received_kwargs|
       FreelanceJobs::ResearchWorker.new.perform
 
-      assert_equal ["beginner", "engineer"], received_kwargs.map { |kwargs| kwargs[:profile].key }
+      assert_equal ["beginner", "engineer", "hokkaido"], received_kwargs.map { |kwargs| kwargs[:profile].key }
     end
   end
 
   def test_perform_passes_run_window_label_to_each_research_service
-    stub_research_service_new(results_by_profile_key: { "beginner" => {}, "engineer" => {} }) do |received_kwargs|
+    stub_research_service_new(results_by_profile_key: { "beginner" => {}, "engineer" => {}, "hokkaido" => {} }) do |received_kwargs|
       FreelanceJobs::ResearchWorker.new.perform
 
       assert(received_kwargs.all? { |kwargs| kwargs[:run_window_label] == FreelanceJobs::ResearchWorker::RUN_WINDOW_LABEL })
@@ -119,17 +119,17 @@ class FreelanceJobsResearchWorkerTest < Minitest::Test
 
   def test_perform_continues_to_second_profile_when_first_profile_raises
     beginner_error = StandardError.new("beginner boom")
-    stub_research_service_new(results_by_profile_key: { "beginner" => beginner_error, "engineer" => {} }) do |received_kwargs|
+    stub_research_service_new(results_by_profile_key: { "beginner" => beginner_error, "engineer" => {}, "hokkaido" => {} }) do |received_kwargs|
       assert_raises(StandardError) { FreelanceJobs::ResearchWorker.new.perform }
 
-      assert_equal ["beginner", "engineer"], received_kwargs.map { |kwargs| kwargs[:profile].key },
-                   "1つ目のプロファイルが例外でも2つ目は実行される"
+      assert_equal ["beginner", "engineer", "hokkaido"], received_kwargs.map { |kwargs| kwargs[:profile].key },
+                   "1つ目のプロファイルが例外でも後続のプロファイルも実行される"
     end
   end
 
   def test_perform_reraises_the_error_from_the_failing_profile
     beginner_error = StandardError.new("beginner boom")
-    stub_research_service_new(results_by_profile_key: { "beginner" => beginner_error, "engineer" => {} }) do |_received_kwargs|
+    stub_research_service_new(results_by_profile_key: { "beginner" => beginner_error, "engineer" => {}, "hokkaido" => {} }) do |_received_kwargs|
       error = assert_raises(StandardError) { FreelanceJobs::ResearchWorker.new.perform }
 
       assert_equal "beginner boom", error.message
@@ -139,22 +139,22 @@ class FreelanceJobsResearchWorkerTest < Minitest::Test
   def test_perform_reraises_only_the_first_error_when_both_profiles_fail
     beginner_error = StandardError.new("beginner boom")
     engineer_error = StandardError.new("engineer boom")
-    stub_research_service_new(results_by_profile_key: { "beginner" => beginner_error, "engineer" => engineer_error }) do |received_kwargs|
+    stub_research_service_new(results_by_profile_key: { "beginner" => beginner_error, "engineer" => engineer_error, "hokkaido" => {} }) do |received_kwargs|
       error = assert_raises(StandardError) { FreelanceJobs::ResearchWorker.new.perform }
 
       assert_equal "beginner boom", error.message, "最初(beginner)の例外が再raiseされる想定"
-      assert_equal ["beginner", "engineer"], received_kwargs.map { |kwargs| kwargs[:profile].key }
+      assert_equal ["beginner", "engineer", "hokkaido"], received_kwargs.map { |kwargs| kwargs[:profile].key }
     end
   end
 
   def test_perform_does_not_raise_when_all_profiles_succeed
-    stub_research_service_new(results_by_profile_key: { "beginner" => {}, "engineer" => {} }) do |_received_kwargs|
+    stub_research_service_new(results_by_profile_key: { "beginner" => {}, "engineer" => {}, "hokkaido" => {} }) do |_received_kwargs|
       FreelanceJobs::ResearchWorker.new.perform
     end
   end
 
   def test_stub_is_fully_restored_after_each_test_so_class_new_is_the_original_class_new
-    stub_research_service_new(results_by_profile_key: { "beginner" => {}, "engineer" => {} }) do |_received_kwargs|
+    stub_research_service_new(results_by_profile_key: { "beginner" => {}, "engineer" => {}, "hokkaido" => {} }) do |_received_kwargs|
       FreelanceJobs::ResearchWorker.new.perform
     end
 
@@ -165,7 +165,7 @@ class FreelanceJobsResearchWorkerTest < Minitest::Test
   # 中断(aborted)は例外にならないため、ログに出るだけで誰も気づけない。必ず通知する。
   def test_perform_notifies_when_a_profile_is_aborted
     aborted_summary = { aborted: true, reason: "既存シートにヘッダー行(🌟おすすめ)が見つかりません" }
-    stub_research_service_new(results_by_profile_key: { "beginner" => {}, "engineer" => aborted_summary }) do |_kwargs|
+    stub_research_service_new(results_by_profile_key: { "beginner" => {}, "engineer" => aborted_summary, "hokkaido" => {} }) do |_kwargs|
       FreelanceJobs::ResearchWorker.new.perform
 
       failures = FreelanceJobs::AlertNotifier.calls.select { |call| call[:kind] == :failure }
@@ -177,7 +177,7 @@ class FreelanceJobsResearchWorkerTest < Minitest::Test
   # 例外で落ちた場合も同じく通知する（例外の中身をそのまま渡す）。
   def test_perform_notifies_when_a_profile_raises
     beginner_error = StandardError.new("beginner boom")
-    stub_research_service_new(results_by_profile_key: { "beginner" => beginner_error, "engineer" => {} }) do |_kwargs|
+    stub_research_service_new(results_by_profile_key: { "beginner" => beginner_error, "engineer" => {}, "hokkaido" => {} }) do |_kwargs|
       assert_raises(StandardError) { FreelanceJobs::ResearchWorker.new.perform }
 
       failure = FreelanceJobs::AlertNotifier.calls.find { |call| call[:kind] == :failure }
@@ -188,10 +188,10 @@ class FreelanceJobsResearchWorkerTest < Minitest::Test
 
   # 成功したら最終成功時刻を記録する（ウォッチドッグの入力になる）。
   def test_perform_records_success_for_each_succeeded_profile
-    stub_research_service_new(results_by_profile_key: { "beginner" => {}, "engineer" => {} }) do |_kwargs|
+    stub_research_service_new(results_by_profile_key: { "beginner" => {}, "engineer" => {}, "hokkaido" => {} }) do |_kwargs|
       FreelanceJobs::ResearchWorker.new.perform
 
-      assert_equal [["beginner", :success], ["engineer", :success]],
+      assert_equal [["beginner", :success], ["engineer", :success], ["hokkaido", :success]],
                     FreelanceJobs::AlertNotifier.calls.map { |call| [call[:profile_key], call[:kind]] }
     end
   end

@@ -26,7 +26,7 @@ else
   # closure_verifierはsheet_merger・job_postingに依存するため共通基盤の後、
   # research_serviceより前に読む（research_serviceがclosure_verifierを参照するため）。
   %w[
-    engineer_classifier profile
+    engineer_classifier hokkaido_classifier profile
     closure_verifier research_service
   ].each { |name| require "#{root}/services/freelance_jobs/#{name}" }
 end

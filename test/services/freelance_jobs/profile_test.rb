@@ -5,6 +5,8 @@
 # find/all の振る舞いと、定義（Struct・配列・Hashの入れ子）が deep_freeze されていることを確認する。
 
 require_relative "../../support/freelance_jobs_loader"
+require "yaml"
+require "date"
 
 class FreelanceJobsProfileTest < Minitest::Test
   # --- find ---
@@ -49,12 +51,13 @@ class FreelanceJobsProfileTest < Minitest::Test
 
   # --- all ---
 
-  def test_all_returns_beginner_then_engineer_in_order
-    assert_equal ["beginner", "engineer"], FreelanceJobs::Profile.all.map(&:key)
+  def test_all_returns_beginner_then_engineer_then_hokkaido_in_order
+    assert_equal ["beginner", "engineer", "hokkaido"], FreelanceJobs::Profile.all.map(&:key)
   end
 
   def test_all_returns_the_same_definitions_as_the_named_constants
-    assert_equal [FreelanceJobs::Profile::BEGINNER, FreelanceJobs::Profile::ENGINEER], FreelanceJobs::Profile.all
+    assert_equal [FreelanceJobs::Profile::BEGINNER, FreelanceJobs::Profile::ENGINEER, FreelanceJobs::Profile::HOKKAIDO],
+                 FreelanceJobs::Profile.all
   end
 
   # --- engineer header: G列・N列だけ差し替え、それ以外はHEADERと同じ ---
@@ -230,8 +233,8 @@ class FreelanceJobsProfileTest < Minitest::Test
       source_classes[techcareer_index + 1, 4],
       "Techcareerの直後にWorkship, Offers, ForkwellJobs, DymTechの順で並ぶはず"
     )
-    assert_equal FreelanceJobs::Sources::Crowdworks, source_classes[techcareer_index + 8],
-                 "4サイトとその直後の3サイト(Remogu・AtEngineer・MijicaFreelance)の後はクラウドソーシング群の先頭(Crowdworks)のはず"
+    assert_equal FreelanceJobs::Sources::Crowdworks, source_classes[techcareer_index + 10],
+                 "4サイトとその直後の5サイト(Remogu・AtEngineer・MijicaFreelance・TechReach・LancersAgent)の後はクラウドソーシング群の先頭(Crowdworks)のはず"
   end
 
   def test_engineer_four_new_sources_have_empty_options
@@ -248,7 +251,7 @@ class FreelanceJobsProfileTest < Minitest::Test
     end
   end
 
-  # --- Remogu・アットエンジニア・mijicaフリーランスはDymTechの直後 ---
+  # --- Remogu・アットエンジニア・mijicaフリーランスはDymTechの直後（続けてTechReach・LancersAgent） ---
 
   def test_engineer_source_specs_places_three_sources_right_after_dym_tech_with_empty_options
     specs = FreelanceJobs::Profile::ENGINEER.source_specs
@@ -262,15 +265,28 @@ class FreelanceJobsProfileTest < Minitest::Test
     dym_tech_index = source_classes.index(FreelanceJobs::Sources::DymTech)
     refute_nil dym_tech_index
     assert_equal expected_classes, source_classes[dym_tech_index + 1, 3]
-    assert_equal FreelanceJobs::Sources::Crowdworks, source_classes[dym_tech_index + 4]
+    assert_equal FreelanceJobs::Sources::Crowdworks, source_classes[dym_tech_index + 6],
+                 "MijicaFreelanceの後にTechReach・LancersAgentが並び、その直後がCrowdworksのはず"
     assert_equal [{}, {}, {}], specs[dym_tech_index + 1, 3].map(&:last)
     assert_equal ["Remogu", "アットエンジニア", "mijicaフリーランス"], expected_classes.map { |klass| klass::SITE_NAME }
   end
 
-  def test_engineer_source_specs_has_thirty_six_unique_sources
+  # 2026-10-08追加: テックリーチ・ランサーズエージェントは既定の取得対象（3スキル／2スキル）で足りるためオプション不要。
+  def test_engineer_source_specs_places_tech_reach_and_lancers_agent_right_after_mijica_freelance_with_empty_options
+    specs = FreelanceJobs::Profile::ENGINEER.source_specs
+    source_classes = specs.map(&:first)
+
+    mijica_index = source_classes.index(FreelanceJobs::Sources::MijicaFreelance)
+    refute_nil mijica_index
+    assert_equal [FreelanceJobs::Sources::TechReach, FreelanceJobs::Sources::LancersAgent],
+                 source_classes[mijica_index + 1, 2]
+    assert_equal [{}, {}], specs[mijica_index + 1, 2].map(&:last)
+  end
+
+  def test_engineer_source_specs_has_thirty_eight_unique_sources
     source_classes = FreelanceJobs::Profile::ENGINEER.source_specs.map(&:first)
 
-    assert_equal 36, source_classes.size
+    assert_equal 38, source_classes.size
     assert_equal source_classes.size, source_classes.uniq.size, "同じソースが重複登録されている"
   end
 
@@ -283,6 +299,85 @@ class FreelanceJobsProfileTest < Minitest::Test
 
   def test_beginner_definition_has_no_site_list_sheet_gid
     assert_nil FreelanceJobs::Profile::BEGINNER.site_list_sheet_gid
+  end
+
+  # --- AC-06: 北海道 出社・ハイブリッド プロファイル ---
+
+  def test_find_returns_hokkaido_definition_for_known_key
+    assert_same FreelanceJobs::Profile::HOKKAIDO, FreelanceJobs::Profile.find("hokkaido")
+  end
+
+  def test_hokkaido_definition_basic_attributes
+    definition = FreelanceJobs::Profile::HOKKAIDO
+
+    assert_equal "hokkaido", definition.key
+    assert_equal "北海道 出社・ハイブリッド", definition.label
+    assert_equal 1_565_795_057, definition.sheet_gid
+    assert_equal FreelanceJobs::Profile.build_engineer_header, definition.header
+    assert_equal ["Ruby", "TypeScript", "React", "その他"], definition.category_order
+    assert_equal FreelanceJobs::HokkaidoClassifier, definition.classifier
+  end
+
+  def test_hokkaido_definition_sheet_behavior_flags
+    definition = FreelanceJobs::Profile::HOKKAIDO
+
+    assert_equal false, definition.new_rows_require_star
+    assert_equal true, definition.checkbox_column
+    assert_nil definition.hidden_level_marker
+    assert_nil definition.site_list_sheet_gid
+  end
+
+  # 北海道は都道府県一覧URLを直接たどるため、キーワードではなく都道府県ターゲットで3サイトを指定する。
+  # フルリモート案件は分類器側で落とすので提供元は問わず拾うが、PE-BANKは Sources::PeBank で直接取るため
+  # フリーランスHub経由の「Pe-BANK フリーランス」提供案件だけ除外する（ボードの北海道一覧に該当案件は無い）。
+  def test_hokkaido_source_specs_are_three_prefecture_listings
+    assert_equal(
+      [
+        [FreelanceJobs::Sources::FreelanceBoard,
+         { search_targets: [{ prefecture_slug: "hokkaido" }], max_pages: 3, excluded_providers: [] }],
+        [FreelanceJobs::Sources::FreelanceHub,
+         { search_targets: [{ prefecture_id: 1 }], max_pages: 3, excluded_providers: ["Pe-BANK フリーランス"] }],
+        [FreelanceJobs::Sources::PeBank,
+         { search_targets: [{ language_slug: "hokkaido", category_hint: nil }], max_pages: 3 }]
+      ],
+      FreelanceJobs::Profile::HOKKAIDO.source_specs
+    )
+  end
+
+  def test_hokkaido_definition_is_deeply_frozen
+    definition = FreelanceJobs::Profile::HOKKAIDO
+
+    assert definition.frozen?
+    assert definition.source_specs.frozen?
+    assert definition.category_order.frozen?
+    assert definition.header.frozen?
+    definition.source_specs.each do |source_spec|
+      assert source_spec.frozen?
+      assert source_spec.last.frozen?, "#{source_spec.first}のoptions Hashがfrozenでない"
+      assert source_spec.last[:search_targets].frozen?
+    end
+  end
+
+  # オプションのキー名が取得元の initialize と食い違うと本番の朝バッチで初めて ArgumentError になるため、
+  # 通信せずに生成だけして実在の引数と合っていることを確認する。
+  def test_hokkaido_source_specs_options_are_accepted_by_each_source_initialize
+    fetcher = Object.new
+    FreelanceJobs::Profile::HOKKAIDO.source_specs.each do |source_class, options|
+      source = source_class.new(fetcher: fetcher, today: Date.new(2026, 10, 8), **options)
+
+      assert_instance_of source_class, source
+    end
+  end
+
+  # --- AC-06: scheduler の description は3シート更新を示す ---
+
+  def test_scheduler_research_job_description_mentions_three_sheets
+    %w[scheduler_production.yml scheduler_development.yml].each do |file_name|
+      schedule = YAML.load_file(File.expand_path("../../../config/#{file_name}", __dir__))
+      description = schedule.fetch("freelance_jobs_research_morning").fetch("description")
+
+      assert_includes description, "3シート", "#{file_name} の副業案件ジョブ説明が3シート更新になっていない"
+    end
   end
 
   # --- deep_freeze はコピーを作る（元の定数を破壊しない） ---

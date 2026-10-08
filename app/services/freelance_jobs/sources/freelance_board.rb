@@ -61,7 +61,9 @@ module FreelanceJobs
         "Bizlink",
         "TechStock",
         "coconalaテック",
-        "ココナラテック"
+        "ココナラテック",
+        # 個別取得元 Sources::TechReach（2026-10-08 追加）と URL が違うだけの同一案件になり二重掲載されるため
+        "TechReach"
       ].freeze
 
       NUXT_DATA_SELECTOR = "script#__NUXT_DATA__"
@@ -373,7 +375,7 @@ module FreelanceJobs
         postings = []
 
         (1..@max_pages).each do |page_number|
-          body = fetch_page_body(target[:keyword], page_number, fetch_failures)
+          body = fetch_page_body(target, page_number, fetch_failures)
           break if body.nil?
 
           page_postings = self.class.parse(body, today: @today, category_hint: target[:hint])
@@ -393,8 +395,8 @@ module FreelanceJobs
       # 散発的なHTTPエラー・通信層のタイムアウト・切断は、1ページの失敗でキーワード全体・取得元全体を
       # 落とさず、そのキーワードのページ送りだけを打ち切って次のキーワードへ進む。
       # rescueの範囲が@fetcher.getの1回だけなので、StandardErrorで受けてもパース側のバグは覆い隠さない。
-      def fetch_page_body(keyword, page_number, fetch_failures)
-        get_with_single_retry(list_url(keyword, page_number))
+      def fetch_page_body(target, page_number, fetch_failures)
+        get_with_single_retry(list_url(target, page_number))
       rescue FreelanceJobs::AccessBlockedError
         raise
       rescue StandardError => error
@@ -418,9 +420,18 @@ module FreelanceJobs
       end
 
       # 1ページ目は page パラメータ無し（`&page=1` の挙動は未検証のため実測済みの形に合わせる）。
-      def list_url(keyword, page_number)
-        url = "#{BASE_URL}/jobs?keyword=#{CGI.escape(keyword)}"
+      def list_url(target, page_number)
+        return prefecture_list_url(target[:prefecture_slug], page_number) if target[:keyword].nil?
+
+        url = "#{BASE_URL}/jobs?keyword=#{CGI.escape(target[:keyword])}"
         page_number == 1 ? url : "#{url}&page=#{page_number}"
+      end
+
+      # 都道府県一覧（北海道案件プロファイル用。2026-10-08 実測: /jobs/hokkaido は1,700件・30件/頁）。
+      # クエリが page だけなので、2頁目以降の区切りはキーワード経路の `&` ではなく `?`。
+      def prefecture_list_url(prefecture_slug, page_number)
+        url = "#{BASE_URL}/jobs/#{prefecture_slug}"
+        page_number == 1 ? url : "#{url}?page=#{page_number}"
       end
     end
   end

@@ -387,6 +387,33 @@ class FreelanceJobsSourcesPeBankTest < Minitest::Test
     refute_includes source_classes, FreelanceJobs::Sources::PeBank
   end
 
+  # --- 北海道一覧（北海道案件プロファイル用。2026-10-08 追加） ---
+
+  HOKKAIDO_FIXTURE_NAME = "pe_bank_hokkaido.html"
+  HOKKAIDO_PAGE1_URL = "https://pe-bank.jp/project/hokkaido/"
+  HOKKAIDO_PAGE2_URL = "https://pe-bank.jp/project/hokkaido/?p=2"
+
+  # 都道府県LPも言語LPと同じ /project/<slug>/ なので、language_slug に "hokkaido" を渡すだけで使える。
+  def test_fetch_with_hokkaido_slug_requests_existing_url_format
+    fetcher = RecordingFetcher.new(body: read_fixture(HOKKAIDO_FIXTURE_NAME))
+    source = FreelanceJobs::Sources::PeBank.new(
+      fetcher: fetcher, today: TODAY, search_targets: [{ language_slug: "hokkaido", category_hint: nil }], max_pages: 2
+    )
+
+    postings = source.fetch
+
+    assert_equal [HOKKAIDO_PAGE1_URL, HOKKAIDO_PAGE2_URL], fetcher.requested_urls
+    assert_equal 50, postings.size
+  end
+
+  def test_parse_hokkaido_fixture_returns_fifty_postings_with_location
+    postings = parse_fixture(HOKKAIDO_FIXTURE_NAME, category_hint: nil)
+
+    assert_equal 50, postings.size
+    assert postings.all? { |posting| posting.description.include?("勤務地:") },
+           "北海道一覧の案件に勤務地が入っていない"
+  end
+
   private
 
   def build_source(fetcher, language_slugs, max_pages: 2)

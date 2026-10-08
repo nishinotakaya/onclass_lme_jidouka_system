@@ -124,6 +124,10 @@ module FreelanceJobs
           [FreelanceJobs::Sources::Remogu, {}],
           [FreelanceJobs::Sources::AtEngineer, {}],
           [FreelanceJobs::Sources::MijicaFreelance, {}],
+          # 2026-10-08追加: テックリーチ（フリーランスHub経由で9,577件が見えていた最大の未取得エージェント）と
+          # ランサーズエージェント（同457件）。アグリゲータ側は両者を除外して重複を避ける。
+          [FreelanceJobs::Sources::TechReach, {}],
+          [FreelanceJobs::Sources::LancersAgent, {}],
           # クラウドソーシング（未経験向けプロファイルと同じ取得元をキーワード検索で流用する）。
           [FreelanceJobs::Sources::Crowdworks, {
             search_targets: [
@@ -157,7 +161,39 @@ module FreelanceJobs
       )
     )
 
-    DEFINITIONS = [BEGINNER, ENGINEER].freeze
+    # 北海道の出社・ハイブリッド案件（2026-10-08追加）。技術はエンジニア案件なら何でもよく、
+    # 勤務形態・勤務地で絞るため、取得元は都道府県一覧を持つアグリゲータ3つだけを使う
+    # （実測: フリーランスボード1,700件・フリーランスHub236件・PE-BANK489件）。
+    # 一覧は新着順なので3頁（毎朝の新着差分）だけ取る。提供元の除外はフリーランスHubの
+    # 「Pe-BANK フリーランス」だけ（PE-BANKは Sources::PeBank で直接取るため、URLが違うだけの同一案件が重複する）。
+    # ボードの北海道一覧にPE-BANK提供案件は無いので除外なし。
+    HOKKAIDO = deep_freeze(
+      Definition.new(
+        key: "hokkaido",
+        label: "北海道 出社・ハイブリッド",
+        sheet_gid: 1_565_795_057,
+        header: build_engineer_header,
+        category_order: ["Ruby", "TypeScript", "React", "その他"],
+        classifier: FreelanceJobs::HokkaidoClassifier,
+        source_specs: [
+          [FreelanceJobs::Sources::FreelanceBoard, {
+            search_targets: [{ prefecture_slug: "hokkaido" }], max_pages: 3, excluded_providers: []
+          }],
+          [FreelanceJobs::Sources::FreelanceHub, {
+            search_targets: [{ prefecture_id: 1 }], max_pages: 3, excluded_providers: ["Pe-BANK フリーランス"]
+          }],
+          [FreelanceJobs::Sources::PeBank, {
+            search_targets: [{ language_slug: "hokkaido", category_hint: nil }], max_pages: 3
+          }]
+        ],
+        new_rows_require_star: false,
+        checkbox_column: true,
+        hidden_level_marker: nil,
+        site_list_sheet_gid: nil
+      )
+    )
+
+    DEFINITIONS = [BEGINNER, ENGINEER, HOKKAIDO].freeze
 
     # keyに対応する定義を返す。未知のkeyはArgumentError（候補keyをメッセージに含める）。
     def self.find(key)
@@ -168,7 +204,7 @@ module FreelanceJobs
       raise ArgumentError, "未知のプロファイルキーです: #{key.inspect}（候補: #{candidate_keys}）"
     end
 
-    # 全プロファイル定義をbeginner, engineerの順で返す。
+    # 全プロファイル定義をbeginner, engineer, hokkaidoの順で返す。
     def self.all
       DEFINITIONS
     end

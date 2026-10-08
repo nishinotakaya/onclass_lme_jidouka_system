@@ -57,8 +57,11 @@ module FreelanceJobs
       # 集約サイトのため、既に個別の取得元として実装済みのエージェントが提供する案件は重複する。
       # サイト側の提供元ラベル（フッターの /agent/detail/ 一覧の正式表記）で完全一致させて捨てる。
       # ラベルの全角括弧・全角コロンはサイトの表記そのまま（例 "ココナラテック（旧：フリエン/furien）"）。
-      # "クラウドワークス テック" / "ランサーズエージェント（Lancers Argent）" はエージェント事業で、
-      # 既存の CrowdWorks / ランサーズ（公開案件）とは別物なので除外しない。
+      # "クラウドワークス テック" はエージェント事業で、既存の CrowdWorks / ランサーズ（公開案件）とは
+      # 別物なので除外しない。
+      # テックリーチ・ランサーズエージェント（Lancers Argent）は 2026-10-08 に個別取得元
+      # （Sources::TechReach / LancersAgent）として実装したので除外する
+      # （実測: Hub 全体でテックリーチ 9,577 件・ランサーズエージェント 457 件を提供）。
       DEFAULT_EXCLUDED_PROVIDERS = [
         "レバテックフリーランス",
         "レバテッククリエイター",
@@ -66,7 +69,9 @@ module FreelanceJobs
         "ビズリンク",
         "HiPro Tech（ハイプロテック）",
         "Findy Freelance",
-        "フォスターフリーランス"
+        "フォスターフリーランス",
+        "テックリーチ",
+        "ランサーズエージェント（Lancers Argent）"
       ].freeze
 
       CARD_SELECTOR = "div.ProjectCard"
@@ -251,7 +256,7 @@ module FreelanceJobs
         postings = []
 
         (1..@max_pages).each do |page_number|
-          body = fetch_page_body(target[:skill_id], page_number, fetch_failures)
+          body = fetch_page_body(target, page_number, fetch_failures)
           break if body.nil?
 
           page_postings = self.class.parse(body, today: @today, category_hint: target[:category_hint])
@@ -271,8 +276,8 @@ module FreelanceJobs
       # 散発的なHTTPエラーや通信層のタイムアウト・切断で1ページが取れなくても、スキル全体・
       # 取得元全体を落とさず、そのスキルのページ送りだけを打ち切って次のスキルへ進む。
       # rescueの範囲が@fetcher.getの1回だけなので、StandardErrorで受けてもパース側のバグは覆い隠さない。
-      def fetch_page_body(skill_id, page_number, fetch_failures)
-        get_with_single_retry(list_url(skill_id, page_number))
+      def fetch_page_body(target, page_number, fetch_failures)
+        get_with_single_retry(list_url(target, page_number))
       rescue FreelanceJobs::AccessBlockedError
         raise
       rescue StandardError => error
@@ -296,8 +301,11 @@ module FreelanceJobs
       end
 
       # 並び替えのクエリ名は `order`。`sort` はSSRに無視されるので使わない（注意2参照）。
-      def list_url(skill_id, page_number)
-        "#{BASE_URL}/project/skill/#{skill_id}/?order=created_at&page=#{page_number}"
+      # 都道府県ターゲット（prefecture_id。北海道=1、2026-10-08 実測 236件・40件/頁）は
+      # スキルと同じ書式で /project/prefecture/<id>/ を一覧にする。
+      def list_url(target, page_number)
+        list_path = target[:prefecture_id] ? "prefecture/#{target[:prefecture_id]}" : "skill/#{target[:skill_id]}"
+        "#{BASE_URL}/project/#{list_path}/?order=created_at&page=#{page_number}"
       end
     end
   end

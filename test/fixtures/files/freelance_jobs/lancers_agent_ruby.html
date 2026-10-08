@@ -1,0 +1,996 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<!-- core_01_010 -->
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="/favicon.ico?v=2.0" type="image/x-icon" rel="icon"/> 
+    <!--<link href="/favicon_010.ico" type="image/x-icon" rel="shortcut icon"/>-->
+    <title>
+                案件一覧 | ランサーズ テックエージェント            </title>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="description" content="ランサーズ テックエージェントは仕事を受注したいフリーランスの方にWeb・モバイルアプリ開発案件を中心にご紹介をするエージェントサービスです。すべての発注クライアントと直接契約をしているので高単価案件を多数保有しております。リモートや週3日からのお仕事も可能です。">
+    <meta name="keywords" content="フリーランス,エンジニア,デザイナー,求人,案件,ランサーズ テックエージェント,業務委託,個人事業主,フリーランスエージェント,リモート">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+
+    
+<meta name="format-detection" content="telephone=no">
+
+<script>
+	var PRO = PRO || {};
+	PRO.CM_CONST = {"service_cd":"010","ServiceName1":"\u30e9\u30f3\u30b5\u30fc\u30ba \u30c6\u30c3\u30af\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8","ServiceName2":"\u30e9\u30f3\u30b5\u30fc\u30ba \u30c6\u30c3\u30af\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8","ServiceName3":"\u30e9\u30f3\u30b5\u30fc\u30ba \u30c6\u30c3\u30af\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8","ServiceName4":"LAGT","organization_cd":"0000","business_code":1,"OrganizationName1":"Lancers","OrganizationName2":"\u30e9\u30f3\u30b5\u30fc\u30ba\u682a\u5f0f\u4f1a\u793e","OrganizationName3":"\u30e9\u30f3\u30b5\u30fc\u30ba\u30a8\u30fc\u30b8\u30a7\u30f3\u30b7\u30fc","OrganizationName4":"Lancers","Tel01":"03-5774-6086","Tel02":"","Domain":{"Service":"tech-agent.lancers.jp","ServiceAdmin":"admin.prosheet.jp","Mail":"lancersagent.com"},"Mailinglist":{"support":"jp_support_agent@lancers.co.jp","sales":"jp_sales_agent@lancers.co.jp"},"MailCondition":{"TitleServiceName":"\u30e9\u30f3\u30b5\u30fc\u30ba \u30c6\u30c3\u30af\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8"},"InternalUrl":{"Corporate":"https:\/\/lancers.co.jp\/"},"SignUp":{"Email":true,"Facebook":false,"Google":false},"changeViewF":true,"Image1":{"Path":"\/img\/lps\/talent\/logo_lancersagent_blue.svg?v=1.0","Alt":"\u30e9\u30f3\u30b5\u30fc\u30ba \u30c6\u30c3\u30af\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u30ed\u30b4"},"Image2":{"Path":"\/img\/lps\/talent\/logo_lancersagent_blue.svg?v=1.0","Alt":"\u30e9\u30f3\u30b5\u30fc\u30ba \u30c6\u30c3\u30af\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u30ed\u30b4"},"UserMyPage":{"Tab":{"UserInfo":true,"Interview":true,"Welfare":true,"StepModal":true}},"UserAgreeType":{"privacyP":"00000","privacyU":"00020","termsS":"01010","termsC":"01015"},"UPDuserAgreeDate":{"01010":"2024-11-08 00:00:00","01015":"2024-11-08 00:00:00"},"Interview":{"Type":{"Local1":true,"Local2":true,"Skype1":true,"Skype2":false,"Tel1":true,"Tel2":false},"ReserveTime":1440,"RequiredTime":60,"IntvListLastTime":"23:00","AdminCalendarName1":"\u25c6010\uff1aLAGT\u30ad\u30e3\u30ea\u30a2\u9762\u8ac7","AdminCalendarName2":"\u3010Dev\u3011\u25c7010\uff1aLAGT\u30ad\u30e3\u30ea\u30a2\u9762\u8ac7","AdminCalendarName3":"\u25c6010\uff1aLAGT\u9762\u8ac7"},"Project":{"dispPay":"yen","payColPrefix":"month_","payUnit":"MONTH","dispServiceCD":"('010','020')"},"exec":{"common":{"PROc800":{"Type":"000","disp":false},"Criteo":false,"faviconFile":"favicon_010.ico","Resume":{"name1":"\u5c65\u6b74\u66f8","name2":"","disp":false,"model1":"ResumeUser","model2":"ResumeMask"},"Cv":{"name1":"\u8077\u6b74\u66f8","name2":"","disp":true,"model1":"User","model2":"Sheet"}},"PRO0000":{"LimitDispOffer":4},"PRO0800":{"Type":"010","search":"010","defaultKey":true},"PRO0810":{"Type":"010"},"LANCERS_DISPLAY":1,"LANCERS_USERAGENT":"Lancers Agency\/Lancers Agent"}};
+    var USER_ID = '',
+		INTERVIEWED = '',
+		IS_MOBILE='',
+		PROG_STATS='10',
+		SCROLL_TO = '',
+		LANCERS_OAUTH2_URL = 'https://api.lancers.jp/v1/oauth2/auth?response_type=code&client_id=456b7839-0380-460c-84ab-9c9c17c470c7&redirect_uri=https://tech-agent.lancers.jp/apis/lresponse/&state=620b7e23-bf96-441d-be76-2e9e330fb88c';
+		PRO.AUTH_LOGIN = null;
+		URL_COMMON_PRIVACY='https://lancers.co.jp/privacy';
+</script>
+    <link rel="stylesheet" type="text/css" href="/css/bootstrap.min.css?1791355304"/>    <link rel="stylesheet" type="text/css" href="/css/bootstrap-select.min.css?1791355304"/>    <link rel="stylesheet" href="//ajax.googleapis.com/ajax/libs/jqueryui/1.8.14/themes/ui-lightness/jquery-ui.css">
+    <link rel="stylesheet" type="text/css" href="/css/pc/auth.css?1791355304"/>    <link rel="stylesheet" href="//cdn.rawgit.com/balzss/luxbar/ae5835e2/build/luxbar.min.css" />
+    <link rel="stylesheet" type="text/css" href="/css/common/common_010.css?1791355304"/>    <script type="text/javascript" src="/js/jquery.js?1791355304"></script>    <script type="text/javascript" src="/js/jquery.ui.js?1791355304"></script>    <script type="text/javascript" src="/js/jquery.waypoints.js?1791355304"></script>    <script type="text/javascript" src="/js/jquery.tmpl.js?1791355304"></script>    <script type="text/javascript" src="/js/jquery.pause.min.js?1791355304"></script>    <script type="text/javascript" src="/js/jquery.cookie.js?1791355304"></script>    <script type="text/javascript" src="/js/bootstrap.min.js?1791355304"></script>    <script type="text/javascript" src="/js/bootstrap-select.min.js?1791355304"></script>    <script type="text/javascript" src="/js/common/cm_onload.js?6ac75fca1d3fa"></script>    <script type="text/javascript" src="/js/auth.js?6ac75fca1d40e"></script>
+            
+
+<meta name="twitter:card" content="summary_large_image"/><meta name="twitter:title" content="ランサーズ テックエージェント｜フリーランス・業務委託の案件や求人情報を紹介"/><meta name="twitter:description" content="フリーランスでお仕事をお探しのエンジニアの方へ、ランサーズ テックエージェントでは、週5日に特化することで業界大手企業の直接案件や月単価最大で250万円の高報酬の案件など様々な案件をご紹介させていただきます。"/><meta name="twitter:image:src" content="https://tech-agent.lancers.jp/img/ogp/ogp_010.png"/>
+<meta property="og:title" content="ランサーズ テックエージェント｜フリーランス・業務委託の案件や求人情報を紹介"/><meta property="og:description" content="フリーランスでお仕事をお探しのエンジニアの方へ、ランサーズ テックエージェントでは、週5日に特化することで業界大手企業の直接案件や月単価最大で250万円の高報酬の案件など様々な案件をご紹介させていただきます。"/><meta property="og:site_name" content="ランサーズ テックエージェント"/><meta property="og:url" content="https://tech-agent.lancers.jp/"/><meta property="og:image" content="https://tech-agent.lancers.jp/img/ogp/ogp_010.png"/><meta property="og:type" content="website"/><meta property="og:locale" content="ja_JP"/><meta property="fb:app_id" content="432958243496601"/>
+<script>
+    (function(d, s, id) {
+        var js, fjs = d.getElementsByTagName(s)[0];
+        if (d.getElementById(id)) return;
+        js = d.createElement(s);
+        js.id = id;
+        js.src = "//connect.facebook.net/ja_JP/sdk.js#xfbml=1&appId=432958243496601&version=v17.0";
+        fjs.parentNode.insertBefore(js, fjs);
+    }(document, 'script', 'facebook-jssdk'));
+</script>
+
+<script>
+    // load API file
+    var googleClientId = '916654208822-8lfo1347v5bilitl6ago4n0qiotirpo1.apps.googleusercontent.com';
+    window.GoogleApiStart = function() {
+        var googleApiKey = 'AIzaSyREDACTED_PUBLIC_BROWSER_KEY_000000';
+        gapi.client.setApiKey(googleApiKey);
+    };
+    var script = document.createElement("script");
+    script.setAttribute("src", "//apis.google.com/js/client:plusone.js?onload=GoogleApiStart");
+    document.getElementsByTagName("head")[0].appendChild(script);
+</script>
+
+
+    <!-- Criteo START-->
+        <!-- Criteo END-->
+
+    <!-- リマケタグ START-->
+    
+<!-- Yahoo Code for your Target List -->
+<script type="text/javascript">
+/* <![CDATA[ */
+// var yahoo_ss_retargeting_id = 1000410016;
+// var yahoo_sstag_custom_params = window.yahoo_sstag_params;
+// var yahoo_ss_retargeting = true;
+/* ]]> */
+</script>
+<!--<script type="text/javascript" src="https://s.yimg.jp/images/listing/tool/cv/conversion.js">
+</script>
+<noscript>
+<div style="display:inline;">
+<img height="1" width="1" style="border-style:none;" alt="" src="https://b97.yahoo.co.jp/pagead/conversion/1000410016/?guid=ON&script=0&disvt=false"/>
+</div>
+</noscript>
+-->
+<!-- Yahoo Code for your Target List -->
+<script type="text/javascript" language="javascript">
+/* <![CDATA[ */
+// var yahoo_retargeting_id = 'ZZD4AUA349';
+// var yahoo_retargeting_label = '';
+// var yahoo_retargeting_page_type = '';
+// var yahoo_retargeting_items = [{item_id: '', category_id: '', price: '', quantity: ''}];
+/* ]]> */
+</script>
+<!--<script type="text/javascript" language="javascript" src="https://b92.yahoo.co.jp/js/s_retargeting.js"></script>-->
+
+
+
+<!-- リマーケティング タグの Google コード -->
+<!--
+<!-- リマーケティング タグは、個人を特定できる情報と関連付けることも、デリケートなカテゴリに属するページに設置することも許可されません。タグの設定方法については、こちらのページをご覧ください。
+http://google.com/ads/remarketingsetup -->
+<script type="text/javascript">
+/* <![CDATA[*/
+var google_conversion_id = 855045268;
+var google_custom_params = window.google_tag_params;
+var google_remarketing_only = true;
+/* ]]> */
+</script>
+<script type="text/javascript" src="//www.googleadservices.com/pagead/conversion.js">
+</script>
+<noscript>
+<div style="display:inline;">
+<img height="1" width="1" style="border-style:none;" alt="" src="//googleads.g.doubleclick.net/pagead/viewthroughconversion/855045268/?guid=ON&amp;script=0"/>
+</div>
+</noscript>
+
+
+<!-- Facebook Pixel Code ADD:181019-->
+<script>
+  !function(f,b,e,v,n,t,s)
+  {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+  n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+  if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+  n.queue=[];t=b.createElement(e);t.async=!0;
+  t.src=v;s=b.getElementsByTagName(e)[0];
+  s.parentNode.insertBefore(t,s)}(window, document,'script',
+  'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '415089455688027');
+  fbq('track', 'PageView');
+</script>
+<noscript><img height="1" width="1" style="display:none"
+  src="https://www.facebook.com/tr?id=415089455688027&ev=PageView&noscript=1"
+/></noscript>
+<!-- End Facebook Pixel Code -->
+
+
+<!-- Global site tag (gtag.js) - Google Analytics START -->
+<!-- old Tag util 20181107 -->
+
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-4117196-39"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'UA-4117196-39');
+</script>
+
+<!-- Global site tag (gtag.js) - Google Analytics END -->
+
+
+<!-- Global site tag (gtag.js) - Google Analytics START -->
+<!-- New Tag from 20181107 -->
+
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-119356819-1"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'UA-119356819-1');
+</script>
+
+<!-- Global site tag (gtag.js) - Google Analytics END -->
+
+
+<!-- List Finder remarketing TAG Code ADD:181127-->
+<!-- Delete it IF this tag dont use. this is  for test-->
+<script type="text/javascript">
+var _trackingid = 'LFT-11851-1';
+
+(function() {
+  var lft = document.createElement('script'); lft.type = 'text/javascript'; lft.async = true;
+  lft.src = ('https:' == document.location.protocol ? 'https:' : 'http:') + '//track.list-finder.jp/js/ja/track.js';
+  var snode = document.getElementsByTagName('script')[0]; snode.parentNode.insertBefore(lft, snode);
+})();
+</script>
+<!-- List Finder remarketing TAG Code ADD:181127-->
+
+    <!-- リマケタグ END-->
+
+    <!-- Facebook Tag START-->
+    
+<!-- Facebook Pixel Code -->
+<script>
+  !function(f,b,e,v,n,t,s)
+  {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+  n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+  if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+  n.queue=[];t=b.createElement(e);t.async=!0;
+  t.src=v;s=b.getElementsByTagName(e)[0];
+  s.parentNode.insertBefore(t,s)}(window, document,'script',
+  'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '1973884682631290');
+  fbq('track', 'PageView');
+</script>
+<noscript><img height="1" width="1" style="display:none"
+  src="https://www.facebook.com/tr?id=1973884682631290&ev=PageView&noscript=1"
+/></noscript>
+<!-- End Facebook Pixel Code -->    <!-- Facebook Tag END-->
+
+
+
+<!-- Google Tag Manager (テックエージェント用) -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-KTB95HQ');</script>
+<!-- End Google Tag Manager -->
+
+<!-- Google Tag Manager (ランサーズ全社用) -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-WWS8TC92');</script>
+<!-- End Google Tag Manager -->
+<!-- Global site tag (gtag.js) - Google Analytics START -->
+<!-- move re_marketing_tag_010 -->
+<!--
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-119356819-1"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'UA-119356819-1');
+</script>
+-->
+<!-- Global site tag (gtag.js) - Google Analytics END -->
+
+
+
+<script>
+	var PRO = PRO || {};
+	PRO.CM_CONST = {"service_cd":"010","ServiceName1":"\u30e9\u30f3\u30b5\u30fc\u30ba \u30c6\u30c3\u30af\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8","ServiceName2":"\u30e9\u30f3\u30b5\u30fc\u30ba \u30c6\u30c3\u30af\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8","ServiceName3":"\u30e9\u30f3\u30b5\u30fc\u30ba \u30c6\u30c3\u30af\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8","ServiceName4":"LAGT","organization_cd":"0000","business_code":1,"OrganizationName1":"Lancers","OrganizationName2":"\u30e9\u30f3\u30b5\u30fc\u30ba\u682a\u5f0f\u4f1a\u793e","OrganizationName3":"\u30e9\u30f3\u30b5\u30fc\u30ba\u30a8\u30fc\u30b8\u30a7\u30f3\u30b7\u30fc","OrganizationName4":"Lancers","Tel01":"03-5774-6086","Tel02":"","Domain":{"Service":"tech-agent.lancers.jp","ServiceAdmin":"admin.prosheet.jp","Mail":"lancersagent.com"},"Mailinglist":{"support":"jp_support_agent@lancers.co.jp","sales":"jp_sales_agent@lancers.co.jp"},"MailCondition":{"TitleServiceName":"\u30e9\u30f3\u30b5\u30fc\u30ba \u30c6\u30c3\u30af\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8"},"InternalUrl":{"Corporate":"https:\/\/lancers.co.jp\/"},"SignUp":{"Email":true,"Facebook":false,"Google":false},"changeViewF":true,"Image1":{"Path":"\/img\/lps\/talent\/logo_lancersagent_blue.svg?v=1.0","Alt":"\u30e9\u30f3\u30b5\u30fc\u30ba \u30c6\u30c3\u30af\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u30ed\u30b4"},"Image2":{"Path":"\/img\/lps\/talent\/logo_lancersagent_blue.svg?v=1.0","Alt":"\u30e9\u30f3\u30b5\u30fc\u30ba \u30c6\u30c3\u30af\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u30ed\u30b4"},"UserMyPage":{"Tab":{"UserInfo":true,"Interview":true,"Welfare":true,"StepModal":true}},"UserAgreeType":{"privacyP":"00000","privacyU":"00020","termsS":"01010","termsC":"01015"},"UPDuserAgreeDate":{"01010":"2024-11-08 00:00:00","01015":"2024-11-08 00:00:00"},"Interview":{"Type":{"Local1":true,"Local2":true,"Skype1":true,"Skype2":false,"Tel1":true,"Tel2":false},"ReserveTime":1440,"RequiredTime":60,"IntvListLastTime":"23:00","AdminCalendarName1":"\u25c6010\uff1aLAGT\u30ad\u30e3\u30ea\u30a2\u9762\u8ac7","AdminCalendarName2":"\u3010Dev\u3011\u25c7010\uff1aLAGT\u30ad\u30e3\u30ea\u30a2\u9762\u8ac7","AdminCalendarName3":"\u25c6010\uff1aLAGT\u9762\u8ac7"},"Project":{"dispPay":"yen","payColPrefix":"month_","payUnit":"MONTH","dispServiceCD":"('010','020')"},"exec":{"common":{"PROc800":{"Type":"000","disp":false},"Criteo":false,"faviconFile":"favicon_010.ico","Resume":{"name1":"\u5c65\u6b74\u66f8","name2":"","disp":false,"model1":"ResumeUser","model2":"ResumeMask"},"Cv":{"name1":"\u8077\u6b74\u66f8","name2":"","disp":true,"model1":"User","model2":"Sheet"}},"PRO0000":{"LimitDispOffer":4},"PRO0800":{"Type":"010","search":"010","defaultKey":true},"PRO0810":{"Type":"010"},"LANCERS_DISPLAY":1,"LANCERS_USERAGENT":"Lancers Agency\/Lancers Agent"}};
+    var USER_ID = '',
+		INTERVIEWED = '',
+		IS_MOBILE='',
+		PROG_STATS='10',
+		SCROLL_TO = '',
+		LANCERS_OAUTH2_URL = 'https://api.lancers.jp/v1/oauth2/auth?response_type=code&client_id=456b7839-0380-460c-84ab-9c9c17c470c7&redirect_uri=https://tech-agent.lancers.jp/apis/lresponse/&state=620b7e23-bf96-441d-be76-2e9e330fb88c';
+		PRO.AUTH_LOGIN = null;
+		URL_COMMON_PRIVACY='https://lancers.co.jp/privacy';
+</script>
+
+
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@8/swiper-bundle.min.css" />
+<script src="https://cdn.jsdelivr.net/npm/swiper@8/swiper-bundle.min.js"></script>        <link rel="stylesheet" type="text/css" href="/css/individual/projects/index_010.css?1791355304"/><link rel="stylesheet" type="text/css" href="/css/common/paginator00.css?1791355304"/>    <script type="text/javascript" src="/js/individual/project.js?1791355304"></script></head>
+<body>
+    
+	<link rel="stylesheet" type="text/css" href="/css/common/sideform.css?1791355304"/>
+
+
+<!-- Google Tag Manager (noscript) (テックエージェント用) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-KTB95HQ" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+
+<!-- Google Tag Manager (noscript) (ランサーズ全社用) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-WWS8TC92" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) --> <script type="text/javascript" src="/js/dropdown-menu.js?1791355304"></script>
+        <header id="luxbar" class="luxbar-fixed header follow-header is-show">
+        <input id="luxbar-checkbox" class="luxbar-checkbox" type="checkbox">
+        <div class="luxbar-menu luxbar-menu-right luxbar-menu-light">
+            <ul class="luxbar-navigation">
+                                    <li class="luxbar-header">
+                        <a href="/" class="follow-header__logo"><img src="/img/logo/logo_lancersagent_blue.svg?v=2.1.1" alt="ランサーズ テックエージェント!" /></a>
+                        <label id="luxbar-hamburger" class="luxbar-hamburger luxbar-hamburger-doublespin" for="luxbar-checkbox">
+                            <span></span>
+                        </label>
+                    </li>
+                    <li class="luxbar-item">
+                        <a href="/project">
+                            案件一覧
+                        </a>
+                    </li>
+                    <li class="luxbar-item luxbar-item__nav-dropdown js-dropdown">
+                        <a class="luxbar-item__nav-link" href="/media">
+                            お役立ちコンテンツ
+                        </a>
+                        <ul class="luxbar-item__nav-dropdown-list" style="display: none">
+                            <li>
+                                <a class="luxbar-item__nav-link" href="/media/interview">
+                                    インタビュー
+                                </a>
+                            </li>
+                        </ul>
+                    </li>
+                    <li class="luxbar-item luxbar-item__nav-dropdown-sp js-dropdown-sp">
+                        <div class="luxbar-item__nav-link-toggle js-nav-toggle">
+                            お役立ちコンテンツ
+                        </div>
+                        <ul class="luxbar-item__nav-dropdown-list-sp" style="display: none">
+                            <li>
+                                <a class="luxbar-item__nav-link" href="/media/interview">
+                                    インタビュー
+                                </a>
+                            </li>
+                        </ul>
+                    </li>
+                    <li class="luxbar-item">
+                        <a href="/faq">
+                            よくある質問
+                        </a>
+                    </li>
+                                            <li class="luxbar-item">
+                            <a href="https://biz.tech-agent.lancers.jp" target="_blank">
+                                採用担当者の方はこちら
+                            </a>
+                        </li>
+                        <li class="luxbar-item">
+                            <a href="/users/login" data-id="auth" data-mode="login" data-btn="header" itemprop="url">
+                                ログイン
+                            </a>
+                        </li>
+                        <li class="luxbar-item ad-luxbar-item--btn">
+                            <a href="/sign_up" class="btn btn-secondary">
+                                会員登録
+                            </a>
+                        </li>
+                                                </ul>
+        </div>
+    </header>
+
+<input type="hidden" id="h_pass_min" value="10">
+<input type="hidden" id="h_pass_max" value="20">    <main>
+        
+        <div class="main-content sclearfix">
+            
+
+<script type="text/javascript">
+$(document).ready(function () {
+	$('.pjct_search_key__checkbox').click(function() {
+		var lavel = $(this).data('lavel');
+		if( lavel == 'SEO/SEM' )
+		if ( $(this).prop("checked") == true ) {
+			$('.lavel_seo_sem').prop('checked', true);
+		} else {
+			$('.lavel_seo_sem').prop('checked', false);
+		}
+	});
+});
+</script>
+
+<div class="bg__main">
+	<div class="bg__main--05 rellax" data-rellax-speed="4"><img src="/img/lps/top/bg_02.png"></div>
+</div>
+<div class="main-content sclearfix">
+
+<div class="container">
+    <div class="c-breadcrumb">
+        <ul class="c-breadcrumb-list">
+            <li class="c-breadcrumb-list__item">
+                <a class="c-breadcrumb-list__item__text" href="/">
+                    フリーランスエンジニア案件紹介なら ランサーズ テックエージェント
+                </a>
+            </li>
+            <li class="c-breadcrumb-list__item">
+                <span class="c-breadcrumb-list__item__text">
+                    案件一覧・検索
+                </span>
+            </li>
+        </ul>
+    </div><!-- /c-breadcrumb -->
+
+    <section class="l-section">
+        <div class="cp-projects">
+            <div class="cp-projects__heading">
+                <h2 class="cp-projects__heading__title">
+                    <span>Rubyの</span>案件一覧・検索
+                </h2>
+                <p class="cp-projects__heading__description">
+				ランサーズ テックエージェント では、週3~5日で参画可能なフリーランスエンジニア向けの業務委託案件を多数取り揃えています。<br>
+				WEBサイトに掲載している案件以外にも、<strong>公開できない非公開案件（約80%以上）</strong>が多数あります。<br>
+				まずは<strong>無料の会員登録</strong>をしていただき、マイページよりあなたの<strong>希望条件やスキルセットを登録</strong>してください。<br>
+				登録内容に応じて、業界経験が豊富な専任エージェントが、<strong>あなたのご要望に沿った案件をご提案</strong>させていただきます。
+                </p>
+            </div><!-- /cp-projects__heading -->
+
+            <!-- 検索エリア -->
+            <div class="c-projectSearch">
+            <form class="cmn-contents" id="js__formSearchOffer" action="/project" method="post">
+	            <div class="c-projectSearch__table">
+		            <div class="c-projectSearch__table--row">
+		            	<div class="c-projectSearch__group c-projectSearch__table--freetext">
+			        	    <div class="c-projectSearch__group--label">検索ワード	</div>
+			        		<div class="c-projectSearch__group--form" style="width:100%;">
+								<div class="form-inline project-list__contents cmn-flex cmn-flex__expand--center">
+								    <div class="form-group" style="width:100%;">
+								        <label class="sr-only" for="InputEmail"></label>
+								        <div class="input-group c-projectSearch__table--freetext">
+								            <input type="text" class="form-control" name="q_text" value="">
+								        </div>
+								    </div>
+								</div>
+			        	    </div>
+		            	</div>
+
+						<div class="c-projectSearch__group">
+			            	<div class="c-projectSearch__group--label c-projectSearch__group--labelfr">職種</div>
+			            	<div class="c-projectSearch__group--form">
+				        	    <select class="selectpicker" id="js__bs-sel_bizCatCd" name="q_biz_cat_cd[]" multiple>
+								    								        <option class="js__sortSkills" value="10" data-job-category-id="1" >エンジニア</option>
+								    								        <option class="js__sortSkills" value="20" data-job-category-id="2" >デザイナー</option>
+								    								        <option class="js__sortSkills" value="30" data-job-category-id="3" >PM</option>
+								    								        <option class="js__sortSkills" value="35" data-job-category-id="4" >ディレクター</option>
+								    								        <option class="js__sortSkills" value="40" data-job-category-id="5" >マーケター</option>
+								    								        <option class="js__sortSkills" value="50" data-job-category-id="7" >コンサルタント</option>
+								    								        <option class="js__sortSkills" value="90" data-job-category-id="" >その他</option>
+								    								</select>
+			            	</div>
+		            	</div>
+		            </div>
+
+					<div class="c-projectSearch__table--row">
+						<div class="c-projectSearch__group sp-size pc_style">
+			        		<div class="c-projectSearch__group--label pc_style2">スキル</div>
+			        		<div class="c-projectSearch__group--form" style="width: 100%;">
+				    		    <span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill3" type="checkbox" value="3" data-job-category-id="1" data-lavel="PHP" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill3">PHP</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill5" type="checkbox" value="5" data-job-category-id="1" data-lavel="Ruby" checked><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill5">Ruby</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill4" type="checkbox" value="4" data-job-category-id="1" data-lavel="Java" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill4">Java</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill68" type="checkbox" value="68" data-job-category-id="1" data-lavel="Java (Android)" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill68">Java (Android)</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill81" type="checkbox" value="81" data-job-category-id="1" data-lavel="Kotlin" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill81">Kotlin</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill70" type="checkbox" value="70" data-job-category-id="1" data-lavel="C#" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill70">C#</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill2" type="checkbox" value="2" data-job-category-id="1" data-lavel="C/C++" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill2">C/C++</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill41" type="checkbox" value="41" data-job-category-id="1" data-lavel="Node.js" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill41">Node.js</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill1" type="checkbox" value="1" data-job-category-id="1" data-lavel="Objective-C" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill1">Objective-C</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill42" type="checkbox" value="42" data-job-category-id="1" data-lavel="Swift" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill42">Swift</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill69" type="checkbox" value="69" data-job-category-id="1" data-lavel="Go言語" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill69">Go言語</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill38" type="checkbox" value="38" data-job-category-id="1" data-lavel="Scala" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill38">Scala</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill37" type="checkbox" value="37" data-job-category-id="1" data-lavel="Python" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill37">Python</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill10" type="checkbox" value="10" data-job-category-id="1" data-lavel="JavaScript" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill10">JavaScript</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill12" type="checkbox" value="12" data-job-category-id="1" data-lavel="CSS" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill12">CSS</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill9" type="checkbox" value="9" data-job-category-id="1" data-lavel="HTML" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill9">HTML</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill7" type="checkbox" value="7" data-job-category-id="1" data-lavel="MySQL" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill7">MySQL</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill8" type="checkbox" value="8" data-job-category-id="1" data-lavel="PostgreSQL" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill8">PostgreSQL</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill75" type="checkbox" value="75" data-job-category-id="1" data-lavel="Oracle Database" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill75">Oracle Database</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill61" type="checkbox" value="61" data-job-category-id="1" data-lavel="MongoDB" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill61">MongoDB</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill11" type="checkbox" value="11" data-job-category-id="1" data-lavel="Linux" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill11">Linux</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill40" type="checkbox" value="40" data-job-category-id="1" data-lavel="AWS" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill40">AWS</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill86" type="checkbox" value="86" data-job-category-id="1" data-lavel="VB.NET" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill86">VB.NET</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill87" type="checkbox" value="87" data-job-category-id="1" data-lavel="VBA" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill87">VBA</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill21" type="checkbox" value="21" data-job-category-id="2" data-lavel="PhotoShop" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill21">PhotoShop</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill22" type="checkbox" value="22" data-job-category-id="2" data-lavel="Illustrator" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill22">Illustrator</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill26" type="checkbox" value="26" data-job-category-id="2" data-lavel="WordPress" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill26">WordPress</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill34" type="checkbox" value="34" data-job-category-id="3" data-lavel="分析・データマイニング" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill34">分析・データマイニング</label></span><span class="display_none"><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill95" type="checkbox" value="95" data-job-category-id="4" data-lavel="分析・データマイニング" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill95">分析・データマイニング</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill35" type="checkbox" value="35" data-job-category-id="3" data-lavel="広告の運用・検証" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill35">広告の運用・検証</label></span><span class="display_none"><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill96" type="checkbox" value="96" data-job-category-id="4" data-lavel="広告の運用・検証" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill96">広告の運用・検証</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked lavel_seo_sem" name="q_skill[]" id="skill36" type="checkbox" value="36" data-job-category-id="3" data-lavel="SEO/SEM" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill36">SEO/SEM</label></span><span class="display_none"><input class="pjct_search_key__checkbox js__cntChecked lavel_seo_sem" name="q_skill[]" id="skill97" type="checkbox" value="97" data-job-category-id="4" data-lavel="SEO/SEM" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill97">SEO/SEM</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill66" type="checkbox" value="66" data-job-category-id="3" data-lavel="プロジェクト管理" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill66">プロジェクト管理</label></span><span class="display_none"><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill98" type="checkbox" value="98" data-job-category-id="4" data-lavel="プロジェクト管理" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill98">プロジェクト管理</label></span><span class="display_none"><input class="pjct_search_key__checkbox js__cntChecked lavel_seo_sem" name="q_skill[]" id="skill45" type="checkbox" value="45" data-job-category-id="5" data-lavel="SEO/SEM" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill45">SEO/SEM</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill49" type="checkbox" value="49" data-job-category-id="5" data-lavel="広告(ｻｰﾁ/ターゲティング)" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill49">広告(ｻｰﾁ/ターゲティング)</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill50" type="checkbox" value="50" data-job-category-id="5" data-lavel="広告(リターゲティング)" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill50">広告(リターゲティング)</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill51" type="checkbox" value="51" data-job-category-id="5" data-lavel="広告(媒体)" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill51">広告(媒体)</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill56" type="checkbox" value="56" data-job-category-id="5" data-lavel="ソーシャルメディア運用" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill56">ソーシャルメディア運用</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill57" type="checkbox" value="57" data-job-category-id="5" data-lavel="Web解析(アナリティクス等)" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill57">Web解析(アナリティクス等)</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill59" type="checkbox" value="59" data-job-category-id="5" data-lavel="市場調査・分析" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill59">市場調査・分析</label></span><span class=""><input class="pjct_search_key__checkbox js__cntChecked" name="q_skill[]" id="skill60" type="checkbox" value="60" data-job-category-id="5" data-lavel="競合調査・分析" ><label class="pjct_search_key__label project-list__checkbox--label sp_non" for="skill60">競合調査・分析</label></span>			        		</div>
+		            	</div>
+					</div>
+
+					<div class="c-projectSearch__table--row">
+						<div class="c-projectSearch__group">
+							<div class="c-projectSearch__group--label60">エリア</div>
+							<div class="c-projectSearch__group--form">
+								<select class="selectpicker" id="js__bs-sel_area" name="q_area[]" multiple>
+							    							        <option class="js__sortSkills" value="49" data-job-category-id="勤務地を問わない" >勤務地を問わない</option>
+							    							        <option class="js__sortSkills" value="3" data-job-category-id="北海道" >北海道</option>
+							    							        <option class="js__sortSkills" value="4" data-job-category-id="青森県" >青森県</option>
+							    							        <option class="js__sortSkills" value="5" data-job-category-id="岩手県" >岩手県</option>
+							    							        <option class="js__sortSkills" value="6" data-job-category-id="宮城県" >宮城県</option>
+							    							        <option class="js__sortSkills" value="7" data-job-category-id="秋田県" >秋田県</option>
+							    							        <option class="js__sortSkills" value="8" data-job-category-id="山形県" >山形県</option>
+							    							        <option class="js__sortSkills" value="9" data-job-category-id="福島県" >福島県</option>
+							    							        <option class="js__sortSkills" value="10" data-job-category-id="茨城県" >茨城県</option>
+							    							        <option class="js__sortSkills" value="1" data-job-category-id="東京都(23区内)" >東京都(23区内)</option>
+							    							        <option class="js__sortSkills" value="2" data-job-category-id="東京都(23区外)" >東京都(23区外)</option>
+							    							        <option class="js__sortSkills" value="11" data-job-category-id="栃木県" >栃木県</option>
+							    							        <option class="js__sortSkills" value="12" data-job-category-id="群馬県" >群馬県</option>
+							    							        <option class="js__sortSkills" value="13" data-job-category-id="埼玉県" >埼玉県</option>
+							    							        <option class="js__sortSkills" value="14" data-job-category-id="千葉県" >千葉県</option>
+							    							        <option class="js__sortSkills" value="15" data-job-category-id="神奈川県" >神奈川県</option>
+							    							        <option class="js__sortSkills" value="16" data-job-category-id="新潟県" >新潟県</option>
+							    							        <option class="js__sortSkills" value="17" data-job-category-id="富山県" >富山県</option>
+							    							        <option class="js__sortSkills" value="18" data-job-category-id="石川県" >石川県</option>
+							    							        <option class="js__sortSkills" value="19" data-job-category-id="福井県" >福井県</option>
+							    							        <option class="js__sortSkills" value="20" data-job-category-id="山梨県" >山梨県</option>
+							    							        <option class="js__sortSkills" value="21" data-job-category-id="長野県" >長野県</option>
+							    							        <option class="js__sortSkills" value="22" data-job-category-id="岐阜県" >岐阜県</option>
+							    							        <option class="js__sortSkills" value="23" data-job-category-id="静岡県" >静岡県</option>
+							    							        <option class="js__sortSkills" value="24" data-job-category-id="愛知県" >愛知県</option>
+							    							        <option class="js__sortSkills" value="25" data-job-category-id="三重県" >三重県</option>
+							    							        <option class="js__sortSkills" value="26" data-job-category-id="滋賀県" >滋賀県</option>
+							    							        <option class="js__sortSkills" value="27" data-job-category-id="京都府" >京都府</option>
+							    							        <option class="js__sortSkills" value="28" data-job-category-id="大阪府" >大阪府</option>
+							    							        <option class="js__sortSkills" value="29" data-job-category-id="兵庫県" >兵庫県</option>
+							    							        <option class="js__sortSkills" value="30" data-job-category-id="奈良県" >奈良県</option>
+							    							        <option class="js__sortSkills" value="31" data-job-category-id="和歌山県" >和歌山県</option>
+							    							        <option class="js__sortSkills" value="32" data-job-category-id="鳥取県" >鳥取県</option>
+							    							        <option class="js__sortSkills" value="33" data-job-category-id="島根県" >島根県</option>
+							    							        <option class="js__sortSkills" value="34" data-job-category-id="岡山県" >岡山県</option>
+							    							        <option class="js__sortSkills" value="35" data-job-category-id="広島県" >広島県</option>
+							    							        <option class="js__sortSkills" value="36" data-job-category-id="山口県" >山口県</option>
+							    							        <option class="js__sortSkills" value="37" data-job-category-id="徳島県" >徳島県</option>
+							    							        <option class="js__sortSkills" value="38" data-job-category-id="香川県" >香川県</option>
+							    							        <option class="js__sortSkills" value="39" data-job-category-id="愛媛県" >愛媛県</option>
+							    							        <option class="js__sortSkills" value="40" data-job-category-id="高知県" >高知県</option>
+							    							        <option class="js__sortSkills" value="41" data-job-category-id="福岡県" >福岡県</option>
+							    							        <option class="js__sortSkills" value="42" data-job-category-id="佐賀県" >佐賀県</option>
+							    							        <option class="js__sortSkills" value="43" data-job-category-id="長崎県" >長崎県</option>
+							    							        <option class="js__sortSkills" value="44" data-job-category-id="熊本県" >熊本県</option>
+							    							        <option class="js__sortSkills" value="45" data-job-category-id="大分県" >大分県</option>
+							    							        <option class="js__sortSkills" value="46" data-job-category-id="宮崎県" >宮崎県</option>
+							    							        <option class="js__sortSkills" value="47" data-job-category-id="鹿児島県" >鹿児島県</option>
+							    							        <option class="js__sortSkills" value="48" data-job-category-id="沖縄県" >沖縄県</option>
+							    							        <option class="js__sortSkills" value="50" data-job-category-id="海外" >海外</option>
+							    								</select>
+							</div>
+						</div>
+						<div class="c-projectSearch__group">
+							<div class="c-projectSearch__group--label60 c-projectSearch__group--labelfr">募集状況</div>
+							<div class="c-projectSearch__group--form">
+								<select class="selectpicker" id="js__bs-sel_statsType01" name="q_o_stats_type01[]" multiple>
+							    							        <option class="js__sortSkills" value="10" data-job-category-id="急募" >急募</option>
+							    							        <option class="js__sortSkills" value="20" data-job-category-id="新着" >新着</option>
+							    							        <option class="js__sortSkills" value="30" data-job-category-id="注目" >注目</option>
+							    							        <option class="js__sortSkills" value="40" data-job-category-id="定番" >定番</option>
+							    								</select>
+							</div>
+						</div>
+						<div class="c-projectSearch__group">
+							<div class="c-projectSearch__group--label60 c-projectSearch__group--labelfr">稼働日数</div>
+							<div class="c-projectSearch__group--form">
+								<select class="selectpicker" id="js__bs-sel_workDays" name="q_work_days[]" multiple>
+							    							        <option class="js__sortSkills" value="10" data-job-category-id="週１日" >週１日</option>
+							    							        <option class="js__sortSkills" value="20" data-job-category-id="週２日" >週２日</option>
+							    							        <option class="js__sortSkills" value="30" data-job-category-id="週３日" >週３日</option>
+							    							        <option class="js__sortSkills" value="40" data-job-category-id="週４日" >週４日</option>
+							    							        <option class="js__sortSkills" value="50" data-job-category-id="週５日" >週５日</option>
+							    								</select>
+							</div>
+						</div>
+						<div class="c-projectSearch__group">
+							<div class="c-projectSearch__group--label60 c-projectSearch__group--labelfr">リモート</div>
+							<div class="c-projectSearch__group--form">
+								<select class="selectpicker" id="js__bs-sel_remote" name="q_work_type[]" multiple>
+							    							        <option class="js__sortSkills" value="4" data-job-category-id="フルリモート可" >フルリモート可</option>
+							    							        <option class="js__sortSkills" value="9" data-job-category-id="初回以外リモート可" >初回以外リモート可</option>
+							    							        <option class="js__sortSkills" value="3" data-job-category-id="MTG以外リモート可" >MTG以外リモート可</option>
+							    							        <option class="js__sortSkills" value="6" data-job-category-id="客先常駐 20%程度（リモート 80%）" >客先常駐 20%程度（リモート 80%）</option>
+							    							        <option class="js__sortSkills" value="10" data-job-category-id="客先常駐 40%程度（リモート 60%）" >客先常駐 40%程度（リモート 60%）</option>
+							    							        <option class="js__sortSkills" value="7" data-job-category-id="客先常駐 50%程度（リモート 50%）" >客先常駐 50%程度（リモート 50%）</option>
+							    							        <option class="js__sortSkills" value="11" data-job-category-id="客先常駐 60%程度（リモート 40%）" >客先常駐 60%程度（リモート 40%）</option>
+							    							        <option class="js__sortSkills" value="8" data-job-category-id="客先常駐 80%程度（リモート 20%）" >客先常駐 80%程度（リモート 20%）</option>
+							    							        <option class="js__sortSkills" value="2" data-job-category-id="常駐（持ち帰り可）" >常駐（持ち帰り可）</option>
+							    							        <option class="js__sortSkills" value="1" data-job-category-id="常駐（持ち帰り不可）" >常駐（持ち帰り不可）</option>
+							    							        <option class="js__sortSkills" value="12" data-job-category-id="相談可能" >相談可能</option>
+							    								</select>
+							</div>
+						</div>
+						<div class="c-projectSearch__group">
+							<div class="c-projectSearch__group--label30 c-projectSearch__group--labelfr">日給</div>
+							<div class="c-projectSearch__group--form">
+								<select class="selectpicker" id="js__bs-sel_payment" name="q_payment[]" multiple>
+							    							        <option class="js__sortSkills" value="10000" data-job-category-id="〜1万円" >〜1万円</option>
+							    							        <option class="js__sortSkills" value="20000" data-job-category-id="2万円" >2万円</option>
+							    							        <option class="js__sortSkills" value="30000" data-job-category-id="3万円" >3万円</option>
+							    							        <option class="js__sortSkills" value="40000" data-job-category-id="4万円" >4万円</option>
+							    							        <option class="js__sortSkills" value="50000" data-job-category-id="5万円" >5万円</option>
+							    							        <option class="js__sortSkills" value="60000" data-job-category-id="6万円" >6万円</option>
+							    							        <option class="js__sortSkills" value="70000" data-job-category-id="7万円" >7万円</option>
+							    							        <option class="js__sortSkills" value="80000" data-job-category-id="8万円〜" >8万円〜</option>
+							    								</select>
+							</div>
+						</div>
+					</div>
+	            </div>
+            </div>
+
+            <div class="project-list__btn--submit text-center">
+                <button type="submit" class="lproject-list__btn c-btn c-btn__base">この条件で検索する</button>
+            </div>
+            </form>
+
+
+						<div class="project__number">
+				<hr>
+				<p>該当件数 / <span class="project__pager--current js__cntOffer">1287</span>件</p>
+			</div>
+			
+            <div class="cp-projects__content">
+	            
+                <ul class="cp-projects-list project-list">
+	                	                
+	                <form class="cmn-column project-list__item" method="post" action="/project/engineer/0060I00000UdimnQAB">
+                    <li class="cp-projects-listItem">
+                    		                     <div class="project-list__item__label">
+                        	<span class="cmn-recruit__seal--type40 project-list__item__label__text">定番</span>
+	                     </div>
+                                                <div class="project-list__item__heading">
+                            <h2 class="project-list__item__heading__title js__offerTitle">
+                                <small>【週5日/PHPエンジニア】</small><br>
+                                【サーバーサイドエンジニア｜フルリモート】自社サービスにおけるシステムの機能追加開発及び改善・運用業務                            </h2>
+                        </div>
+                        <div class="cp-projects-listItem__detail">
+                            <div class="cp-projects-listItem__overview">
+                                <div class="cp-projects-listItem__compensation"><font size=3>週</font>5日 | 530,000<font size=3>円〜</font>	                                <span class="cp-projects-listItem__compensation__unit">/ 月</span>
+                                </div>
+                                <ul class="c-projectOverview cp-projects-listItem__list">
+                                    <li class="c-projectOverview__item item--occupation">PHPエンジニア</li>
+                                    <li class="c-projectOverview__item item--language">JavaScript・PHP・Ruby・Go・Vue.js・RubyonRails・Symfony・MySQL・Apache・AWS・Git・Github</li>
+                                    <li class="c-projectOverview__item item--days">週5日</li>
+                                    <li class="c-projectOverview__item item--place">東京都(23区内)（目黒駅）</li>
+                                </ul>
+                            </div>
+                            <div class="cp-projects-listItem__description">
+                                <div class="cp-projects-listItem__description__text">【案件概要】
+弊社で運営している印刷・広告のシェアリングプラットフォーム事業における印刷ECプロダクトのアプリケーション開発を担うエンジニアを募集しております。
+
+現在は４チームの枠があり、「印刷ECプロダクト」「集客ECプロダクト」「③決済基盤プロダクト」「発注基盤プロダクト」のいずれかのプロダクトチームに所属してスクラム開発にてサーバサイドの開発業務を担当していただきます。
+
+
+公開_備考：※月額報酬額は「最大稼働可能日数」で換算した際の金額です</div>
+                                <div class="cp-projects-listItem__description__btn">
+                                    <button class="btn btn-primary btn-lg btn-block" name="btn-pro0800" value="10" type="submit">詳細を見る</button>
+<!--                                     <button class="btn btn-default project-list__btn--detail" name="btn-pro0800" value="10" type="submit"><i class="fa fa-search-plus"></i>詳細</button> -->
+                                </div>
+                            </div>
+                        </div>
+                    </li><!-- /cp-projects-listItem -->
+	                </form>
+	                	                
+	                <form class="cmn-column project-list__item" method="post" action="/project/engineer/0062800000I6RMKAA3">
+                    <li class="cp-projects-listItem">
+                    		                     <div class="project-list__item__label">
+                        	<span class="cmn-recruit__seal--type40 project-list__item__label__text">定番</span>
+	                     </div>
+                                                <div class="project-list__item__heading">
+                            <h2 class="project-list__item__heading__title js__offerTitle">
+                                <small>【週5日/Rubyエンジニア】</small><br>
+                                【Ruby｜フルリモート】Webサービスの受託開発をお任せします！                            </h2>
+                        </div>
+                        <div class="cp-projects-listItem__detail">
+                            <div class="cp-projects-listItem__overview">
+                                <div class="cp-projects-listItem__compensation"><font size=3>週</font>5日 | 〜550,000<font size=3>円</font>	                                <span class="cp-projects-listItem__compensation__unit">/ 月</span>
+                                </div>
+                                <ul class="c-projectOverview cp-projects-listItem__list">
+                                    <li class="c-projectOverview__item item--occupation">Rubyエンジニア</li>
+                                    <li class="c-projectOverview__item item--language">Ruby・Rails</li>
+                                    <li class="c-projectOverview__item item--days">週5日</li>
+                                    <li class="c-projectOverview__item item--place">東京都(23区内)（恵比寿駅）</li>
+                                </ul>
+                            </div>
+                            <div class="cp-projects-listItem__description">
+                                <div class="cp-projects-listItem__description__text">【業務内容】
+WEBサービスの改修業務を担っていただける
+Rubyエンジニアの方を募集いたします。
+
+▼本企業様での働き方について(面談前にご確認ください！)
+https://github.com/iro-dori/welcome
+
+既に複数名稼働者もおり、「大変居心地よい案件」「分からないことがあっても聞けば
+丁寧に教えてくれる。」などの声多数いただいる優良な案件です。
+＊完全フルリモート
+＊全国各地で稼働可能
+公開_備考：※報酬額は【週5日（月20日）換算】した際の金額です</div>
+                                <div class="cp-projects-listItem__description__btn">
+                                    <button class="btn btn-primary btn-lg btn-block" name="btn-pro0800" value="10" type="submit">詳細を見る</button>
+<!--                                     <button class="btn btn-default project-list__btn--detail" name="btn-pro0800" value="10" type="submit"><i class="fa fa-search-plus"></i>詳細</button> -->
+                                </div>
+                            </div>
+                        </div>
+                    </li><!-- /cp-projects-listItem -->
+	                </form>
+	                	                
+	                <form class="cmn-column project-list__item" method="post" action="/project/engineer/0061623652153402615e588c3">
+                    <li class="cp-projects-listItem">
+                    		                     <div class="project-list__item__label">
+                        	<span class="cmn-recruit__seal--type40 project-list__item__label__text">定番</span>
+	                     </div>
+                                                <div class="project-list__item__heading">
+                            <h2 class="project-list__item__heading__title js__offerTitle">
+                                <small>【週5日/Rubyエンジニア】</small><br>
+                                【Rubyエンジニア｜フルリモート】自社で提供しているCX/EXサービスの新規開発・改修・運用・保守業務                            </h2>
+                        </div>
+                        <div class="cp-projects-listItem__detail">
+                            <div class="cp-projects-listItem__overview">
+                                <div class="cp-projects-listItem__compensation"><font size=3>週</font>5日 | 〜1,010,000<font size=3>円</font>	                                <span class="cp-projects-listItem__compensation__unit">/ 月</span>
+                                </div>
+                                <ul class="c-projectOverview cp-projects-listItem__list">
+                                    <li class="c-projectOverview__item item--occupation">Rubyエンジニア</li>
+                                    <li class="c-projectOverview__item item--language">Ruby・RubyonRails</li>
+                                    <li class="c-projectOverview__item item--days">週5日</li>
+                                    <li class="c-projectOverview__item item--place">東京都(23区内)（永田町駅）</li>
+                                </ul>
+                            </div>
+                            <div class="cp-projects-listItem__description">
+                                <div class="cp-projects-listItem__description__text">【案件概要】
+既存システムへの新規機能の開発やリファクタリングだけでなく、フレームワークのアップデートや自動テストの整備を含めた開発環境の改善など、チームやプロダクトに必要なことに広く携わっていただきます。
+
+【業務内容】
+・自社CX/EXサービス管理画面の新規開発・改修・運用・保守
+・E2Eテストのカバレッジ向上
+・プロダクト仕様に関するドキュメントの整備
+公開_備考：※報酬額は【週5日（月20日）換算】した際の金額です</div>
+                                <div class="cp-projects-listItem__description__btn">
+                                    <button class="btn btn-primary btn-lg btn-block" name="btn-pro0800" value="10" type="submit">詳細を見る</button>
+<!--                                     <button class="btn btn-default project-list__btn--detail" name="btn-pro0800" value="10" type="submit"><i class="fa fa-search-plus"></i>詳細</button> -->
+                                </div>
+                            </div>
+                        </div>
+                    </li><!-- /cp-projects-listItem -->
+	                </form>
+	                	                
+	                <form class="cmn-column project-list__item" method="post" action="/project/engineer/00616335247774553e80139f">
+                    <li class="cp-projects-listItem">
+                    		                     <div class="project-list__item__label">
+                        	<span class="cmn-recruit__seal--type40 project-list__item__label__text">定番</span>
+	                     </div>
+                                                <div class="project-list__item__heading">
+                            <h2 class="project-list__item__heading__title js__offerTitle">
+                                <small>【週4日･5日/Rubyエンジニア】</small><br>
+                                【Ruby,React】ソフトウェアエンジニア（SaaS開発）業務                            </h2>
+                        </div>
+                        <div class="cp-projects-listItem__detail">
+                            <div class="cp-projects-listItem__overview">
+                                <div class="cp-projects-listItem__compensation"><font size=3>週</font>4日･5日 | 570,000<font size=3>円〜</font>	                                <span class="cp-projects-listItem__compensation__unit">/ 月</span>
+                                </div>
+                                <ul class="c-projectOverview cp-projects-listItem__list">
+                                    <li class="c-projectOverview__item item--occupation">Rubyエンジニア</li>
+                                    <li class="c-projectOverview__item item--language">JavaScript・Ruby</li>
+                                    <li class="c-projectOverview__item item--days">週4日･5日</li>
+                                    <li class="c-projectOverview__item item--place">東京都(23区内)（目黒駅）</li>
+                                </ul>
+                            </div>
+                            <div class="cp-projects-listItem__description">
+                                <div class="cp-projects-listItem__description__text">分析基盤構築や運用にかかるデータエンジニアの手間を削減すべく、新機能開発、データソース（DB、広告API）への対応、顧客要望対応など、自社で開発している分析基盤の総合支援サービスがより広く・深く課題を解決するための開発を行います。
+公開_備考：※報酬額は【週5日（月20日）換算】した際の金額です</div>
+                                <div class="cp-projects-listItem__description__btn">
+                                    <button class="btn btn-primary btn-lg btn-block" name="btn-pro0800" value="10" type="submit">詳細を見る</button>
+<!--                                     <button class="btn btn-default project-list__btn--detail" name="btn-pro0800" value="10" type="submit"><i class="fa fa-search-plus"></i>詳細</button> -->
+                                </div>
+                            </div>
+                        </div>
+                    </li><!-- /cp-projects-listItem -->
+	                </form>
+	                	                
+	                <form class="cmn-column project-list__item" method="post" action="/project/engineer/006164724090116414a7ff30">
+                    <li class="cp-projects-listItem">
+                    		                     <div class="project-list__item__label">
+                        	<span class="cmn-recruit__seal--type40 project-list__item__label__text">定番</span>
+	                     </div>
+                                                <div class="project-list__item__heading">
+                            <h2 class="project-list__item__heading__title js__offerTitle">
+                                <small>【週4日･5日/JavaScriptエンジニア】</small><br>
+                                【Vue.js】電子契約サービスのフロントエンドエンジニア                            </h2>
+                        </div>
+                        <div class="cp-projects-listItem__detail">
+                            <div class="cp-projects-listItem__overview">
+                                <div class="cp-projects-listItem__compensation"><font size=3>週</font>4日･5日 | 〜790,000<font size=3>円</font>	                                <span class="cp-projects-listItem__compensation__unit">/ 月</span>
+                                </div>
+                                <ul class="c-projectOverview cp-projects-listItem__list">
+                                    <li class="c-projectOverview__item item--occupation">JavaScriptエンジニア</li>
+                                    <li class="c-projectOverview__item item--language">HTML・CSS・JavaScript・Vue.js・jQuery・Nuxt.js・Linux・MacOSX・AWS・nginx・MySQL・JIRA</li>
+                                    <li class="c-projectOverview__item item--days">週4日･5日</li>
+                                    <li class="c-projectOverview__item item--place">東京都(23区内)（六本木一丁目駅）</li>
+                                </ul>
+                            </div>
+                            <div class="cp-projects-listItem__description">
+                                <div class="cp-projects-listItem__description__text">【案件概要】
+自社で開発をしている電子契約サービスのフロントエンド開発をご担当いただきます。
+
+【開発環境】
+■言語・フレームワーク
+Go/Revel
+JavaScript/jQuery/Vue.js/Nuxt.js
+HTML5＋CSS3/Sass
+
+公開_備考：※参考報酬額は週5日でご稼働いただいた場合の金額です。</div>
+                                <div class="cp-projects-listItem__description__btn">
+                                    <button class="btn btn-primary btn-lg btn-block" name="btn-pro0800" value="10" type="submit">詳細を見る</button>
+<!--                                     <button class="btn btn-default project-list__btn--detail" name="btn-pro0800" value="10" type="submit"><i class="fa fa-search-plus"></i>詳細</button> -->
+                                </div>
+                            </div>
+                        </div>
+                    </li><!-- /cp-projects-listItem -->
+	                </form>
+	                	                
+	                <form class="cmn-column project-list__item" method="post" action="/project/engineer/006165767974439131a8e7089">
+                    <li class="cp-projects-listItem">
+                    		                     <div class="project-list__item__label">
+                        	<span class="cmn-recruit__seal--type40 project-list__item__label__text">定番</span>
+	                     </div>
+                                                <div class="project-list__item__heading">
+                            <h2 class="project-list__item__heading__title js__offerTitle">
+                                <small>【週5日/Rubyエンジニア】</small><br>
+                                【ウェブアプリケーションエンジニア】自社プロダクトのフロントエンド開発                            </h2>
+                        </div>
+                        <div class="cp-projects-listItem__detail">
+                            <div class="cp-projects-listItem__overview">
+                                <div class="cp-projects-listItem__compensation"><font size=3>週</font>5日 | 〜560,000<font size=3>円</font>	                                <span class="cp-projects-listItem__compensation__unit">/ 月</span>
+                                </div>
+                                <ul class="c-projectOverview cp-projects-listItem__list">
+                                    <li class="c-projectOverview__item item--occupation">Rubyエンジニア</li>
+                                    <li class="c-projectOverview__item item--language">JavaScript・PHP・Python・Ruby・Go・Ruby・on・Rails・・Laravel・・Flask・・JupyterHub・・Vue.js・・Next.js・・echo・・GORM・</li>
+                                    <li class="c-projectOverview__item item--days">週5日</li>
+                                    <li class="c-projectOverview__item item--place">東京都(23区内)（小川町駅）</li>
+                                </ul>
+                            </div>
+                            <div class="cp-projects-listItem__description">
+                                <div class="cp-projects-listItem__description__text">『社内の人材活用』『社外の人材活用』という独自のソリューションを提供することで、DX人材の不足という社会課題の解決に挑戦しています。
+そのため、様々なプロダクト開発が行われております。
+プロダクトの価値を最大限にすることを考えていただき、技術で開発をリードしていただける方を募集いたします。
+仕様や設計はもちろん、自ら手を動かしてコードを書ける能力が求められます。
+公開_備考：※報酬額は【週5日（月20日）換算】した際の金額です</div>
+                                <div class="cp-projects-listItem__description__btn">
+                                    <button class="btn btn-primary btn-lg btn-block" name="btn-pro0800" value="10" type="submit">詳細を見る</button>
+<!--                                     <button class="btn btn-default project-list__btn--detail" name="btn-pro0800" value="10" type="submit"><i class="fa fa-search-plus"></i>詳細</button> -->
+                                </div>
+                            </div>
+                        </div>
+                    </li><!-- /cp-projects-listItem -->
+	                </form>
+	                	                
+	                <form class="cmn-column project-list__item" method="post" action="/project/engineer/0061658194112389219d8b222">
+                    <li class="cp-projects-listItem">
+                    		                     <div class="project-list__item__label">
+                        	<span class="cmn-recruit__seal--type40 project-list__item__label__text">定番</span>
+	                     </div>
+                                                <div class="project-list__item__heading">
+                            <h2 class="project-list__item__heading__title js__offerTitle">
+                                <small>【週5日/Rubyエンジニア】</small><br>
+                                【Ruby】金融システム開発業務                            </h2>
+                        </div>
+                        <div class="cp-projects-listItem__detail">
+                            <div class="cp-projects-listItem__overview">
+                                <div class="cp-projects-listItem__compensation"><font size=3>週</font>5日 | 580,000<font size=3>円〜</font>	                                <span class="cp-projects-listItem__compensation__unit">/ 月</span>
+                                </div>
+                                <ul class="c-projectOverview cp-projects-listItem__list">
+                                    <li class="c-projectOverview__item item--occupation">Rubyエンジニア</li>
+                                    <li class="c-projectOverview__item item--language">Ruby・SQL</li>
+                                    <li class="c-projectOverview__item item--days">週5日</li>
+                                    <li class="c-projectOverview__item item--place">東京都(23区内)（霞が関駅　）</li>
+                                </ul>
+                            </div>
+                            <div class="cp-projects-listItem__description">
+                                <div class="cp-projects-listItem__description__text">【業務詳細】
+・主に実装を担当します。
+・ブロックチェーン技術を活用したシステム開発をお任せします。
+
+
+
+公開_備考：※報酬額は【週5日（月20日）換算】した際の金額です</div>
+                                <div class="cp-projects-listItem__description__btn">
+                                    <button class="btn btn-primary btn-lg btn-block" name="btn-pro0800" value="10" type="submit">詳細を見る</button>
+<!--                                     <button class="btn btn-default project-list__btn--detail" name="btn-pro0800" value="10" type="submit"><i class="fa fa-search-plus"></i>詳細</button> -->
+                                </div>
+                            </div>
+                        </div>
+                    </li><!-- /cp-projects-listItem -->
+	                </form>
+	                	                
+	                <form class="cmn-column project-list__item" method="post" action="/project/engineer/006166162670972291b20a5c4">
+                    <li class="cp-projects-listItem">
+                    		                     <div class="project-list__item__label">
+                        	<span class="cmn-recruit__seal--type40 project-list__item__label__text">定番</span>
+	                     </div>
+                                                <div class="project-list__item__heading">
+                            <h2 class="project-list__item__heading__title js__offerTitle">
+                                <small>【週4日･5日/Rubyエンジニア】</small><br>
+                                【Ruby/Go】自社開発のアフェリエイトASP事業の開発                            </h2>
+                        </div>
+                        <div class="cp-projects-listItem__detail">
+                            <div class="cp-projects-listItem__overview">
+                                <div class="cp-projects-listItem__compensation"><font size=3>週</font>4日･5日 | 〜670,000<font size=3>円</font>	                                <span class="cp-projects-listItem__compensation__unit">/ 月</span>
+                                </div>
+                                <ul class="c-projectOverview cp-projects-listItem__list">
+                                    <li class="c-projectOverview__item item--occupation">Rubyエンジニア</li>
+                                    <li class="c-projectOverview__item item--language">Ruby・Go・・Ruby・on・Rails・
+・AWS</li>
+                                    <li class="c-projectOverview__item item--days">週4日･5日</li>
+                                    <li class="c-projectOverview__item item--place">東京都(23区内)（渋谷）</li>
+                                </ul>
+                            </div>
+                            <div class="cp-projects-listItem__description">
+                                <div class="cp-projects-listItem__description__text">リードエンジニアとして、自社サービスや新規計測システム等の開発とサービスグロースの両面を見ていただきながら、業務を遂行していただきます。
+
+【具体的には…】
+・クライアントやビジネスサイドと協力しながら開発の方針決定・進行
+・システム開発
+
+稼働時間：9:30 ～ 18:00※応相談
+
+公開_備考：※月額報酬額は「最大稼働可能日数」で換算した際の金額です</div>
+                                <div class="cp-projects-listItem__description__btn">
+                                    <button class="btn btn-primary btn-lg btn-block" name="btn-pro0800" value="10" type="submit">詳細を見る</button>
+<!--                                     <button class="btn btn-default project-list__btn--detail" name="btn-pro0800" value="10" type="submit"><i class="fa fa-search-plus"></i>詳細</button> -->
+                                </div>
+                            </div>
+                        </div>
+                    </li><!-- /cp-projects-listItem -->
+	                </form>
+	                	                
+	                <form class="cmn-column project-list__item" method="post" action="/project/engineer/00616617442789231b8da49b">
+                    <li class="cp-projects-listItem">
+                    		                     <div class="project-list__item__label">
+                        	<span class="cmn-recruit__seal--type40 project-list__item__label__text">定番</span>
+	                     </div>
+                                                <div class="project-list__item__heading">
+                            <h2 class="project-list__item__heading__title js__offerTitle">
+                                <small>【週3日･4日/PHPエンジニア】</small><br>
+                                【サーバーサイドエンジニア｜週3日～4日・フルリモート】社内簡易ツールシステムのサーバーサイド開発業務                            </h2>
+                        </div>
+                        <div class="cp-projects-listItem__detail">
+                            <div class="cp-projects-listItem__overview">
+                                <div class="cp-projects-listItem__compensation"><font size=3>週</font>3日･4日 | 〜330,000<font size=3>円</font>	                                <span class="cp-projects-listItem__compensation__unit">/ 月</span>
+                                </div>
+                                <ul class="c-projectOverview cp-projects-listItem__list">
+                                    <li class="c-projectOverview__item item--occupation">PHPエンジニア</li>
+                                    <li class="c-projectOverview__item item--language">PHP・Python・Ruby・Java</li>
+                                    <li class="c-projectOverview__item item--days">週3日･4日</li>
+                                    <li class="c-projectOverview__item item--place">東京都(23区内)（渋谷駅）</li>
+                                </ul>
+                            </div>
+                            <div class="cp-projects-listItem__description">
+                                <div class="cp-projects-listItem__description__text">【案件概要】
+社内の簡易ツールシステムの開発を行っていただくサーバーサイドエンジニアの方を募集しております。
+
+言語選定の段階から進めていき、一部HPの変更なども依頼させていただく可能性もあります。
+
+※詳細は面談時に説明いたします
+公開_備考：※月額報酬額は「最大稼働可能日数」で換算した際の金額です</div>
+                                <div class="cp-projects-listItem__description__btn">
+                                    <button class="btn btn-primary btn-lg btn-block" name="btn-pro0800" value="10" type="submit">詳細を見る</button>
+<!--                                     <button class="btn btn-default project-list__btn--detail" name="btn-pro0800" value="10" type="submit"><i class="fa fa-search-plus"></i>詳細</button> -->
+                                </div>
+                            </div>
+                        </div>
+                    </li><!-- /cp-projects-listItem -->
+	                </form>
+	                	                
+	                <form class="cmn-column project-list__item" method="post" action="/project/engineer/006166905483857851b20a9a5">
+                    <li class="cp-projects-listItem">
+                    		                     <div class="project-list__item__label">
+                        	<span class="cmn-recruit__seal--type40 project-list__item__label__text">定番</span>
+	                     </div>
+                                                <div class="project-list__item__heading">
+                            <h2 class="project-list__item__heading__title js__offerTitle">
+                                <small>【週/iOSエンジニア】</small><br>
+                                iOSエンジニア                            </h2>
+                        </div>
+                        <div class="cp-projects-listItem__detail">
+                            <div class="cp-projects-listItem__overview">
+                                <div class="cp-projects-listItem__compensation">〜750,000<font size=3>円</font>	                                <span class="cp-projects-listItem__compensation__unit">/ 月</span>
+                                </div>
+                                <ul class="c-projectOverview cp-projects-listItem__list">
+                                    <li class="c-projectOverview__item item--occupation">iOSエンジニア</li>
+                                    <li class="c-projectOverview__item item--language">HTML・CSS・PHP・Ruby・Swift・Ob-C・Laravel・RubyonRails</li>
+                                    <li class="c-projectOverview__item item--days">週</li>
+                                    <li class="c-projectOverview__item item--place">東京都(23区内)（虎ノ門）</li>
+                                </ul>
+                            </div>
+                            <div class="cp-projects-listItem__description">
+                                <div class="cp-projects-listItem__description__text">担当いただくプロジェクトとしては新機能追加、UI/UXの改善、パフォーマンス向上、技術刷新などがあります。
+
+・図面管理・情報共有システム『SPIDERPLUS』の設計・開発
+・開発要件の優先付け
+・新規プロジェクトやエンハンスメントの要件定義
+・新機能開発
+・実装、コードレビュー、テスト
+・リリース
+・パフォーマンス監視、改善
+・開発プロセスの改善
+公開_備考：※月額報酬額は「最大稼働可能日数」で換算した際の金額です</div>
+                                <div class="cp-projects-listItem__description__btn">
+                                    <button class="btn btn-primary btn-lg btn-block" name="btn-pro0800" value="10" type="submit">詳細を見る</button>
+<!--                                     <button class="btn btn-default project-list__btn--detail" name="btn-pro0800" value="10" type="submit"><i class="fa fa-search-plus"></i>詳細</button> -->
+                                </div>
+                            </div>
+                        </div>
+                    </li><!-- /cp-projects-listItem -->
+	                </form>
+	                                </ul>
+
+                                <!-- /cp-projects-list -->
+
+				<!-- ページネーション -->
+				<div class="pagination">
+					
+<div class="project__pager--num">
+	<p>該当件数 / <span class="project__pager--current js__cntOffer">1287</span>件</p>
+</div>
+
+<div class="pagination__wrap">
+
+    <!--ページング＜START＞-->
+    <div class="cmn-flex pgnate-links">
+    	<!-- 前へ -->
+    	        <div class="page_fl_navi">
+        	<span class="prev pgnate-disabled">＜</span>    	</div>
+		        <div class="cmn-flex page_base_navi">
+        	<div class="pgnate-current pgnate-pagenum">1</div><div class="pgnate-pagenum"><a href="/project/list/page:2">2</a></div><div class="pgnate-pagenum"><a href="/project/list/page:3">3</a></div><div class="pgnate-ellipsis">…</div><div class="pgnate-pagenum"><a href="/project/list/page:128">128</a></div><div class="pgnate-pagenum"><a href="/project/list/page:129">129</a></div>        </div>
+        		<!-- 次へ -->
+        <div class="page_fl_navi">
+        	<span class="next"><a href="/project/list/page:2" rel="next">＞</a></span>		</div>
+		    </div>
+    <!--ページング＜END＞--></div>
+
+<div style="width: 100px;">
+</div>
+				</div>
+            </div><!-- /cp-projects__content -->
+        </div><!-- /cp-projects -->
+    </section>
+</div>
+</div>
+
+
+<script>
+$(function(){
+    $('footer').each(function(){
+        var h = $('.cp-projects__content').innerHeight();
+        if (h < 520) {
+            $(this).addClass('footer__fixed');
+        }
+    });
+});
+</script>
+        </div>
+
+    </main>
+	<div id="js__hidden_reCaptcha" data-hiddensitekey="6LREDACTED_RECAPTCHA_SITE_KEY_0000000000" style="display: none;"></div>
+</body>
+</html>

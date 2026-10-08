@@ -320,11 +320,27 @@ class FreelanceJobsSourcesFreelanceBoardTest < Minitest::Test
 
     postings = source.fetch
 
-    assert_equal 23, postings.size, "30件中 Findy Freelance 5件 + Bizlink 2件 が除外されるはず"
+    assert_equal 22, postings.size, "30件中 Findy Freelance 5件 + Bizlink 2件 + TechReach 1件 が除外されるはず"
     assert_equal(
-      { "FLEXY" => 6, "ROSCA freelance" => 13, "Midworks" => 3, "TechReach" => 1 },
+      { "FLEXY" => 6, "ROSCA freelance" => 13, "Midworks" => 3 },
       count_by(postings.map(&:client))
     )
+  end
+
+  # TechReach は個別取得元があるため既定では落ち、excluded_providers を空にすれば残る。
+  def test_fetch_excludes_tech_reach_by_default_but_keeps_it_when_exclusion_is_empty
+    search_targets = [{ keyword: "Ruby", hint: "Ruby" }]
+    default_source = FreelanceJobs::Sources::FreelanceBoard.new(
+      fetcher: RecordingFetcher.new(body: read_fixture(RUBY_FIXTURE_NAME)),
+      today: TODAY, search_targets: search_targets, max_pages: 1
+    )
+    open_source = FreelanceJobs::Sources::FreelanceBoard.new(
+      fetcher: RecordingFetcher.new(body: read_fixture(RUBY_FIXTURE_NAME)),
+      today: TODAY, search_targets: search_targets, max_pages: 1, excluded_providers: []
+    )
+
+    refute_includes default_source.fetch.map(&:client), "TechReach"
+    assert_includes open_source.fetch.map(&:client), "TechReach"
   end
 
   # 正式名ラベル「レバテックフリーランス」も除外される（TypeScriptフィクスチャに3件含まれる）。
@@ -471,6 +487,47 @@ class FreelanceJobsSourcesFreelanceBoardTest < Minitest::Test
     source_classes = FreelanceJobs::Profile::BEGINNER.source_specs.map(&:first)
 
     refute_includes source_classes, FreelanceJobs::Sources::FreelanceBoard
+  end
+
+  # --- 都道府県ターゲット（北海道案件プロファイル用。2026-10-08 追加） ---
+
+  HOKKAIDO_FIXTURE_NAME = "freelance_board_hokkaido.html"
+
+  # キーワード検索ではなく /jobs/<都道府県slug> を一覧として使う。1頁目は page 無し、2頁目以降は
+  # ?page=N（キーワード経路の &page=N とは区切り文字が違う。クエリが page だけのため）。
+  def test_fetch_with_prefecture_target_requests_prefecture_list_urls
+    fetcher = RecordingFetcher.new(body: read_fixture(HOKKAIDO_FIXTURE_NAME))
+    source = FreelanceJobs::Sources::FreelanceBoard.new(
+      fetcher: fetcher, today: TODAY, search_targets: [{ prefecture_slug: "hokkaido" }],
+      max_pages: 2, excluded_providers: []
+    )
+
+    source.fetch
+
+    base_url = FreelanceJobs::Sources::FreelanceBoard::BASE_URL
+    assert_equal ["#{base_url}/jobs/hokkaido", "#{base_url}/jobs/hokkaido?page=2"], fetcher.requested_urls
+  end
+
+  # 都道府県ターゲットは hint を持たないので、全案件の category_hint は nil（分類は分類器に任せる）。
+  def test_fetch_with_prefecture_target_leaves_category_hint_nil
+    fetcher = RecordingFetcher.new(body: read_fixture(HOKKAIDO_FIXTURE_NAME))
+    source = FreelanceJobs::Sources::FreelanceBoard.new(
+      fetcher: fetcher, today: TODAY, search_targets: [{ prefecture_slug: "hokkaido" }],
+      max_pages: 1, excluded_providers: []
+    )
+
+    postings = source.fetch
+
+    refute_empty postings
+    assert postings.all? { |posting| posting.category_hint.nil? }
+  end
+
+  def test_parse_hokkaido_fixture_returns_thirty_postings_with_hokkaido_location
+    postings = parse_fixture(HOKKAIDO_FIXTURE_NAME, category_hint: nil)
+
+    assert_equal 30, postings.size
+    assert postings.any? { |posting| posting.description.include?("勤務地: 北海道") },
+           "北海道一覧なのに勤務地が北海道の案件が1件も無い"
   end
 
   private

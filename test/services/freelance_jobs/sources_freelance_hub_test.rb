@@ -415,7 +415,9 @@ class FreelanceJobsSourcesFreelanceHubTest < Minitest::Test
         "ビズリンク",
         "HiPro Tech（ハイプロテック）",
         "Findy Freelance",
-        "フォスターフリーランス"
+        "フォスターフリーランス",
+        "テックリーチ",
+        "ランサーズエージェント（Lancers Argent）"
       ],
       FreelanceJobs::Sources::FreelanceHub::DEFAULT_EXCLUDED_PROVIDERS
     )
@@ -433,6 +435,64 @@ class FreelanceJobsSourcesFreelanceHubTest < Minitest::Test
     source_classes = FreelanceJobs::Profile::BEGINNER.source_specs.map(&:first)
 
     refute_includes source_classes, FreelanceJobs::Sources::FreelanceHub
+  end
+
+  # --- 都道府県ターゲット・除外提供元の追加（北海道案件プロファイル用。2026-10-08 追加） ---
+
+  HOKKAIDO_FIXTURE_NAME = "freelance_hub_hokkaido.html"
+
+  # 北海道一覧の parse は提供元で除外しない（除外は fetch 側）ので、1頁40件がそのまま返る。
+  def test_parse_hokkaido_fixture_returns_forty_postings_without_exclusion
+    postings = FreelanceJobs::Sources::FreelanceHub.parse(read_fixture(HOKKAIDO_FIXTURE_NAME), today: TODAY)
+
+    assert_equal 40, postings.size
+  end
+
+  # スキル一覧と同じく1頁目にも page=1 を付ける（list_url が全頁共通の書式のため）。
+  def test_fetch_with_prefecture_target_requests_prefecture_list_urls
+    fetcher = RecordingFetcher.new(body: read_fixture(HOKKAIDO_FIXTURE_NAME))
+    source = FreelanceJobs::Sources::FreelanceHub.new(
+      fetcher: fetcher, today: TODAY, search_targets: [{ prefecture_id: 1 }], max_pages: 2, excluded_providers: []
+    )
+
+    postings = source.fetch
+
+    base_url = FreelanceJobs::Sources::FreelanceHub::BASE_URL
+    assert_equal(
+      [
+        "#{base_url}/project/prefecture/1/?order=created_at&page=1",
+        "#{base_url}/project/prefecture/1/?order=created_at&page=2"
+      ],
+      fetcher.requested_urls
+    )
+    assert_equal 40, postings.size
+  end
+
+  # 自社取得元（テックリーチ・ランサーズエージェント）と重複するので、アグリゲータ経由では取らない。
+  # 提供元の表記はサイトの正式表記そのまま（実測 2026-10-08）。
+  def test_default_excluded_providers_include_tech_reach_and_lancers_agent
+    excluded_providers = FreelanceJobs::Sources::FreelanceHub::DEFAULT_EXCLUDED_PROVIDERS
+
+    assert_includes excluded_providers, "テックリーチ"
+    assert_includes excluded_providers, "ランサーズエージェント（Lancers Argent）"
+  end
+
+  # 北海道フィクスチャには「提供元: ランサーズエージェント（Lancers Argent）」が1件ある。
+  # デフォルト除外で fetch したとき、その提供元の案件が残らないこと（除外前には存在すること）。
+  def test_fetch_with_default_exclusion_drops_lancers_agent_postings_from_hokkaido_fixture
+    lancers_agent_label = "ランサーズエージェント（Lancers Argent）"
+    all_postings = FreelanceJobs::Sources::FreelanceHub.parse(read_fixture(HOKKAIDO_FIXTURE_NAME), today: TODAY)
+    assert all_postings.any? { |posting| posting.client == lancers_agent_label }, "前提: フィクスチャに該当提供元がある"
+
+    fetcher = RecordingFetcher.new(body: read_fixture(HOKKAIDO_FIXTURE_NAME))
+    source = FreelanceJobs::Sources::FreelanceHub.new(
+      fetcher: fetcher, today: TODAY, search_targets: [{ prefecture_id: 1 }], max_pages: 1
+    )
+
+    postings = source.fetch
+
+    refute postings.any? { |posting| posting.client == lancers_agent_label }
+    refute_empty postings
   end
 
   private
