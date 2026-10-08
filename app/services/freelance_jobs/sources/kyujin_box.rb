@@ -19,7 +19,15 @@ module FreelanceJobs
     # ページ送りは `?pg=N`（1頁24件）。2ページ目以降の404とカード0件の頁はページ終端として打ち切る
     # （1ページ目の失敗は障害として例外のまま）。
     class KyujinBox
+      # 取得元の識別名（ResearchService・除外設定が参照する）。シートの「掲載サイト」列には使わず、
+      # カードの siteName（Green・ビズリーチ等）を載せる。求人ボックス直掲載の行だけこの名前になる。
       SITE_NAME = "求人ボックス"
+      # 掲載サイト列に SITE_NAME 以外の値（転載元サイト名）が入ることを ResearchService に伝える印。
+      # 印が無いと、それらの行が「取得失敗サイトの行」として期限切れでも永久に残ってしまう。
+      def self.reports_original_site_names? = true
+
+      # siteName 末尾の「 - 登録エントリー」（前後空白ゆれ含む）。掲載サイト名としては不要な文言。
+      REGISTRATION_ENTRY_SUFFIX = /\s*-\s*登録エントリー\s*\z/
       # ResearchService が HttpFetcher の間隔として参照するため、全ソースが持つ必要がある。
       REQUEST_INTERVAL = 1.5
       # 「求人ボックス.com」のpunycode。
@@ -125,12 +133,16 @@ module FreelanceJobs
         title = normalize_text(job["title"])
         return nil if url.nil? || title.empty?
 
+        company = normalize_text(job["company"])
+        # 一覧では社名が見えないと、どの会社の求人か判別できないため案件名の先頭に付ける。
+        titled_with_company = company.empty? ? title : "【#{company}】#{title}"
+
         feature_tags = Array(job["allFeatureTags"]).map { |tag| normalize_text(tag) }.reject(&:empty?)
 
         FreelanceJobs::JobPosting.new(
-          site: SITE_NAME,
+          site: original_site_name(job, company),
           url: FreelanceJobs::JobPosting.normalize_url(url),
-          title: title,
+          title: titled_with_company,
           description: FreelanceJobs::JobPosting.normalize_description(build_description(job, feature_tags)),
           category_hint: category_hint,
           reward: text_or_default(job["payment"]),
@@ -139,10 +151,20 @@ module FreelanceJobs
           deadline_text: "-",
           deadline_on: nil,
           skills: feature_tags.grep(TECH_TAG_PATTERN),
-          client: normalize_text(job["company"]),
+          client: company,
           tags: feature_tags,
           posted_on: parse_date(job["updatedAt"])
         )
+      end
+
+      # 掲載サイト名。社長要求で「求人ボックス」ではなく Green 等の転載元サイト名を出す。
+      # siteName が空、または直掲載で siteName が会社名と同じ（サイト名ではなく社名が入っている）場合は求人ボックス。
+      def self.original_site_name(job, company)
+        site_name = normalize_text(job["siteName"]).sub(REGISTRATION_ENTRY_SUFFIX, "").strip
+        return SITE_NAME if site_name.empty?
+
+        direct_listing = !job["uniqueId"].to_s.strip.start_with?(AGGREGATED_ID_PREFIX)
+        direct_listing && site_name == company ? SITE_NAME : site_name
       end
 
       # 案件URL。直掲載（uniqueId が l 始まりでない）は求人ボックスの詳細URL、
@@ -202,7 +224,7 @@ module FreelanceJobs
         text.to_s.gsub(/[[:space:]]+/, " ").strip
       end
 
-      private_class_method :read_job, :build_posting, :job_url, :build_description, :labeled,
+      private_class_method :read_job, :build_posting, :original_site_name, :job_url, :build_description, :labeled,
                            :text_or_default, :parse_date, :normalize_text
     end
   end

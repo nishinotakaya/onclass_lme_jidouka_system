@@ -432,6 +432,72 @@ class FreelanceJobsResearchServiceTest < Minitest::Test
     )
   end
 
+  # 転載サイト名（Green等）を掲載サイト列に出す取得元。印（reports_original_site_names?）を持つ。
+  class OriginalSiteNamesSource
+    SITE_NAME = "転載元まとめ"
+    REQUEST_INTERVAL = 0
+
+    def self.reports_original_site_names? = true
+
+    def initialize(fetcher:, today:, postings:)
+      @postings = postings
+    end
+
+    def fetch
+      @postings
+    end
+  end
+
+  # 印を持たない以外は OriginalSiteNamesSource と同じ（従来挙動の確認用）。
+  class PlainReSiteSource < OriginalSiteNamesSource
+    class << self
+      undef_method :reports_original_site_names?
+    end
+  end
+
+  def build_expired_existing_row(site:, url:)
+    row = Array.new(15, "")
+    row[2] = "テスト分類"
+    row[3] = "期限切れの既存案件"
+    row[4] = site
+    row[5] = url
+    row[12] = "2026-09-01"
+    row[14] = "2026-08-01 00:00"
+    row
+  end
+
+  def run_with_original_site_source(source_class)
+    posting = build_job_posting(site: "Green", url: "https://example.com/jobs/green-new", title: "新規案件")
+    profile = build_test_profile(source_specs: [[source_class, { postings: [posting] }]],
+                                 classifier: RecordingClassifier.new)
+    green_row = build_expired_existing_row(site: "Green", url: "https://example.com/jobs/green-old")
+    bizreach_row = build_expired_existing_row(site: "ビズリーチ", url: "https://example.com/jobs/bizreach-old")
+    sheets_client = FakeSheetsClient.new(existing_values: [FreelanceJobs::RowBuilder::HEADER, green_row, bizreach_row])
+
+    summary = FreelanceJobs::ResearchService.new(profile: profile, run_window_label: "テスト実行",
+                                                  fetcher: nil, sheets_client: sheets_client, now: NOW).call
+    [summary, sheets_client.replace_sheet_calls.first[:rows].map { |row| row[5] }]
+  end
+
+  def test_call_treats_original_site_names_as_succeeded_so_expired_rows_of_those_sites_are_removed
+    summary, written_urls = run_with_original_site_source(OriginalSiteNamesSource)
+
+    assert_equal 2, summary[:removed], "今回返した Green と、今回取得の無いビズリーチの期限切れ行は消えるはず"
+    refute_includes written_urls, "https://example.com/jobs/green-old"
+    refute_includes written_urls, "https://example.com/jobs/bizreach-old"
+    assert_includes summary[:succeeded_sites], "Green"
+    assert_includes summary[:succeeded_sites], "ビズリーチ"
+    assert_equal({ "転載元まとめ" => 1 }, summary[:fetched], "件数更新用は SITE_NAME キーのまま")
+  end
+
+  def test_call_without_original_site_marker_keeps_expired_rows_of_unknown_sites
+    summary, written_urls = run_with_original_site_source(PlainReSiteSource)
+
+    assert_equal 0, summary[:removed], "印の無い取得元は従来どおり、取得失敗サイト扱いの行を触らない"
+    assert_includes written_urls, "https://example.com/jobs/green-old"
+    assert_equal ["転載元まとめ"], summary[:succeeded_sites]
+  end
+
   def test_call_does_not_pass_closed_postings_to_the_classifier
     open_posting = build_job_posting(site: "テストソース", url: "https://example.com/jobs/open-1", title: "募集中案件")
     closed_posting = build_job_posting(site: "テストソース", url: "https://example.com/jobs/closed-1",

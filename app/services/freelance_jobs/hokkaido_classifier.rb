@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module FreelanceJobs
-  # 北海道の出社・ハイブリッドのエンジニア案件だけを残す分類器（純粋関数。通信・時刻取得なし）。
+  # 北海道の出社・ハイブリッドのエンジニア案件（とフルリモートのRuby案件）だけを残す分類器（純粋関数。通信・時刻取得なし）。
   # 技術はRuby/TypeScript/Reactに限らず「エンジニア案件なら何でも」残す方針（2026-10-08 社長回答）なので、
   # 技術名の検出・難易度・おすすめ度・スキル欄はEngineerClassifierの既存ロジックをそのまま再利用し、
   # ここでは勤務地・勤務形態の判定と、Ruby/TS/Reactに当たらない案件の「その他」分類だけを足す。
@@ -34,6 +34,9 @@ module FreelanceJobs
 
     ONSITE_LABEL = "出社"
     HYBRID_LABEL = "ハイブリッド（リモート併用）"
+    FULL_REMOTE_LABEL = "フルリモート"
+    # フルリモートでも残す唯一のカテゴリ（2026-10-08 社長要求「フルリモートのRubyも入れて」）。
+    FULL_REMOTE_KEPT_CATEGORY = "Ruby"
     OTHER_CATEGORY = "その他"
 
     # 一覧パーサが description 末尾に置く「勤務地: 北海道 さっぽろ駅 / 勤務形態: …」の値の部分。
@@ -54,7 +57,6 @@ module FreelanceJobs
       return Result.new(category: nil) unless hokkaido_posting?(description_text, location_text)
 
       work_style_label = work_style_label(location_text.gsub(NEGATED_ONSITE_RE, " "))
-      return Result.new(category: nil) if work_style_label.nil?
       return Result.new(category: nil) unless engineer_posting?(judgement_text)
 
       build_result(posting, title_text, description_text, skills_text, judgement_text, work_style_label)
@@ -76,10 +78,11 @@ module FreelanceJobs
       description_text.scan(LOCATION_VALUE_RE).flatten.last
     end
 
-    # 出社 / ハイブリッド / 対象外(nil) の3値。フルリモートは出社要素が無い場合だけ対象外にする。
+    # 出社 / ハイブリッド / フルリモートの3値。フルリモートは出社要素が無い場合だけで、
+    # 残すかどうかはカテゴリ確定後（build_result）に決める。
     def self.work_style_label(location_text)
       if location_text.match?(FULL_REMOTE_RE) && !location_text.match?(ONSITE_MARKER_RE)
-        return nil
+        return FULL_REMOTE_LABEL
       end
 
       location_text.match?(HYBRID_RE) ? HYBRID_LABEL : ONSITE_LABEL
@@ -98,6 +101,7 @@ module FreelanceJobs
         posting, title_text, description_text, skills_text
       )
       category = detected_category || OTHER_CATEGORY
+      return Result.new(category: nil) if work_style_label == FULL_REMOTE_LABEL && category != FULL_REMOTE_KEPT_CATEGORY
 
       years = EngineerClassifier.extract_experience_years(judgement_text)
       suspicious = judgement_text.match?(FreelanceJobs::Classifier::SUSPICIOUS_RE)

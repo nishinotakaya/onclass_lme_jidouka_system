@@ -12,6 +12,7 @@ class FreelanceJobsHokkaidoClassifierTest < Minitest::Test
   FIXTURE_DIRECTORY = File.expand_path("../../fixtures/files/freelance_jobs", __dir__)
   ONSITE_MEMO_PREFIX = "出社"
   HYBRID_MEMO_PREFIX = "ハイブリッド（リモート併用）"
+  FULL_REMOTE_MEMO_PREFIX = "フルリモート"
 
   def build_posting(title: "", description: "", category_hint: nil, skills: [], tags: [],
                     reward: "要相談", work_format: "業務委託")
@@ -42,7 +43,22 @@ class FreelanceJobsHokkaidoClassifierTest < Minitest::Test
   end
 
   def test_full_remote_hokkaido_posting_is_excluded
-    posting = build_posting(title: "Rubyエンジニア（北海道在住）", description: "勤務地: 北海道 札幌市 / フルリモート")
+    posting = build_posting(title: "Javaエンジニア（北海道在住）", description: "勤務地: 北海道 札幌市 / フルリモート")
+
+    assert_nil classify(posting).category
+  end
+
+  # 2026-10-08 社長要求「フルリモートのRubyも入れて」: Ruby だけはフルリモートでも残す
+  def test_full_remote_ruby_posting_remains_with_full_remote_memo
+    posting = build_posting(title: "Rubyエンジニア", description: "勤務地: 北海道 札幌市 / 勤務形態: フルリモート")
+    result = classify(posting)
+
+    assert_equal "Ruby", result.category
+    assert result.memo.start_with?("フルリモート（北海道 札幌市）"), result.memo
+  end
+
+  def test_full_remote_java_posting_is_excluded
+    posting = build_posting(title: "Javaエンジニア", description: "勤務地: 北海道 札幌市 / 勤務形態: フルリモート")
 
     assert_nil classify(posting).category
   end
@@ -136,13 +152,13 @@ class FreelanceJobsHokkaidoClassifierTest < Minitest::Test
   # === 否定・条件付きの出社表現 ===
 
   def test_onsite_not_required_hokkaido_posting_is_excluded
-    posting = build_posting(title: "Rubyエンジニア", description: "勤務地: 北海道 札幌市 / フルリモート・出社不要")
+    posting = build_posting(title: "Javaエンジニア", description: "勤務地: 北海道 札幌市 / フルリモート・出社不要")
 
     assert_nil classify(posting).category
   end
 
   def test_resident_not_required_hokkaido_posting_is_excluded
-    posting = build_posting(title: "Rubyエンジニア", description: "勤務地: 北海道 札幌市 / フルリモート・常駐なし")
+    posting = build_posting(title: "Javaエンジニア", description: "勤務地: 北海道 札幌市 / フルリモート・常駐なし")
 
     assert_nil classify(posting).category
   end
@@ -158,7 +174,7 @@ class FreelanceJobsHokkaidoClassifierTest < Minitest::Test
 
   def test_full_remote_case_section_is_ignored_when_judging_work_style
     posting = build_posting(
-      title: "Rubyエンジニア",
+      title: "Javaエンジニア",
       description: "勤務地: 北海道 札幌市 / フルリモート 【フルリモート案件の場合】必要に応じて都内の出社をお願いします【その他】備考"
     )
 
@@ -167,7 +183,7 @@ class FreelanceJobsHokkaidoClassifierTest < Minitest::Test
 
   def test_full_remote_section_without_closing_bracket_keeps_trailing_full_remote_label
     posting = build_posting(
-      title: "Rubyエンジニア",
+      title: "Javaエンジニア",
       description: "【フルリモート案件の場合】必要に応じて都内の出社あり / 勤務地: 北海道 札幌市 / 勤務形態: フルリモート"
     )
 
@@ -270,13 +286,13 @@ class FreelanceJobsHokkaidoClassifierTest < Minitest::Test
     kept.each do |posting, result|
       searched_text = [posting.title, posting.description, Array(posting.tags).join(" ")].join(" ")
       assert_match(FreelanceJobs::HokkaidoClassifier::HOKKAIDO_RE, searched_text, posting.url)
-      assert result.memo.start_with?(ONSITE_MEMO_PREFIX) || result.memo.start_with?(HYBRID_MEMO_PREFIX),
+      assert [ONSITE_MEMO_PREFIX, HYBRID_MEMO_PREFIX, FULL_REMOTE_MEMO_PREFIX].any? { |prefix| result.memo.start_with?(prefix) },
              "#{posting.url}: memo=#{result.memo}"
     end
   end
 
   def test_freelance_board_hokkaido_fixture
-    assert_fixture_classification("freelance_board_hokkaido.html", FreelanceJobs::Sources::FreelanceBoard, 18)
+    assert_fixture_classification("freelance_board_hokkaido.html", FreelanceJobs::Sources::FreelanceBoard, 19)
   end
 
   def test_freelance_hub_hokkaido_fixture

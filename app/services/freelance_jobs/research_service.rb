@@ -49,6 +49,9 @@ module FreelanceJobs
       failures = []
       failed_sites = []
       postings = []
+      # 掲載サイト列に取得元の SITE_NAME と別の値（転載元サイト名）を出す取得元の分。下記のマージ前に succeeded_sites へ足す。
+      original_site_names = []
+      reporting_source_succeeded = false
 
       @sources.each do |source_class, options|
         site_name = source_class::SITE_NAME
@@ -56,6 +59,10 @@ module FreelanceJobs
           source_postings = fetch_from(source_class, options)
           fetched_counts[site_name] = source_postings.size
           succeeded_sites << site_name
+          if reports_original_site_names?(source_class)
+            reporting_source_succeeded = true
+            original_site_names.concat(source_postings.map(&:site))
+          end
           postings.concat(source_postings)
         rescue StandardError => error
           failures << "#{site_name}（#{error.message[0, 60]}）"
@@ -89,6 +96,16 @@ module FreelanceJobs
       if header_missing
         return aborted_summary("既存シートにヘッダー行(#{HEADER_LABEL})が見つかりません", fetched_counts, succeeded_sites, failures,
                                 rows.size, starred_candidates)
+      end
+
+      # SheetMerger は「掲載サイトが succeeded_sites に含まれる既存行」だけを期限ルールで消す。
+      # 転載元サイト名（Green等）は SITE_NAME ではないため、足さないと取得失敗サイトの行として永久に残る。
+      # 今回の取得に1件も出なかった転載元（例: ビズリーチ）の既存行も同じ扱いにするため、
+      # プロファイル内のどの SITE_NAME でもない既存行の掲載サイトをまとめて足す。
+      if reporting_source_succeeded
+        succeeded_sites.concat(original_site_names)
+        succeeded_sites.concat(unmatched_existing_site_names(existing_rows))
+        succeeded_sites.uniq!
       end
 
       # C2: 新規行(既存シートにURLが無いもの)は🌟付きだけをマージ対象にする（profile.new_rows_require_starがtrueの時だけ）。
@@ -165,6 +182,17 @@ module FreelanceJobs
         "[FreelanceJobs::ResearchService] FREELANCE_JOBS_EXCLUDED_SITESに未知のサイト名があります: " \
         "#{@unknown_excluded_sites.join("、")}"
       )
+    end
+
+    def reports_original_site_names?(source_class)
+      source_class.respond_to?(:reports_original_site_names?) && source_class.reports_original_site_names?
+    end
+
+    # 既存行の掲載サイトのうち、プロファイル内のどの取得元の SITE_NAME にも一致しないもの。
+    def unmatched_existing_site_names(existing_rows)
+      known_site_names = @profile.source_specs.map { |source_class, _options| source_class::SITE_NAME }
+      existing_site_names = existing_rows.map { |row| row[FreelanceJobs::SheetMerger::SITE_COLUMN_INDEX].to_s }
+      (existing_site_names.uniq - known_site_names).reject(&:empty?)
     end
 
     def fetch_from(source_class, options)

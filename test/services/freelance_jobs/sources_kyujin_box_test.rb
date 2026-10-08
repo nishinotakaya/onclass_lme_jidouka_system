@@ -45,9 +45,9 @@ class FreelanceJobsSourcesKyujinBoxTest < Minitest::Test
   def test_parse_first_posting_has_expected_fields
     first = parse_fixture.first
 
-    assert_equal "求人ボックス", first.site
+    assert_equal "Green", first.site
     assert_match %r{\Ahttps://www\.green-japan\.com/company/8534/job/161472}, first.url
-    assert_equal "Rubyエンジニア/システムインテグレータ・ソフトハウス", first.title
+    assert_equal "【株式会社リファルケ】Rubyエンジニア/システムインテグレータ・ソフトハウス", first.title
     assert_equal "Ruby", first.category_hint
     assert_equal "年収450万円～1,260万円 / 賞与あり", first.reward
     assert_equal "正社員", first.work_format
@@ -68,6 +68,52 @@ class FreelanceJobsSourcesKyujinBoxTest < Minitest::Test
     assert_includes description, "掲載元: Green"
     assert_match(/勤務地: 北海道 札幌市 札幌駅 徒歩2分 \/ 雇用形態: 正社員\z/, description)
     refute_match(/\n/, description)
+  end
+
+  # --- 掲載サイト名 ---
+
+  def parse_site_of(job_overrides)
+    SOURCE.parse(build_card_html(job_hash: build_job_hash(job_overrides)), today: TODAY).first.site
+  end
+
+  def test_site_strips_registration_entry_suffix_with_spacing_variants
+    assert_equal "ビズリーチ", parse_site_of("uniqueId" => "lbiz", "siteName" => "ビズリーチ - 登録エントリー")
+    assert_equal "マイナビエージェント", parse_site_of("uniqueId" => "lmai", "siteName" => "マイナビエージェント- 登録エントリー")
+    assert_equal "Green", parse_site_of("uniqueId" => "lgre", "siteName" => "Green")
+  end
+
+  def test_site_falls_back_to_kyujin_box_when_site_name_is_blank
+    assert_equal "求人ボックス", parse_site_of("siteName" => "")
+    assert_equal "求人ボックス", parse_site_of("siteName" => " - 登録エントリー")
+  end
+
+  def test_site_is_kyujin_box_for_direct_listing_whose_site_name_is_the_company
+    assert_equal "求人ボックス", parse_site_of("siteName" => "株式会社テスト")
+  end
+
+  def test_site_keeps_site_name_for_aggregated_card_even_if_it_equals_company
+    assert_equal "株式会社テスト", parse_site_of("uniqueId" => "lsame", "siteName" => "株式会社テスト")
+  end
+
+  def test_title_has_no_company_prefix_when_company_is_blank
+    html = build_card_html(job_hash: build_job_hash("company" => ""))
+
+    assert_equal "Rubyエンジニア", SOURCE.parse(html, today: TODAY).first.title
+  end
+
+  def test_fixture_site_tally_and_bizreach_site
+    sites = parse_fixture.map(&:site)
+
+    puts "SITE TALLY: #{sites.tally.inspect}"
+    refute_includes sites.first(1), "求人ボックス"
+    assert_includes sites, "ビズリーチ"
+    refute(sites.any? { |site| site.include?("登録エントリー") })
+    bizreach = parse_fixture.find { |posting| posting.url.start_with?("https://www.bizreach.jp/") }
+    assert_equal "ビズリーチ", bizreach.site
+  end
+
+  def test_reports_original_site_names_marker
+    assert SOURCE.reports_original_site_names?
   end
 
   # --- URL ---
@@ -103,7 +149,7 @@ class FreelanceJobsSourcesKyujinBoxTest < Minitest::Test
 
     postings = SOURCE.parse(html, today: TODAY)
 
-    assert_equal ["Rubyエンジニア"], postings.map(&:title)
+    assert_equal ["【株式会社テスト】Rubyエンジニア"], postings.map(&:title)
   end
 
   def test_parse_defaults_reward_and_work_format_when_blank_and_tolerates_bad_date
