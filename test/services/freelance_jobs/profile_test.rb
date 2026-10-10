@@ -323,7 +323,7 @@ class FreelanceJobsProfileTest < Minitest::Test
 
     assert_equal false, definition.new_rows_require_star
     assert_equal true, definition.checkbox_column
-    assert_nil definition.hidden_level_marker
+    assert_equal "★★★", definition.hidden_level_marker
     assert_nil definition.site_list_sheet_gid
   end
 

@@ -198,7 +198,8 @@ module FreelanceJobs
         ],
         new_rows_require_star: false,
         checkbox_column: true,
-        hidden_level_marker: nil,
+        # エンジニア案件タブと同じく、開いた直後は中級以下だけが見える状態にする（2026-10-10の社長要求）。
+        hidden_level_marker: "★★★",
         site_list_sheet_gid: nil,
         row_limits: { max_total_rows: 900, max_new_rows_per_run: 900, max_rows_per_site: 800 }
       )
